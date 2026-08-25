@@ -22,8 +22,24 @@ import {
   type AnalysisProvider,
 } from './tipos';
 
-/** `tests/fixtures/analysis/`, relativo a la raíz del repo. */
-export const DIR_FIXTURES_ANALISIS = new URL('../../../tests/fixtures/analysis/', import.meta.url);
+/**
+ * `tests/fixtures/analysis/`, resuelto desde la raíz del repo.
+ *
+ * Igual que la carpeta de migraciones en `src/db/client.ts`: se arma con
+ * `process.cwd()` y no con `import.meta.url`. Los dos motivos son el mismo que
+ * allá, y valen tanto en el build como en el bundler:
+ *
+ *  - tras `next build` este módulo vive en `.next/server/`, así que un
+ *    `../../../tests/…` relativo al archivo apunta a cualquier lado;
+ *  - webpack trata `new URL(ruta, import.meta.url)` como un asset y trata de
+ *    resolverlo en tiempo de build; con un directorio no puede, y rompe la
+ *    compilación de cualquier ruta que llegue hasta acá (el pipeline llega).
+ *
+ * `next`, `vitest` y `tsx` corren todos desde la raíz del repo.
+ */
+export const DIR_FIXTURES_ANALISIS = pathToFileURL(
+  resolve(process.cwd(), 'tests', 'fixtures', 'analysis'),
+);
 
 /** Un fixture leído y validado, o `null` si el archivo no existe. */
 const cache = new Map<string, AnalisisLamina | null>();
