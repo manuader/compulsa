@@ -17,7 +17,36 @@
  *     hallazgo abierto que ya no aplica pasa a `descartado` con respuesta
  *     automática. Los `respondido`/`descartado` no se reabren jamás.
  *
- * Toda mutación se audita con actor `agente` (CLAUDE.md §4).
+ * Toda mutación se audita con actor `agente` (CLAUDE.md §4) — incluida la
+ * desvinculación de un ítem cuya entidad desapareció, que es la única que toca
+ * una fila del arquitecto.
+ *
+ * ## Sin transacción, y qué queda expuesto por eso
+ *
+ * `recomputarObra` **no** envuelve sus escrituras en `db.transaction()`:
+ * `registrarAuditoria()` resuelve su handle con `getDb()` y no con el `db` que
+ * se le pasa, así que las auditorías escribirían desde afuera de la transacción
+ * y sobre PGlite —una sola conexión— eso se traba. Es un trade-off deliberado,
+ * no un olvido.
+ *
+ * **Riesgo residual (leer antes de construir sobre `computo_items` o
+ * `hallazgos`):** si el proceso muere en el medio, la sincronización queda a
+ * mitad de camino — ítems actualizados y hallazgos no, o parte de los ítems
+ * anulados y parte no. Nada rompe la integridad referencial, pero el cómputo
+ * puede no ser el que corresponde a las entidades guardadas hasta el próximo
+ * recompute exitoso. Tres consecuencias para quien lee estas tablas:
+ *
+ *  - `recomputarObra` es idempotente y barata: **volver a correrla es la
+ *    reparación**, y `procesarLamina` la corre después de cada lámina.
+ *  - Un fallo del recompute no invalida el análisis de la lámina: queda
+ *    `analizada` con su `error_detalle` y una auditoría `recomputo_fallido`
+ *    (ver `procesarLamina`), que es la señal de "esta obra quedó a medio
+ *    sincronizar".
+ *  - Una fila de `computo_items` con `entidad_id` en `null` no es un bug: puede
+ *    ser un ítem del arquitecto cuya entidad desapareció de la lámina.
+ *
+ * Cuando el deploy corra sobre Postgres real (pool de conexiones), lo correcto
+ * es pasar el handle de la transacción también a la auditoría y envolver todo.
  */
 import { eq, inArray } from 'drizzle-orm';
 
@@ -359,14 +388,40 @@ export async function recomputarObra(
  * Suelta el `entidad_id` de los ítems que apuntan a entidades que están por
  * desaparecer. La FK no admite huérfanos y un ítem editado a mano no se puede
  * borrar: pierde el link, no la fila.
+ *
+ * Es la única mutación del pipeline que le toca una fila al arquitecto —le saca
+ * la provenance a un ítem que él editó—, así que cada ítem afectado deja su
+ * propia entrada en `auditoria` con el id que perdió y quién era el dueño de la
+ * fila. Sin ese rastro, un ítem editado a mano aparecería un día sin entidad y
+ * nada podría explicar cuándo ni por qué (CLAUDE.md §4).
+ *
+ * Devuelve cuántos ítems perdieron el link.
  */
 export async function desvincularItemsDeEntidades(
   db: Db,
+  obraId: string,
   entidadIds: readonly string[],
-): Promise<void> {
-  if (entidadIds.length === 0) return;
+): Promise<number> {
+  if (entidadIds.length === 0) return 0;
+  const ids = [...entidadIds];
+
+  // Se leen antes de escribir: después del update ya no hay de dónde sacar a qué
+  // entidad apuntaba cada ítem.
+  const afectados = await db.select().from(computoItems).where(inArray(computoItems.entidadId, ids));
+  if (afectados.length === 0) return 0;
+
   await db
     .update(computoItems)
-    .set({ entidadId: null })
-    .where(inArray(computoItems.entidadId, [...entidadIds]));
+    .set({ entidadId: null, updatedAt: new Date() })
+    .where(inArray(computoItems.entidadId, ids));
+
+  for (const item of afectados) {
+    await auditar(obraId, 'computo_item_desvinculado', `computo_items:${item.claveItem}`, {
+      entidadId: { antes: item.entidadId, despues: null },
+      editadoPor: item.editadoPor,
+      motivo: 'La entidad que respaldaba este ítem ya no está en la lámina.',
+    });
+  }
+
+  return afectados.length;
 }

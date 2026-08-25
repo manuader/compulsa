@@ -391,8 +391,17 @@ function FilaLamina({
             />
           ) : null}
 
-          {lamina.estadoAnalisis === 'error' && lamina.errorDetalle ? (
-            <p className="max-w-xs text-xs text-red-700">{lamina.errorDetalle}</p>
+          {/* Una lámina `analizada` también puede traer detalle: el análisis salió
+              bien y lo que falló fue el recompute de la obra. Es otra cosa que un
+              error de la lámina, y se muestra distinto. */}
+          {lamina.errorDetalle ? (
+            <p
+              className={`max-w-xs text-xs ${
+                lamina.estadoAnalisis === 'error' ? 'text-red-700' : 'text-amber-700'
+              }`}
+            >
+              {lamina.errorDetalle}
+            </p>
           ) : null}
 
           {error ? <p className="max-w-xs text-xs text-red-700">{error}</p> : null}

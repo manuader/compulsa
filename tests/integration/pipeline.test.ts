@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { setDbForTests, type Db } from '@/db/client';
 import {
+  auditoria,
   computoItems,
   entidades,
   estudios,
@@ -28,11 +29,15 @@ import {
   usuarios,
   type Lamina,
 } from '@/db/schema';
+import { rotuloNulo, type AnalysisProvider } from '@/lib/analysis/index';
 import {
+  ACCION_PROCESANDO,
   actualizarLamina,
+  PREFIJO_RECOMPUTO_FALLIDO,
   procesarDocumento,
   procesarLamina,
   subirDocumento,
+  TTL_PROCESANDO_MS,
 } from '@/lib/pipeline/procesar';
 import { parsearRefArchivo } from '@/lib/pipeline/refs';
 import type { StorageAdapter } from '@/lib/storage/index';
@@ -77,6 +82,29 @@ async function itemsActivos() {
 async function clavesDeHallazgos(): Promise<string[]> {
   const filas = await db.select().from(hallazgos).where(eq(hallazgos.obraId, obraId));
   return filas.map((h) => h.clave);
+}
+
+function auditoriaDe(accion: string) {
+  return db
+    .select()
+    .from(auditoria)
+    .where(and(eq(auditoria.obraId, obraId), eq(auditoria.accion, accion)));
+}
+
+/**
+ * Provider que lee la escala pero no encuentra ninguna entidad. Sirve para
+ * ejercitar la desaparición de entidades sin tocar la base a mano: es lo que
+ * pasa cuando el arquitecto sube una revisión con una lámina vaciada.
+ */
+function providerSinEntidades(): AnalysisProvider {
+  return {
+    async leerRotulo() {
+      return { ...rotuloNulo(), escala: '1:100', escalaConfiable: true, confianza: 1 };
+    },
+    async extraerEntidades() {
+      return [];
+    },
+  };
 }
 
 beforeEach(async () => {
@@ -382,5 +410,195 @@ describe('errores', () => {
     await expect(subirDocumento(db, storage, obraId, usuarioId, archivo)).rejects.toThrow(
       /PDF/i,
     );
+  });
+
+  it('deja la lámina analizada y audita el fallo si el recompute se cae', async () => {
+    const documento = await subirYProcesar('obra-demo.pdf');
+    const [lamina] = await laminasDe(documento.id);
+    const itemsAntes = await itemsActivos();
+
+    await procesarLamina(lamina.id, {
+      db,
+      storage,
+      recomputar: async () => {
+        throw new Error('la conexión se cortó en el medio');
+      },
+    });
+
+    // El análisis de la lámina salió bien: marcarla `error` sería mentir sobre
+    // qué se rompió, y el próximo reproceso tiraría el trabajo bueno.
+    const [despues] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(despues.estadoAnalisis).toBe('analizada');
+    expect(despues.errorDetalle).toBe(
+      `${PREFIJO_RECOMPUTO_FALLIDO}la conexión se cortó en el medio`,
+    );
+
+    const fallos = await auditoriaDe('recomputo_fallido');
+    expect(fallos).toHaveLength(1);
+    expect(fallos[0].actorTipo).toBe('agente');
+    expect(fallos[0].targetRef).toBe(`obras:${obraId}`);
+    expect(fallos[0].diffJson).toMatchObject({
+      laminaId: lamina.id,
+      errorDetalle: 'la conexión se cortó en el medio',
+    });
+
+    // El cómputo anterior sigue en pie: no se recalculó, no se perdió.
+    expect(await itemsActivos()).toHaveLength(itemsAntes.length);
+
+    // Y el recompute se repara solo la próxima vez que corre.
+    await procesarLamina(lamina.id, { db, storage });
+    const [reparada] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(reparada.errorDetalle).toBeNull();
+  });
+});
+
+describe('una lámina se analiza de a una', () => {
+  it('no vuelve a analizar una lámina que ya está en procesando', async () => {
+    const documento = await subirYProcesar('obra-demo.pdf');
+    const [lamina] = await laminasDe(documento.id);
+    const entidadesAntes = await db.select().from(entidades).where(eq(entidades.obraId, obraId));
+    const itemsAntes = await itemsActivos();
+
+    // Otra corrida la tiene tomada (o el proceso que la tenía murió recién).
+    await db
+      .update(laminas)
+      .set({ estadoAnalisis: 'procesando' })
+      .where(eq(laminas.id, lamina.id));
+
+    await procesarLamina(lamina.id, { db, storage });
+
+    // La corrida en curso manda: la segunda no le pisa el estado…
+    const [despues] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(despues.estadoAnalisis).toBe('procesando');
+
+    // …ni duplica entidades ni cantidades.
+    const entidadesDespues = await db.select().from(entidades).where(eq(entidades.obraId, obraId));
+    expect(entidadesDespues).toHaveLength(entidadesAntes.length);
+    expect(new Set(entidadesDespues.map((e) => e.id))).toEqual(
+      new Set(entidadesAntes.map((e) => e.id)),
+    );
+    const itemsDespues = await itemsActivos();
+    expect(itemsDespues).toHaveLength(itemsAntes.length);
+    expect(itemsDespues.find((i) => i.claveItem === 'gruesa.ladrillos')?.cantCompra).toBe(396);
+
+    const omitidos = await auditoriaDe('lamina_procesamiento_omitido');
+    expect(omitidos).toHaveLength(1);
+    expect(omitidos[0].targetRef).toBe(`laminas:${lamina.id}`);
+  });
+
+  it('dos llamadas simultáneas sobre la misma lámina la analizan una sola vez', async () => {
+    const documento = await subirYProcesar('obra-demo.pdf');
+    const [lamina] = await laminasDe(documento.id);
+    const antes = await db.select().from(entidades).where(eq(entidades.laminaId, lamina.id));
+    expect(antes.length).toBeGreaterThan(0);
+
+    await Promise.all([
+      procesarLamina(lamina.id, { db, storage }),
+      procesarLamina(lamina.id, { db, storage }),
+    ]);
+
+    const despues = await db.select().from(entidades).where(eq(entidades.laminaId, lamina.id));
+    expect(despues).toHaveLength(antes.length);
+    expect(new Set(despues.map((e) => e.id))).toEqual(new Set(antes.map((e) => e.id)));
+
+    // Un solo análisis nuevo: el de la subida, más el de esta corrida. Si las
+    // dos llamadas hubieran corrido, habría tres.
+    const analizadas = (await auditoriaDe('lamina_analizada')).filter(
+      (fila) => fila.targetRef === `laminas:${lamina.id}`,
+    );
+    expect(analizadas).toHaveLength(2);
+
+    // Dentro del proceso la segunda llamada no se va con las manos vacías: se
+    // cuelga de la primera y espera su resultado, así que nunca llega a pedirle
+    // permiso a la base (si lo hiciera, habría un `omitido` acá).
+    expect(await auditoriaDe('lamina_procesamiento_omitido')).toHaveLength(0);
+
+    const [final] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(final.estadoAnalisis).toBe('analizada');
+  });
+
+  it('retoma una lámina colgada en procesando por un proceso que murió', async () => {
+    const documento = await subirYProcesar('obra-demo.pdf');
+    const [lamina] = await laminasDe(documento.id);
+
+    // Quedó tomada y el arranque está fechado hace más del TTL: no hay nadie
+    // del otro lado. Si el guard no soltara nunca, "Reprocesar" no haría nada y
+    // el arquitecto se quedaría sin manera de destrabarla.
+    await db
+      .update(laminas)
+      .set({ estadoAnalisis: 'procesando' })
+      .where(eq(laminas.id, lamina.id));
+    await db
+      .update(auditoria)
+      .set({ at: new Date(Date.now() - TTL_PROCESANDO_MS - 60_000) })
+      .where(
+        and(
+          eq(auditoria.accion, ACCION_PROCESANDO),
+          eq(auditoria.targetRef, `laminas:${lamina.id}`),
+        ),
+      );
+
+    await procesarLamina(lamina.id, { db, storage });
+
+    const [despues] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(despues.estadoAnalisis).toBe('analizada');
+    expect(await auditoriaDe('lamina_procesamiento_omitido')).toHaveLength(0);
+
+    const retomas = (await auditoriaDe(ACCION_PROCESANDO)).filter(
+      (fila) =>
+        fila.targetRef === `laminas:${lamina.id}` &&
+        (fila.diffJson as { retomada?: boolean }).retomada === true,
+    );
+    expect(retomas).toHaveLength(1);
+  });
+});
+
+describe('desvinculación de ítems', () => {
+  it('audita cuando un ítem editado a mano pierde la entidad que lo respaldaba', async () => {
+    const documento = await subirYProcesar('obra-demo.pdf');
+
+    const [item] = await db
+      .select()
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.claveItem, 'gruesa.ladrillos')));
+    expect(item.entidadId).not.toBeNull();
+
+    // El arquitecto se apropia del ítem: desde acá, la fila es de él.
+    await db
+      .update(computoItems)
+      .set({ editadoPor: usuarioId })
+      .where(eq(computoItems.id, item.id));
+
+    const [entidad] = await db
+      .select()
+      .from(entidades)
+      .where(eq(entidades.id, item.entidadId as string));
+
+    // Se re-analiza la lámina y el agente ya no encuentra esa entidad.
+    await procesarLamina(entidad.laminaId, {
+      db,
+      storage,
+      provider: providerSinEntidades(),
+    });
+
+    const [despues] = await db
+      .select()
+      .from(computoItems)
+      .where(eq(computoItems.id, item.id));
+    // La fila del humano no se borra: pierde el link, no la fila.
+    expect(despues.entidadId).toBeNull();
+    expect(despues.editadoPor).toBe(usuarioId);
+    expect(despues.cantCompra).toBe(item.cantCompra);
+
+    const desvinculados = await auditoriaDe('computo_item_desvinculado');
+    const propia = desvinculados.find(
+      (fila) => fila.targetRef === `computo_items:${item.claveItem}`,
+    );
+    expect(propia).toBeDefined();
+    expect(propia?.actorTipo).toBe('agente');
+    expect(propia?.diffJson).toMatchObject({
+      entidadId: { antes: item.entidadId, despues: null },
+      editadoPor: usuarioId,
+    });
   });
 });

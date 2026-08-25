@@ -16,16 +16,20 @@
  *  3. **Nunca una excepción suelta.** El error de una lámina queda en su
  *     `estado_analisis = 'error'` con `error_detalle`, no tira abajo el resto
  *     del documento.
+ *  4. **Una lámina se analiza de a una.** Dos corridas encimadas sobre la misma
+ *     lámina duplicarían entidades y cantidades: la transición a `procesando`
+ *     es la que decide quién corre (ver `reclamarLamina`).
  *
  * Toda escritura de agente pasa por `registrarAuditoria` (CLAUDE.md §4).
  */
 import { createHash, randomUUID } from 'node:crypto';
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { getDb, type Db } from '@/db/client';
 import {
+  auditoria,
   documentos,
   entidades,
   hallazgos,
@@ -65,6 +69,22 @@ export const DESCRIPCION_ESCALA_BLOQUEADA =
 /** Respuesta con la que el desbloqueo manual cierra el hallazgo de escala. */
 export const RESPUESTA_ESCALA_CONFIRMADA = { auto: 'escala confirmada a mano' } as const;
 
+/** Acción con la que queda registrado el arranque del análisis de una lámina. */
+export const ACCION_PROCESANDO = 'lamina_procesando';
+
+/**
+ * Cuánto puede una lámina quedarse en `procesando` antes de darla por
+ * abandonada. Si el proceso que la tomó murió (timeout de la función, deploy en
+ * el medio), nadie va a limpiar ese estado: pasado este plazo, la próxima
+ * corrida la retoma. Sin esta salida, un "Reprocesar" sobre una lámina colgada
+ * no haría nada y el arquitecto se quedaría sin manera de destrabarla.
+ */
+export const TTL_PROCESANDO_MS = 15 * 60 * 1000;
+
+/** Prefijo del `error_detalle` de una lámina que se analizó pero no se computó. */
+export const PREFIJO_RECOMPUTO_FALLIDO =
+  'La lámina se analizó bien, pero el cómputo de la obra no se pudo recalcular: ';
+
 // ---------------------------------------------------------------------------
 // Errores
 // ---------------------------------------------------------------------------
@@ -103,12 +123,19 @@ export interface DepsPipeline {
   db?: Db;
   storage?: StorageAdapter;
   provider?: AnalysisProvider;
+  /**
+   * El recompute que corre después de cada lámina. Es una costura, no una
+   * opción de configuración: existe para poder ejercitar el camino de "la
+   * lámina se analizó bien y el recompute falló" sin romper la base a mano.
+   */
+  recomputar?: (obraId: string, deps: { db: Db }) => Promise<unknown>;
 }
 
 interface Entorno {
   db: Db;
   storage: StorageAdapter;
   provider: AnalysisProvider;
+  recomputar: NonNullable<DepsPipeline['recomputar']>;
 }
 
 async function resolver(deps: DepsPipeline): Promise<Entorno> {
@@ -116,6 +143,7 @@ async function resolver(deps: DepsPipeline): Promise<Entorno> {
     db: deps.db ?? (await getDb()),
     storage: deps.storage ?? getStorage(),
     provider: deps.provider ?? getAnalysisProvider(),
+    recomputar: deps.recomputar ?? recomputarObra,
   };
 }
 
@@ -387,7 +415,7 @@ async function sincronizarEntidades(
 
   const sobrantes = previas.filter((previa) => !conservadas.has(previa.id)).map((e) => e.id);
   if (sobrantes.length > 0) {
-    await desvincularItemsDeEntidades(db, sobrantes);
+    await desvincularItemsDeEntidades(db, lamina.obraId, sobrantes);
     await db.delete(entidades).where(inArray(entidades.id, sobrantes));
   }
 
@@ -450,23 +478,138 @@ async function cerrarHallazgoEscala(db: Db, lamina: Lamina): Promise<void> {
   });
 }
 
+/** Cuándo arrancó el análisis que dejó la lámina en `procesando`, si lo sabemos. */
+async function inicioDelProcesamiento(db: Db, laminaId: string): Promise<Date | null> {
+  const [ultimo] = await db
+    .select({ at: auditoria.at })
+    .from(auditoria)
+    .where(
+      and(eq(auditoria.targetRef, `laminas:${laminaId}`), eq(auditoria.accion, ACCION_PROCESANDO)),
+    )
+    .orderBy(desc(auditoria.at))
+    .limit(1);
+  return ultimo?.at ?? null;
+}
+
+/**
+ * Toma la lámina para analizarla, o devuelve `null` si ya la tiene otra corrida.
+ *
+ * El `UPDATE ... WHERE estado_analisis <> 'procesando' RETURNING` es la
+ * exclusión mutua: la base decide un único ganador aunque lleguen dos requests
+ * juntos (doble click, dos pestañas, un reintento encima del original). Sin
+ * esto, las dos corridas extraerían entidades de la misma lámina en paralelo y
+ * el `sincronizarEntidades` de cada una vería un pool distinto: entidades
+ * duplicadas y cantidades duplicadas en la planilla, en silencio.
+ *
+ * Si el estado quedó colgado de un proceso muerto, pasado `TTL_PROCESANDO_MS`
+ * la corrida siguiente lo retoma (el arranque queda fechado en `auditoria`, que
+ * es el único reloj que tenemos: `laminas` no tiene `updated_at`, y esa columna
+ * es de la Tarea 2). Dos procesos podrían decidir el rescate a la vez, pero
+ * hace falta que los dos lleguen dentro del mismo milisegundo *y* quince
+ * minutos después del cuelgue; el caso frecuente —dos clicks seguidos— lo cubre
+ * el guard de arriba.
+ */
+async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> {
+  const [tomada] = await db
+    .update(laminas)
+    .set({ estadoAnalisis: 'procesando', errorDetalle: null })
+    .where(and(eq(laminas.id, laminaId), ne(laminas.estadoAnalisis, 'procesando')))
+    .returning();
+
+  if (tomada) {
+    await auditarAgente(tomada.obraId, ACCION_PROCESANDO, `laminas:${laminaId}`, {
+      numeroPagina: tomada.numeroPagina,
+      retomada: false,
+    });
+    return tomada;
+  }
+
+  const [existente] = await db.select().from(laminas).where(eq(laminas.id, laminaId));
+  if (!existente) throw new LaminaInexistenteError(laminaId);
+
+  const desde = await inicioDelProcesamiento(db, laminaId);
+  if (desde === null || Date.now() - desde.getTime() <= TTL_PROCESANDO_MS) {
+    await auditarAgente(existente.obraId, 'lamina_procesamiento_omitido', `laminas:${laminaId}`, {
+      motivo: 'Ya hay un análisis en curso para esta lámina.',
+      desde: desde?.toISOString() ?? null,
+    });
+    return null;
+  }
+
+  const [retomada] = await db
+    .update(laminas)
+    .set({ estadoAnalisis: 'procesando', errorDetalle: null })
+    .where(eq(laminas.id, laminaId))
+    .returning();
+  await auditarAgente(retomada.obraId, ACCION_PROCESANDO, `laminas:${laminaId}`, {
+    numeroPagina: retomada.numeroPagina,
+    retomada: true,
+    colgadaDesde: desde.toISOString(),
+  });
+  return retomada;
+}
+
+/**
+ * Corre el recompute de la obra sin arrastrar a la lámina si falla.
+ *
+ * El análisis de la lámina ya terminó y está guardado: marcarla `error` porque
+ * el recompute no pudo con la obra sería mentir sobre qué se rompió y borraría
+ * el trabajo bueno en el próximo reproceso. El fallo queda como lo que es —el
+ * cómputo de la obra quedó sin recalcular— en su propia auditoría
+ * (`recomputo_fallido`) y en el `error_detalle` de la lámina, que es donde la
+ * pantalla lo puede mostrar. La reparación es volver a correr el recompute:
+ * `recomputarObra` es idempotente.
+ */
+async function recomputarTolerante(entorno: Entorno, lamina: Lamina): Promise<boolean> {
+  try {
+    await entorno.recomputar(lamina.obraId, { db: entorno.db });
+    return true;
+  } catch (error) {
+    const errorDetalle = detalleDeError(error);
+    await entorno.db
+      .update(laminas)
+      .set({ errorDetalle: `${PREFIJO_RECOMPUTO_FALLIDO}${errorDetalle}` })
+      .where(eq(laminas.id, lamina.id));
+    await auditarAgente(lamina.obraId, 'recomputo_fallido', `obras:${lamina.obraId}`, {
+      laminaId: lamina.id,
+      errorDetalle,
+      motivo: 'La lámina quedó analizada; el cómputo de la obra quedó sin recalcular.',
+    });
+    return false;
+  }
+}
+
+/** Corridas de `procesarLamina` en vuelo en este proceso, por lámina. */
+const enVuelo = new Map<string, Promise<void>>();
+
 /**
  * Analiza una lámina de punta a punta. Idempotente: correrla dos veces sobre la
  * misma lámina deja exactamente el mismo estado.
  *
  * Nunca lanza por un fallo del análisis (PDF ilegible, provider caído): eso
  * queda escrito en la propia lámina como `error` + `error_detalle`.
+ *
+ * Dos llamadas encimadas sobre la misma lámina no la analizan dos veces: dentro
+ * del proceso la segunda se cuelga de la primera y espera su resultado; entre
+ * procesos decide la base (`reclamarLamina`) y la segunda no hace nada.
  */
-export async function procesarLamina(laminaId: string, deps: DepsPipeline = {}): Promise<void> {
-  const { db, storage, provider } = await resolver(deps);
+export function procesarLamina(laminaId: string, deps: DepsPipeline = {}): Promise<void> {
+  const enCurso = enVuelo.get(laminaId);
+  if (enCurso) return enCurso;
 
-  const [lamina] = await db.select().from(laminas).where(eq(laminas.id, laminaId));
-  if (!lamina) throw new LaminaInexistenteError(laminaId);
+  const corrida = analizarLamina(laminaId, deps).finally(() => {
+    enVuelo.delete(laminaId);
+  });
+  enVuelo.set(laminaId, corrida);
+  return corrida;
+}
 
-  await db
-    .update(laminas)
-    .set({ estadoAnalisis: 'procesando', errorDetalle: null })
-    .where(eq(laminas.id, laminaId));
+async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<void> {
+  const entorno = await resolver(deps);
+  const { db, storage, provider } = entorno;
+
+  const lamina = await reclamarLamina(db, laminaId);
+  if (!lamina) return;
 
   try {
     const [documento] = await db
@@ -496,10 +639,11 @@ export async function procesarLamina(laminaId: string, deps: DepsPipeline = {}):
         .set({ ...campos, estadoAnalisis: 'bloqueada_escala', errorDetalle: null })
         .where(eq(laminas.id, laminaId));
       await upsertHallazgoEscala(db, lamina);
-      if (eliminadas > 0) await recomputarObra(lamina.obraId, { db });
+      const recomputado = eliminadas === 0 || (await recomputarTolerante(entorno, lamina));
       await auditarAgente(lamina.obraId, 'lamina_bloqueada_escala', `laminas:${laminaId}`, {
         escala: campos.escala,
         entidadesEliminadas: eliminadas,
+        recomputado,
       });
       return;
     }
@@ -526,7 +670,7 @@ export async function procesarLamina(laminaId: string, deps: DepsPipeline = {}):
       .set({ ...campos, estadoAnalisis: 'analizada', errorDetalle: null })
       .where(eq(laminas.id, laminaId));
     await cerrarHallazgoEscala(db, lamina);
-    await recomputarObra(lamina.obraId, { db });
+    const recomputado = await recomputarTolerante(entorno, lamina);
 
     await auditarAgente(lamina.obraId, 'lamina_analizada', `laminas:${laminaId}`, {
       codigo: campos.codigo,
@@ -535,6 +679,7 @@ export async function procesarLamina(laminaId: string, deps: DepsPipeline = {}):
       entidades: validas.length,
       ...resumen,
       descartadas,
+      recomputado,
     });
   } catch (error) {
     const errorDetalle = detalleDeError(error);
