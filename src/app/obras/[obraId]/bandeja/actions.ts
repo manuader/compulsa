@@ -52,7 +52,10 @@ import type { EstadoHallazgo } from '@/types/domain';
 
 /** Todo serializable: es lo que vuelve del server a un componente cliente. */
 export type ResultadoAccion = { ok: true } | { ok: false; error: string };
-export type ResultadoLote = { ok: true; descartados: number } | { ok: false; error: string };
+/** `respondidas`: las del lote que ya tenían respuesta y quedaron intactas. */
+export type ResultadoLote =
+  | { ok: true; descartados: number; respondidas: number }
+  | { ok: false; error: string };
 
 /** Quién resuelve la consulta. Los `*Action` lo sacan de la sesión. */
 export interface ActorBandeja {
@@ -400,7 +403,15 @@ export async function confirmarSupuesto(
   return { ok: true };
 }
 
-/** La consulta no aplica. No cambia datos: el gate del rubro la deja de contar. */
+/**
+ * La consulta no aplica. No cambia datos: el gate del rubro la deja de contar.
+ *
+ * Solo se descarta desde `abierto`. Una consulta ya respondida no se descarta
+ * "por arriba": `cerrar()` pisaría su `respuesta_json` y su `resuelto_por` con
+ * el payload de descarte, y la respuesta que el arquitecto dejó registrada
+ * —el dato que aportó, el supuesto que confirmó— se perdería. Volver a
+ * descartar una descartada sí es un no-op idempotente.
+ */
 export async function descartarHallazgo(
   entrada: EntradaHallazgo,
   actor: ActorBandeja,
@@ -415,6 +426,7 @@ export async function descartarHallazgo(
   const hallazgo = await cargarHallazgo(db, obraId, hallazgoId);
   if (!hallazgo) return { ok: false, error: NO_ENCONTRADO };
   if (hallazgo.estado === 'descartado') return { ok: true }; // idempotente
+  if (hallazgo.estado !== 'abierto') return { ok: false, error: YA_RESUELTA };
 
   await cerrar(
     db,
@@ -427,9 +439,17 @@ export async function descartarHallazgo(
 }
 
 /**
- * Descarta varias de una. O son todas de la obra o no se descarta ninguna: un
- * id ajeno en la lista es un error de la pantalla, no algo para ignorar en
- * silencio.
+ * Descarta varias de una.
+ *
+ * Dos reglas de lote:
+ *  - **O son todas de la obra o no se descarta ninguna:** un id ajeno en la
+ *    lista es un error de la pantalla, no algo para ignorar en silencio.
+ *  - **Las respondidas se saltean, no se pisan.** Un lote es una selección
+ *    hecha sobre una pantalla que puede haber envejecido (otra pestaña, otro
+ *    usuario): si una de las consultas se respondió mientras tanto, descartarla
+ *    borraría esa respuesta. Se dejan como están y se informan aparte en
+ *    `respondidas`, para que la pantalla pueda decir qué no se tocó. Las ya
+ *    descartadas son un no-op idempotente y no se cuentan.
  */
 export async function descartarLote(
   entrada: EntradaLote,
@@ -454,13 +474,18 @@ export async function descartarLote(
 
   const respuesta = conNota({ tipo: 'descartado' }, nota && nota !== '' ? nota : null);
   let descartados = 0;
+  let respondidas = 0;
   for (const fila of filas) {
     if (fila.estado === 'descartado') continue;
+    if (fila.estado !== 'abierto') {
+      respondidas += 1;
+      continue;
+    }
     await cerrar(db, fila, actor, 'descartado', respuesta);
     descartados += 1;
   }
 
-  return { ok: true, descartados };
+  return { ok: true, descartados, respondidas };
 }
 
 // ---------------------------------------------------------------------------

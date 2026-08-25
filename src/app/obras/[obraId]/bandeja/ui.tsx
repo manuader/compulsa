@@ -346,6 +346,7 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
   const [dialogo, setDialogo] = useState(false);
   const [nota, setNota] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
   const [pendiente, iniciar] = useTransition();
 
   const abiertasVisibles = grupos.flatMap((grupo) =>
@@ -359,11 +360,21 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
 
   function descartarSeleccionadas(): void {
     setError(null);
+    setAviso(null);
     iniciar(async () => {
       const resultado = await descartarLoteAction({ obraId, hallazgoIds: elegidas, nota });
       if (!resultado.ok) {
         setError(resultado.error);
         return;
+      }
+      // Alguien pudo responder una de las seleccionadas mientras esta pantalla
+      // envejecía: esas quedan como están y hay que decirlo.
+      if (resultado.respondidas > 0) {
+        setAviso(
+          resultado.respondidas === 1
+            ? 'Una de las seleccionadas ya estaba respondida: la dejé como está para no borrar la respuesta.'
+            : `${resultado.respondidas} de las seleccionadas ya estaban respondidas: las dejé como están para no borrar sus respuestas.`,
+        );
       }
       setSeleccion([]);
       setNota('');
@@ -416,6 +427,12 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
       {error ? (
         <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
           {error}
+        </p>
+      ) : null}
+
+      {aviso ? (
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          {aviso}
         </p>
       ) : null}
 

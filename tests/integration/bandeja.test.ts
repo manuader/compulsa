@@ -428,13 +428,70 @@ describe('confirmarSupuesto y descarte', () => {
       { obraId, hallazgoIds: [uno!.id, dos!.id] },
       actor,
     );
-    expect(resultado).toEqual({ ok: true, descartados: 2 });
+    expect(resultado).toEqual({ ok: true, descartados: 2, respondidas: 0 });
 
     expect((await hallazgoPorClave('aberturas.medidas_vano.P1'))?.estado).toBe('descartado');
     expect((await hallazgoPorClave('seco.altura_tabiques.T1'))?.estado).toBe('descartado');
     expect(
       (await auditoriaDelUsuario()).filter((r) => r.accion === 'hallazgo_descartado'),
     ).toHaveLength(2);
+  });
+
+  it('descartarHallazgo NO pisa la respuesta de una consulta ya respondida', async () => {
+    await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'P1',
+      atributos: { tag: 'P1', tipologia: 'puerta', anchoM: 0.9 },
+    });
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.P1');
+    await responderHallazgo({ obraId, hallazgoId: abierto!.id, valor: '2,05' }, actor);
+
+    const resultado = await descartarHallazgo({ obraId, hallazgoId: abierto!.id }, actor);
+    expect(resultado.ok).toBe(false);
+
+    const intacto = await hallazgoPorClave('aberturas.medidas_vano.P1');
+    expect(intacto?.estado).toBe('respondido');
+    expect(intacto?.respuestaJson).toEqual({ tipo: 'valor', campo: 'altoM', valor: 2.05 });
+    expect(intacto?.resueltoPor).toBe(usuarioId);
+    expect(
+      (await auditoriaDelUsuario()).filter((r) => r.accion === 'hallazgo_descartado'),
+    ).toHaveLength(0);
+  });
+
+  it('descartarLote saltea las respondidas del lote y las informa aparte', async () => {
+    await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'P1',
+      atributos: { tag: 'P1', tipologia: 'puerta', anchoM: 0.9 },
+    });
+    await insertarEntidad({
+      tipo: 'tabique',
+      nombre: 'T1',
+      atributos: { largoM: 3, tipo: 'durlock' },
+    });
+    await recomputarObra(obraId);
+
+    // La de la abertura ya está respondida; la del tabique sigue abierta.
+    const respondida = await hallazgoPorClave('aberturas.medidas_vano.P1');
+    await responderHallazgo({ obraId, hallazgoId: respondida!.id, valor: '2,05' }, actor);
+    const abierta = await hallazgoPorClave('seco.altura_tabiques.T1');
+
+    const resultado = await descartarLote(
+      { obraId, hallazgoIds: [respondida!.id, abierta!.id] },
+      actor,
+    );
+    expect(resultado).toEqual({ ok: true, descartados: 1, respondidas: 1 });
+
+    const intacta = await hallazgoPorClave('aberturas.medidas_vano.P1');
+    expect(intacta?.estado).toBe('respondido');
+    expect(intacta?.respuestaJson).toEqual({ tipo: 'valor', campo: 'altoM', valor: 2.05 });
+    expect(intacta?.resueltoPor).toBe(usuarioId);
+
+    expect((await hallazgoPorClave('seco.altura_tabiques.T1'))?.estado).toBe('descartado');
+    expect(
+      (await auditoriaDelUsuario()).filter((r) => r.accion === 'hallazgo_descartado'),
+    ).toHaveLength(1);
   });
 });
 
