@@ -34,6 +34,7 @@ import {
   procesarLamina,
   subirDocumento,
 } from '@/lib/pipeline/procesar';
+import { parsearRefArchivo } from '@/lib/pipeline/refs';
 import type { StorageAdapter } from '@/lib/storage/index';
 import { crearStorageLocal } from '@/lib/storage/local';
 
@@ -309,6 +310,50 @@ describe('idempotencia', () => {
     expect(filas[0].cantCompra).toBe(46.08);
     expect(filas[0].editadoPor).toBe(usuarioId);
     expect(filas[0].estado).toBe('activo');
+  });
+});
+
+describe('refs del storage', () => {
+  it('las refs que genera el pipeline nombran al estudio y a la obra', async () => {
+    const documento = await subirYProcesar('obra-demo.pdf');
+    const [estudio] = await db.select().from(estudios);
+    const [lamina] = await laminasDe(documento.id);
+
+    // `/api/archivos/[...ref]` decide la pertenencia leyendo la propia ref: si
+    // esta forma cambia, ese control de acceso se queda sin de dónde agarrarse.
+    expect(documento.archivoRef).toBe(
+      `estudios/${estudio.id}/obras/${obraId}/documentos/${documento.id}/original.pdf`,
+    );
+    expect(lamina.archivoRef).toBe(
+      `estudios/${estudio.id}/obras/${obraId}/documentos/${documento.id}/laminas/p001.pdf`,
+    );
+
+    expect(parsearRefArchivo(documento.archivoRef)).toEqual({
+      estudioId: estudio.id,
+      obraId,
+      documentoId: documento.id,
+    });
+    expect(parsearRefArchivo(lamina.archivoRef)?.obraId).toBe(obraId);
+  });
+
+  it('rechaza cualquier ref que no tenga la forma canónica', async () => {
+    const uuid = '11111111-1111-1111-1111-111111111111';
+    const valida = `estudios/${uuid}/obras/${uuid}/documentos/${uuid}/original.pdf`;
+    expect(parsearRefArchivo(valida)).not.toBeNull();
+
+    for (const ref of [
+      '',
+      'original.pdf',
+      '../../../etc/passwd',
+      `estudios/${uuid}/obras/${uuid}/documentos/${uuid}/../../../../original.pdf`,
+      `estudios/${uuid}/obras/${uuid}/documentos/${uuid}/original.pdf/../secreto.pdf`,
+      `estudios/${uuid}/obras/${uuid}/documentos/${uuid}/laminas/p1.pdf`,
+      `estudios/${uuid}/obras/${uuid}/documentos/${uuid}/secreto.env`,
+      `estudios/no-es-uuid/obras/${uuid}/documentos/${uuid}/original.pdf`,
+      `/estudios/${uuid}/obras/${uuid}/documentos/${uuid}/original.pdf`,
+    ]) {
+      expect(parsearRefArchivo(ref), ref).toBeNull();
+    }
   });
 });
 

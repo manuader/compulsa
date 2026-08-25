@@ -42,6 +42,7 @@ import { registrarAuditoria } from '@/lib/audit';
 import { separarPaginas } from '@/lib/pdf/split';
 import { extraerTexto } from '@/lib/pdf/texto';
 import { claveEscala } from '@/lib/pipeline/claves';
+import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
   ACTOR_PIPELINE,
   desvincularItemsDeEntidades,
@@ -50,8 +51,6 @@ import {
 import { getStorage, type StorageAdapter } from '@/lib/storage/index';
 import { DISCIPLINAS, TIPOS_LAMINA } from '@/types/domain';
 import type { BBox, EntidadDetectada, LaminaInput, RotuloDetectado } from '@/types/domain';
-
-export const MIME_PDF = 'application/pdf';
 
 /** 60 MB: un legajo de plantas grande entra; un video, no. */
 export const TAMANO_MAXIMO_BYTES = 60 * 1024 * 1024;
@@ -89,59 +88,6 @@ export class LaminaInexistenteError extends Error {
     super(`No existe la lámina ${laminaId}.`);
     this.name = 'LaminaInexistenteError';
   }
-}
-
-// ---------------------------------------------------------------------------
-// Convención de rutas del storage
-//
-//   estudios/<estudioId>/obras/<obraId>/documentos/<docId>/original.pdf
-//   estudios/<estudioId>/obras/<obraId>/documentos/<docId>/laminas/p001.pdf
-//
-// La ref viaja por la URL (`/api/archivos/[...ref]`), así que arranca por el
-// estudio y la obra a propósito: el handler puede decidir la pertenencia
-// leyendo la propia ref, sin escanear tablas, y recién después confirma contra
-// la base que esa ref es de un documento/lámina de esa obra.
-// ---------------------------------------------------------------------------
-
-const RE_UUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
-
-const RE_REF_ARCHIVO = new RegExp(
-  `^estudios/(${RE_UUID})/obras/(${RE_UUID})/documentos/(${RE_UUID})/(?:original\\.pdf|laminas/p\\d{3}\\.pdf)$`,
-);
-
-export function prefijoDocumento(estudioId: string, obraId: string, documentoId: string): string {
-  return `estudios/${estudioId}/obras/${obraId}/documentos/${documentoId}`;
-}
-
-export function refDocumento(estudioId: string, obraId: string, documentoId: string): string {
-  return `${prefijoDocumento(estudioId, obraId, documentoId)}/original.pdf`;
-}
-
-export function refLamina(
-  estudioId: string,
-  obraId: string,
-  documentoId: string,
-  numeroPagina: number,
-): string {
-  const pagina = String(numeroPagina).padStart(3, '0');
-  return `${prefijoDocumento(estudioId, obraId, documentoId)}/laminas/p${pagina}.pdf`;
-}
-
-export interface RefArchivo {
-  estudioId: string;
-  obraId: string;
-  documentoId: string;
-}
-
-/** `null` si la ref no tiene la forma canónica: no existe, no es un 500. */
-export function parsearRefArchivo(ref: string): RefArchivo | null {
-  const coincidencia = RE_REF_ARCHIVO.exec(ref);
-  if (!coincidencia) return null;
-  return {
-    estudioId: coincidencia[1],
-    obraId: coincidencia[2],
-    documentoId: coincidencia[3],
-  };
 }
 
 // ---------------------------------------------------------------------------
