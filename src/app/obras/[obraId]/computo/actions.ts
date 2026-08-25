@@ -551,13 +551,14 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
 
   const gate = puedeAprobarRubro(rubro, abiertos);
   if (!gate.ok) {
-    const consultas =
-      gate.bloqueantes === 1
-        ? 'queda 1 consulta bloqueante abierta'
-        : `quedan ${gate.bloqueantes} consultas bloqueantes abiertas`;
+    const una = gate.bloqueantes === 1;
+    const consultas = una
+      ? 'queda 1 consulta bloqueante abierta'
+      : `quedan ${gate.bloqueantes} consultas bloqueantes abiertas`;
+    const resolver = una ? 'Respondela o descartala' : 'Respondelas o descartalas';
     return {
       ok: false,
-      error: `No puedo aprobar ${PLANTILLAS[rubro].nombre}: ${consultas} en la bandeja. Respondelas o descartalas y volvé a intentar.`,
+      error: `No puedo aprobar ${PLANTILLAS[rubro].nombre.toLowerCase()}: ${consultas} en la bandeja. ${resolver} y volvé a intentar.`,
     };
   }
 

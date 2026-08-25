@@ -31,6 +31,9 @@ const WORKER_SRC = '/pdf.worker.min.mjs';
 /** Tope del devicePixelRatio: en pantallas 3x un plano A1 hace explotar la RAM. */
 const DPR_MAXIMO = 2;
 
+/** Ancho de rasterizado si el contenedor todavía no tiene layout. */
+const ANCHO_POR_DEFECTO = 900;
+
 export interface VisorLaminaProps {
   /** Ruta a los bytes de la lámina: `/api/archivos/<archivoRef>`. */
   archivoUrl: string;
@@ -54,10 +57,32 @@ export function VisorLamina({ archivoUrl, entidades, hallazgos, destacados }: Vi
   const [detalleError, setDetalleError] = useState<string>('');
   const [verEntidades, setVerEntidades] = useState(true);
   const [verHallazgos, setVerHallazgos] = useState(true);
+  const [ancho, setAncho] = useState(0);
+  /** Ancho con el que se rasterizó lo que está en pantalla. */
+  const anchoUsadoRef = useRef(0);
+
+  // El redibujado por resize es una mejora, no un requisito: si el contenedor
+  // todavía no tiene layout (pestaña en segundo plano, panel plegado) el visor
+  // dibuja igual con el ancho por defecto y se reajusta cuando haya medida. Solo
+  // un cambio grande vuelve a rasterizar: un par de píxeles no lo justifican.
+  useEffect(() => {
+    const contenedor = contenedorRef.current;
+    if (!contenedor) return;
+
+    const observador = new ResizeObserver((entradas) => {
+      const medido = Math.round(entradas[0]?.contentRect.width ?? 0);
+      if (medido <= 0) return;
+      const usado = anchoUsadoRef.current;
+      if (usado === 0 || Math.abs(medido - usado) > usado * 0.15) setAncho(medido);
+    });
+    observador.observe(contenedor);
+    return () => observador.disconnect();
+  }, []);
 
   useEffect(() => {
     let cancelado = false;
     let documento: { destroy: () => Promise<void> } | null = null;
+    let tarea: { cancel: () => void } | null = null;
 
     async function dibujar(): Promise<void> {
       setEstado('cargando');
@@ -76,13 +101,19 @@ export function VisorLamina({ archivoUrl, entidades, hallazgos, destacados }: Vi
         if (cancelado || !canvas || !contexto) return;
 
         const base = pagina.getViewport({ scale: 1 });
-        const anchoDisponible = contenedorRef.current?.clientWidth ?? 900;
+        const util = ancho || contenedorRef.current?.clientWidth || ANCHO_POR_DEFECTO;
+        anchoUsadoRef.current = util;
         const dpr = Math.min(window.devicePixelRatio || 1, DPR_MAXIMO);
-        const viewport = pagina.getViewport({ scale: (anchoDisponible / base.width) * dpr });
+        const viewport = pagina.getViewport({ scale: (util / base.width) * dpr });
 
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
-        await pagina.render({ canvasContext: contexto, viewport }).promise;
+        // La tarea se guarda para poder cancelarla: dos render() sobre el mismo
+        // canvas (redibujado por resize, doble efecto de StrictMode) se pisan y
+        // dejan la lámina en blanco.
+        const dibujo = pagina.render({ canvasContext: contexto, viewport });
+        tarea = dibujo;
+        await dibujo.promise;
         if (cancelado) return;
 
         setEstado('listo');
@@ -96,9 +127,10 @@ export function VisorLamina({ archivoUrl, entidades, hallazgos, destacados }: Vi
     void dibujar();
     return () => {
       cancelado = true;
+      tarea?.cancel();
       void documento?.destroy();
     };
-  }, [archivoUrl]);
+  }, [archivoUrl, ancho]);
 
   const tiposPresentes = [...new Set(entidades.map((entidad) => entidad.tipo))].sort();
 
