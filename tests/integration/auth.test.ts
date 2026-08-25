@@ -224,4 +224,32 @@ describe('requireObra: aislamiento entre estudios (RNF-4)', () => {
       requireObraCore(db, sesion.estudio.id, '00000000-0000-4000-8000-000000000000'),
     ).rejects.toBeInstanceOf(ObraNoEncontradaError);
   });
+
+  it('lanza ObraNoEncontradaError con un id mal formado, no el error del driver', async () => {
+    const { sesion } = await registrarEstudioCore(db, ALTA);
+
+    // El `[obraId]` de la URL es texto arbitrario: si esto se fuera al driver, el `notFound()` de
+    // `requireObra` no lo atrapa y la pantalla devuelve 500 en vez de 404.
+    for (const malFormado of ['not-a-uuid', '', '123', 'null', '00000000-0000-4000-8000-00000000000']) {
+      await expect(
+        requireObraCore(db, sesion.estudio.id, malFormado),
+      ).rejects.toBeInstanceOf(ObraNoEncontradaError);
+    }
+  });
+
+  it('acepta un uuid canónico en mayúsculas', async () => {
+    const { sesion } = await registrarEstudioCore(db, ALTA);
+    const [obra] = await db
+      .insert(obras)
+      .values({
+        estudioId: sesion.estudio.id,
+        nombre: 'Casa Caballito',
+        zona: 'CABA',
+        tipo: 'reforma',
+      })
+      .returning();
+
+    const encontrada = await requireObraCore(db, sesion.estudio.id, obra.id.toUpperCase());
+    expect(encontrada.id).toBe(obra.id);
+  });
 });

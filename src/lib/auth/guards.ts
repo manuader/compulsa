@@ -19,7 +19,18 @@ export class ObraNoEncontradaError extends Error {
   }
 }
 
+/**
+ * Forma canónica 8-4-4-4-12. No exige la versión 4: Postgres tampoco la exige, y lo que se
+ * chequea acá es la *forma*, no la procedencia del id.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function requireObraCore(db: Db, estudioId: string, obraId: string): Promise<Obra> {
+  // Un `[obraId]` de la URL es texto arbitrario. Sin este chequeo, `not-a-uuid` no llega a ser un
+  // "no existe" sino un error del driver ("invalid input syntax for type uuid") que sube como 500;
+  // un id mal formado nombra tan poco una obra como uno que no está en la tabla, así que es 404.
+  if (!UUID_RE.test(obraId)) throw new ObraNoEncontradaError(obraId);
+
   const [obra] = await db
     .select()
     .from(obras)
