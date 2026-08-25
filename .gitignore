@@ -8,3 +8,6 @@ handoffs/
 .DS_Store
 coverage/
 .superpowers/
+out/
+next-env.d.ts
+.vercel
