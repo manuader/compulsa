@@ -1,0 +1,65 @@
+{
+  "rotulo": {
+    "titulo": "CORTE A-A",
+    "codigo": "A-02",
+    "disciplina": "arquitectura",
+    "tipoLamina": "corte",
+    "escala": "1:100",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.93
+  },
+  "entidades": [
+    {
+      "tipo": "terminacion",
+      "nombre": "Piso Estar",
+      "bbox": [
+        0.1,
+        0.62,
+        0.34,
+        0.04
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "na",
+      "atributos": {
+        "superficieM2": 20,
+        "ubicacion": "piso",
+        "ambiente": "Estar"
+      }
+    },
+    {
+      "tipo": "terminacion",
+      "nombre": "Cielorraso Estar",
+      "bbox": [
+        0.1,
+        0.26,
+        0.34,
+        0.04
+      ],
+      "confianza": 0.86,
+      "estadoReforma": "na",
+      "atributos": {
+        "superficieM2": 19,
+        "ubicacion": "cielorraso",
+        "ambiente": "Estar"
+      }
+    },
+    {
+      "tipo": "terminacion",
+      "nombre": "Piso Dormitorio",
+      "bbox": [
+        0.48,
+        0.62,
+        0.24,
+        0.04
+      ],
+      "confianza": 0.85,
+      "estadoReforma": "na",
+      "atributos": {
+        "superficieM2": 12,
+        "ubicacion": "piso",
+        "ambiente": "Dormitorio"
+      }
+    }
+  ]
+}
