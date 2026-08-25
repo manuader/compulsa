@@ -179,7 +179,9 @@ export function VisorLamina({ archivoUrl, entidades, hallazgos, destacados }: Vi
         ref={contenedorRef}
         className="relative w-full overflow-hidden rounded-lg border border-neutral-200 bg-neutral-50"
       >
-        <canvas ref={canvasRef} className="block h-auto w-full" />
+        {/* Con error el canvas se esconde: un rectángulo vacío arriba del
+            mensaje solo confunde. */}
+        <canvas ref={canvasRef} className={estado === 'error' ? 'hidden' : 'block h-auto w-full'} />
 
         {estado === 'listo' ? (
           <Overlay
