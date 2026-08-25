@@ -19,6 +19,14 @@ cp .env.example .env.local   # opcional: todo tiene default offline
 npm run dev
 ```
 
+### Sin dependencias nativas
+
+El árbol no compila ni descarga binarios nativos propios. `pdfjs-dist` declara `@napi-rs/canvas`
+(≈25 MB) como `optionalDependency` para rasterizar páginas; acá sólo se extrae texto, así que el
+`overrides` de `package.json` lo apunta a una versión inexistente y npm, al ser opcional, la saltea.
+No lo agregues: si algún día hace falta rasterizar, revisá primero la nota de `pdfjs-dist` en
+`.superpowers/sdd/2026-08-25-compulsa-f0/task-1-report.md`.
+
 ## Comandos
 
 ```bash

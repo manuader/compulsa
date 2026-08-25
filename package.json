@@ -14,6 +14,9 @@
     "golden": "tsx scripts/golden-check.ts",
     "fixtures": "tsx tests/fixtures/make-fixtures.ts"
   },
+  "overrides": {
+    "@napi-rs/canvas": "npm:@napi-rs/canvas@0.0.0-blocked-por-compulsa"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
     "@electric-sql/pglite": "^0.5.7",
@@ -21,7 +24,7 @@
     "exceljs": "^4.4.0",
     "next": "^15.5.24",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^5.6.205",
+    "pdfjs-dist": "^4.10.38",
     "postgres": "^3.4.9",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
