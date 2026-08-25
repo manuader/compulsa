@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { EntidadPersistida } from '@/lib/computo/engine';
+import { computarObra, type EntidadPersistida } from '@/lib/computo/engine';
 import { plantillaAberturas } from '@/lib/rubros/aberturas';
 
 function abertura(over: Partial<EntidadPersistida> & { id: string }): EntidadPersistida {
@@ -114,5 +114,44 @@ describe('plantilla aberturas: reglas de reforma', () => {
 
     expect(items.map((i) => i.claveItem)).toEqual(['aberturas.retiro.P9']);
     expect(hallazgos).toEqual([]);
+  });
+});
+
+describe('computarObra: regla de oro de confianza (§11.b)', () => {
+  it('un ítem con confianza menor a 0,7 no se emite: sale como consulta bloqueante', () => {
+    const dudosa = abertura({ id: 'e7', bbox: [0.7, 0.1, 0.05, 0.05], confianza: 0.6 });
+    const { items, hallazgos } = computarObra([v2a, dudosa], 'nueva', ['aberturas']);
+
+    expect(items).toEqual([]);
+    expect(hallazgos).toHaveLength(1);
+    const [baja] = hallazgos;
+    expect(baja!.clave).toBe('aberturas.baja_confianza.V2');
+    expect(baja!.tipo).toBe('faltante');
+    expect(baja!.rubro).toBe('aberturas');
+    expect(baja!.bloqueante).toBe(true);
+    expect(baja!.descripcion).toContain('60%');
+    expect(baja!.fuentes).toHaveLength(2); // el hallazgo conserva la provenance del ítem que no se emitió
+  });
+
+  it('el umbral es 0,7 inclusive', () => {
+    const justa = abertura({ id: 'e8', confianza: 0.7 });
+    const { items, hallazgos } = computarObra([justa], 'nueva', ['aberturas']);
+
+    expect(items.map((i) => i.claveItem)).toEqual(['aberturas.V2']);
+    expect(hallazgos).toEqual([]);
+  });
+
+  it('la baja confianza de un ítem no se lleva puestos a los demás', () => {
+    const dudosa = abertura({
+      id: 'e9',
+      nombre: 'P2',
+      bbox: [0.7, 0.3, 0.05, 0.1],
+      confianza: 0.5,
+      atributos: { tag: 'P2', tipologia: 'puerta', anchoM: 0.8, altoM: 2 },
+    });
+    const { items, hallazgos } = computarObra([v2a, v2b, dudosa], 'nueva', ['aberturas']);
+
+    expect(items.map((i) => i.claveItem)).toEqual(['aberturas.V2']);
+    expect(hallazgos.map((h) => h.clave)).toEqual(['aberturas.baja_confianza.P2']);
   });
 });

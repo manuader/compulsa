@@ -7,6 +7,10 @@
  * `engine.ts` no se toca.
  */
 import type { EntidadPersistida } from '@/lib/computo/engine';
+import { plantillaAberturas } from '@/lib/rubros/aberturas';
+import { plantillaGruesa } from '@/lib/rubros/gruesa';
+import { plantillaPintura } from '@/lib/rubros/pintura';
+import { plantillaSeco } from '@/lib/rubros/seco';
 import type { HallazgoDetectado, ItemComputo, RubroId, TipoObra } from '@/types/domain';
 
 /** Lo que devuelve cualquier cómputo del motor. */
@@ -23,3 +27,13 @@ export interface PlantillaRubro {
   desperdicioDefaultPct: number;
   computar(entidades: readonly EntidadPersistida[], tipoObra: TipoObra): ResultadoComputo;
 }
+
+/** Registro de plantillas: la única lista que conoce el engine. */
+export const PLANTILLAS: Record<RubroId, PlantillaRubro> = {
+  aberturas: plantillaAberturas,
+  seco: plantillaSeco,
+  pintura: plantillaPintura,
+  gruesa: plantillaGruesa,
+};
+
+export { plantillaAberturas, plantillaGruesa, plantillaPintura, plantillaSeco };
