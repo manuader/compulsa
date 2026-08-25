@@ -40,13 +40,14 @@ export async function GET(
   const sesion = await getSession();
   if (!sesion) return problema(401, 'Iniciá sesión para bajar el cómputo.');
 
-  const crudo = new URL(request.url).searchParams.get('rubro');
-  if (crudo !== null && crudo !== 'todos' && !esRubro(crudo)) {
+  // `?rubro=` vacío es "no lo especifiqué", igual que no mandar el parámetro.
+  const crudo = new URL(request.url).searchParams.get('rubro')?.trim() || 'todos';
+  if (crudo !== 'todos' && !esRubro(crudo)) {
     // No degradamos a "todos" en silencio: pediste un rubro que no existe y el
     // archivo que bajarías no sería el que creés.
     return problema(400, `No conozco el rubro "${crudo}".`);
   }
-  const rubro: RubroId | 'todos' = crudo === null || crudo === 'todos' ? 'todos' : crudo;
+  const rubro: RubroId | 'todos' = crudo;
 
   const { obraId } = await params;
   const db = await getDb();
