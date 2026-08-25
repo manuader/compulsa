@@ -65,7 +65,11 @@ async function crearDb(): Promise<Db> {
 
 /** Singleton. La primera llamada corre las migraciones; las siguientes esperan la misma promesa. */
 export function getDb(): Promise<Db> {
-  globalThis.__compulsaDb ??= crearDb();
+  globalThis.__compulsaDb ??= crearDb().catch((error: unknown) => {
+    // Un arranque fallido no puede quedar cacheado: la próxima llamada reintenta.
+    globalThis.__compulsaDb = undefined;
+    throw error;
+  });
   return globalThis.__compulsaDb;
 }
 
