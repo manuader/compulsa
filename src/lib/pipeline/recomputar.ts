@@ -862,11 +862,15 @@ export async function recomputarObra(
     filas.map(comoEntidadPersistida),
     decididas,
   );
+  // `planos` va también al motor de cómputo: sin el tipo de cada lámina, la
+  // misma carpintería dibujada en la planta y listada en la planilla se contaría
+  // dos veces (ver `src/lib/rubros/aberturas.ts`).
   const { items, hallazgos: detectados } = computarObra(
     persistidas,
     obra.tipo,
     undefined,
     camposDeducidos,
+    planos,
   );
   // El motor deduce sobre el estado real de conocimiento de la obra: un dato ya
   // validado es un dato, y puede sostener la deducción siguiente.

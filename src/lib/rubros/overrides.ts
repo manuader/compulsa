@@ -29,7 +29,7 @@
  *
  * Módulo puro: sin base, sin Next, sin red.
  */
-import type { EntidadPersistida } from '@/lib/computo/engine';
+import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import {
   ceilAPresentacion,
   describirLatas,
@@ -266,8 +266,12 @@ function conConfig(
     id: plantilla.id,
     nombre: plantilla.nombre,
     desperdicioDefaultPct: plantilla.desperdicioDefaultPct,
-    computar(entidades: readonly EntidadPersistida[], tipoObra: TipoObra): ResultadoComputo {
-      const { items, hallazgos } = plantilla.computar(entidades, tipoObra);
+    computar(
+      entidades: readonly EntidadPersistida[],
+      tipoObra: TipoObra,
+      laminas?: readonly LaminaDeComputo[],
+    ): ResultadoComputo {
+      const { items, hallazgos } = plantilla.computar(entidades, tipoObra, laminas);
       return {
         items: items.map((item) =>
           aplicarDesperdicio(item, desperdicioEfectivo(item, plantilla, desperdiciosPct)),

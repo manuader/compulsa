@@ -117,6 +117,113 @@ describe('plantilla aberturas: reglas de reforma', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// La planta cuenta, la planilla especifica (fix del doble conteo plano↔planilla)
+// ---------------------------------------------------------------------------
+
+describe('plantilla aberturas: cuántas hay según el tipo de lámina', () => {
+  /** A-01 planta, A-05 planilla de carpinterías, A-02 corte. */
+  const LAMINAS = [
+    { id: 'planta', tipo: 'planta' as const },
+    { id: 'planilla', tipo: 'planilla' as const },
+    { id: 'corte', tipo: 'corte' as const },
+    { id: 'planta2', tipo: 'planta' as const },
+  ];
+
+  const enPlanta = abertura({ id: 'p1', laminaId: 'planta' });
+  const enPlanilla = abertura({ id: 'q1', laminaId: 'planilla', bbox: [0.5, 0.5, 0.1, 0.1] });
+
+  it('la misma V2 en la planta y en la planilla es UNA sola, con las fuentes de las dos', () => {
+    const { items } = plantillaAberturas.computar([enPlanta, enPlanilla], 'nueva', LAMINAS);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]!.claveItem).toBe('aberturas.V2');
+    expect(items[0]!.cantNeta).toBe(1);
+    expect(items[0]!.cantCompra).toBe(1);
+    expect(items[0]!.origen).toBe('explicito');
+    // La planilla no suma cantidad, pero sí es documentación del ítem (P1).
+    expect(items[0]!.fuentes.map((f) => f.laminaId)).toEqual(['planta', 'planilla']);
+  });
+
+  it('la misma V2 dibujada en dos plantas son dos ventanas', () => {
+    const otraPlanta = abertura({ id: 'p2', laminaId: 'planta2', bbox: [0.6, 0.2, 0.05, 0.05] });
+    const { items } = plantillaAberturas.computar(
+      [enPlanta, otraPlanta, enPlanilla],
+      'nueva',
+      LAMINAS,
+    );
+
+    expect(items[0]!.cantNeta).toBe(2);
+    expect(items[0]!.fuentes).toHaveLength(3);
+  });
+
+  it('sin planta, cuenta lo que haya fuera de la planilla', () => {
+    const enCorte = abertura({ id: 'c1', laminaId: 'corte', bbox: [0.2, 0.7, 0.05, 0.05] });
+    const { items, hallazgos } = plantillaAberturas.computar(
+      [enCorte, enPlanilla],
+      'nueva',
+      LAMINAS,
+    );
+
+    expect(items[0]!.cantNeta).toBe(1);
+    expect(items[0]!.origen).toBe('explicito');
+    expect(hallazgos).toEqual([]);
+  });
+
+  it('si solo está en la planilla se computa una y se avisa: la planilla no dice cuántas hay', () => {
+    const { items, hallazgos } = plantillaAberturas.computar([enPlanilla], 'nueva', LAMINAS);
+
+    expect(items[0]!.cantNeta).toBe(1);
+    expect(items[0]!.origen).toBe('supuesto');
+    expect(hallazgos).toHaveLength(1);
+    expect(hallazgos[0]!.clave).toBe('aberturas.cantidad_planilla.V2');
+    expect(hallazgos[0]!.checklistItem).toBe('aberturas.cantidad_planilla');
+    expect(hallazgos[0]!.tipo).toBe('supuesto');
+    expect(hallazgos[0]!.bloqueante).toBe(false);
+    expect(hallazgos[0]!.descripcion).toContain('computé una sola');
+  });
+
+  it('dos filas de la misma planilla siguen siendo una sola carpintería', () => {
+    const otraFila = abertura({ id: 'q2', laminaId: 'planilla', bbox: [0.5, 0.7, 0.1, 0.1] });
+    const { items, hallazgos } = plantillaAberturas.computar(
+      [enPlanilla, otraFila],
+      'nueva',
+      LAMINAS,
+    );
+
+    expect(items[0]!.cantNeta).toBe(1);
+    expect(hallazgos).toHaveLength(1); // un solo aviso por tag
+  });
+
+  it('el retiro se cuenta con la misma regla', () => {
+    const demolerEnPlanta = abertura({
+      id: 'd1',
+      laminaId: 'planta',
+      estadoReforma: 'demoler',
+    });
+    const demolerEnPlanilla = abertura({
+      id: 'd2',
+      laminaId: 'planilla',
+      estadoReforma: 'demoler',
+      bbox: [0.5, 0.5, 0.1, 0.1],
+    });
+    const { items } = plantillaAberturas.computar(
+      [demolerEnPlanta, demolerEnPlanilla],
+      'reforma',
+      LAMINAS,
+    );
+
+    expect(items.map((i) => i.claveItem)).toEqual(['aberturas.retiro.V2']);
+    expect(items[0]!.cantNeta).toBe(1);
+  });
+
+  it('sin láminas, el conteo es el de siempre: una por aparición', () => {
+    const { items } = plantillaAberturas.computar([enPlanta, enPlanilla], 'nueva');
+
+    expect(items[0]!.cantNeta).toBe(2);
+  });
+});
+
 describe('computarObra: regla de oro de confianza (§11.b)', () => {
   it('un ítem con confianza menor a 0,7 no se emite: sale como consulta bloqueante', () => {
     const dudosa = abertura({ id: 'e7', bbox: [0.7, 0.1, 0.05, 0.05], confianza: 0.6 });

@@ -71,6 +71,14 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
       bloqueante: true,
     },
     {
+      itemId: 'aberturas.cantidad_planilla',
+      descripcion:
+        'Cada carpintería está dibujada en alguna planta (si solo está en la planilla, se computa una sola).',
+      // Nace en `false`: la cantidad es un supuesto declarado, no un freno —
+      // mismo criterio que `pintura.vanos_sin_descontar`.
+      bloqueante: false,
+    },
+    {
       itemId: 'aberturas.baja_confianza',
       descripcion: 'Ningún ítem de aberturas se apoya en datos por debajo del umbral de confianza.',
       bloqueante: true,

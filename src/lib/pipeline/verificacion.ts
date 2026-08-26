@@ -43,7 +43,11 @@ import { crearProviderClaude } from '@/lib/analysis/claude';
 import { crearProviderMock, SUFIJO_SEGUNDA_PASADA } from '@/lib/analysis/mock';
 import type { AnalysisProvider } from '@/lib/analysis/tipos';
 import { registrarAuditoria } from '@/lib/audit';
-import { computarObra, type EntidadPersistida } from '@/lib/computo/engine';
+import {
+  computarObra,
+  type EntidadPersistida,
+  type LaminaDeComputo,
+} from '@/lib/computo/engine';
 import { ETIQUETA_UNIDAD, formatearNumero, redondear2 } from '@/lib/computo/unidades';
 import { hallazgoInconsistencia } from '@/lib/hallazgos/taxonomia';
 import { claveVerificacion, PREFIJO_VERIFICACION } from '@/lib/pipeline/claves';
@@ -148,6 +152,8 @@ function idSintetico(laminaId: string, tipo: string, nombre: string): string {
 interface SegundaPasada {
   entidades: EntidadPersistida[];
   laminasLeidas: number;
+  /** Las láminas releídas, con su tipo: el motor las necesita para contar. */
+  laminas: LaminaDeComputo[];
 }
 
 async function segundaLectura(
@@ -162,6 +168,7 @@ async function segundaLectura(
       numeroPagina: laminas.numeroPagina,
       archivoRef: laminas.archivoRef,
       codigo: laminas.codigo,
+      tipo: laminas.tipo,
       textoExtraido: laminas.textoExtraido,
       documentoNombre: documentos.nombreArchivo,
     })
@@ -209,7 +216,11 @@ async function segundaLectura(
     }
   }
 
-  return { entidades, laminasLeidas: filas.length };
+  return {
+    entidades,
+    laminasLeidas: filas.length,
+    laminas: filas.map((fila) => ({ id: fila.id, tipo: fila.tipo })),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -492,9 +503,16 @@ export async function verificarComputo(
   const storage = deps.storage ?? getStorage();
   const provider = deps.provider ?? getProviderSegundaPasada();
 
-  const { entidades, laminasLeidas } = await segundaLectura(db, obra, storage, provider);
+  const { entidades, laminasLeidas, laminas: laminasReleidas } = await segundaLectura(
+    db,
+    obra,
+    storage,
+    provider,
+  );
   // Sin persistir nada: la segunda pasada es una hipótesis, no el estado de la obra.
-  const { items } = computarObra(entidades, obra.tipo);
+  // Las láminas van igual que en el recompute: si la segunda pasada contara las
+  // carpinterías con otra regla, la diferencia sería del harness, no de la obra.
+  const { items } = computarObra(entidades, obra.tipo, undefined, undefined, laminasReleidas);
   const verificacion = items.map(comoItemDelComputo);
 
   const filas = await db

@@ -327,11 +327,14 @@ describe('el pipeline propone deducciones', () => {
 
 describe('validar una deducción', () => {
   it('escribe el dato, deja el ítem en origen deducido y libera el gate', async () => {
-    // Antes: solo la ventana de la planilla se computa, y con origen explícito.
+    // Antes: la V2 de la planta no tiene medidas, así que la única computable es
+    // la fila de la planilla. Una planilla dice CÓMO es la carpintería, no
+    // cuántas hay: se computa una sola y el ítem sale `supuesto` con su aviso.
     const previo = await itemPorClave('aberturas.V2');
-    expect(previo?.origen).toBe('explicito');
+    expect(previo?.origen).toBe('supuesto');
     expect(previo?.cantNeta).toBe(1);
     expect(await laminasCitadas(previo!.fuentesJson)).toEqual(['A-05']);
+    expect((await hallazgoPorClave('aberturas.cantidad_planilla.V2'))?.bloqueante).toBe(false);
 
     const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
     const alto = await deduccionDe('A-01', 'V2', 'altoM');
@@ -344,15 +347,19 @@ describe('validar una deducción', () => {
     expect(v2.atributosJson.altoM).toBe(1.1);
     expect(await laminasCitadas(v2.fuentesJson)).toEqual(['A-01', 'A-05']);
 
-    // 2) El ítem sale deducido y citando las dos láminas.
+    // 2) El ítem sale deducido y citando las dos láminas. Sigue siendo UNA sola
+    //    ventana: la de la planta, especificada por la planilla.
     const item = await itemPorClave('aberturas.V2');
     expect(item?.estado).toBe('activo');
     expect(item?.origen).toBe('deducido');
+    expect(item?.cantNeta).toBe(1);
     expect(item?.descripcion).toBe('Ventana V2 (1,50 × 1,10 m)');
     expect(await laminasCitadas(item!.fuentesJson)).toEqual(['A-01', 'A-05']);
 
-    // 3) La consulta por el dato faltante se cerró sola y el rubro se libera.
+    // 3) Las dos consultas —el dato faltante y la cantidad supuesta— se cerraron
+    //    solas y el rubro se libera.
     expect((await hallazgoPorClave('aberturas.medidas_vano.V2'))?.estado).toBe('descartado');
+    expect((await hallazgoPorClave('aberturas.cantidad_planilla.V2'))?.estado).toBe('descartado');
     expect(await gateDe('aberturas')).toEqual({ ok: true, bloqueantes: 0 });
 
     // 4) Las dos deducciones quedaron firmadas.
@@ -404,7 +411,9 @@ describe('validar una deducción', () => {
     const item = await itemPorClave('aberturas.V2');
     expect(item?.estado).toBe('activo');
     expect(item?.origen).toBe('deducido');
-    expect(item?.cantNeta).toBe(2);
+    // Una sola ventana: la de la planta. La fila de la planilla es la misma V2,
+    // dicha de nuevo (antes salía 2, que era el doble conteo plano↔planilla).
+    expect(item?.cantNeta).toBe(1);
     expect(await gateDe('aberturas')).toEqual({ ok: true, bloqueantes: 0 });
   });
 

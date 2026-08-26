@@ -18,7 +18,14 @@
 import { sanityChecks } from '@/lib/computo/sanity';
 import { hallazgoBajaConfianza, UMBRAL_CONFIANZA } from '@/lib/hallazgos/taxonomia';
 import { PLANTILLAS, type PlantillaRubro, type ResultadoComputo } from '@/lib/rubros/index';
-import type { EntidadDetectada, HallazgoDetectado, ItemComputo, RubroId, TipoObra } from '@/types/domain';
+import type {
+  EntidadDetectada,
+  HallazgoDetectado,
+  ItemComputo,
+  RubroId,
+  TipoLamina,
+  TipoObra,
+} from '@/types/domain';
 import { RUBROS } from '@/types/domain';
 
 /**
@@ -28,6 +35,25 @@ import { RUBROS } from '@/types/domain';
  * permite que un hallazgo apunte al campo exacto que hay que completar.
  */
 export type EntidadPersistida = EntidadDetectada & { id: string; laminaId: string };
+
+/**
+ * Lo único que una plantilla necesita saber de una lámina: **de qué tipo es**.
+ *
+ * Existe porque una entidad no alcanza para saber qué significa: la misma V2
+ * dibujada en la planta y listada en la planilla de carpinterías es UNA sola
+ * ventana, y sin el tipo de lámina el motor no puede distinguir "hay dos" de
+ * "la misma, dicha dos veces" (ver `src/lib/rubros/aberturas.ts`).
+ *
+ * Es un subconjunto estructural de `LaminaResumen` (`@/lib/deduccion/motor`) y
+ * de la fila de `laminas`: quien ya tenga una de las dos puede pasarla tal cual.
+ */
+export interface LaminaDeComputo {
+  id: string;
+  tipo: TipoLamina | null;
+}
+
+/** Default de todo el motor: sin láminas, cada plantilla computa como siempre. */
+const SIN_LAMINAS: readonly LaminaDeComputo[] = [];
 
 export type { ResultadoComputo };
 export { UMBRAL_CONFIANZA };
@@ -42,8 +68,9 @@ export function computarRubro(
   entidades: readonly EntidadPersistida[],
   plantilla: PlantillaRubro,
   tipoObra: TipoObra,
+  laminas: readonly LaminaDeComputo[] = SIN_LAMINAS,
 ): ResultadoComputo {
-  const { items, hallazgos } = plantilla.computar(entidades, tipoObra);
+  const { items, hallazgos } = plantilla.computar(entidades, tipoObra, laminas);
   const emitidos: ItemComputo[] = [];
   const degradados: HallazgoDetectado[] = [];
 
@@ -161,13 +188,14 @@ function correrPlantillas(
   entidades: readonly EntidadPersistida[],
   tipoObra: TipoObra,
   rubros: readonly RubroId[],
+  laminas: readonly LaminaDeComputo[],
 ): ResultadoComputo {
   const items: ItemComputo[] = [];
   const hallazgos: HallazgoDetectado[] = [];
 
   for (const rubro of RUBROS) {
     if (!rubros.includes(rubro)) continue;
-    const resultado = computarRubro(entidades, PLANTILLAS[rubro], tipoObra);
+    const resultado = computarRubro(entidades, PLANTILLAS[rubro], tipoObra, laminas);
     items.push(...resultado.items);
     hallazgos.push(...resultado.hallazgos);
   }
@@ -184,20 +212,27 @@ function correrPlantillas(
  * validadas el motor corre exactamente una vez y devuelve lo mismo de siempre.
  * Con deducciones validadas corre una segunda pasada "de control" sin esos datos
  * para saber qué ítems dependen de ellos y marcarlos `origen: 'deducido'`.
+ *
+ * `laminas` también es opcional y por defecto está vacío: sin él, una plantilla
+ * que mira el tipo de lámina (hoy solo aberturas) se comporta como antes de que
+ * existiera el parámetro. **El pipeline siempre lo pasa** — una obra real sabe
+ * qué lámina es cuál, y sin eso la misma carpintería se contaría dos veces.
  */
 export function computarObra(
   entidades: readonly EntidadPersistida[],
   tipoObra: TipoObra,
   rubros: readonly RubroId[] = RUBROS,
   camposDeducidos: CamposDeducidos = SIN_DEDUCCIONES,
+  laminas: readonly LaminaDeComputo[] = SIN_LAMINAS,
 ): ResultadoComputo {
-  const resultado = correrPlantillas(entidades, tipoObra, rubros);
+  const resultado = correrPlantillas(entidades, tipoObra, rubros, laminas);
   if (camposDeducidos.size === 0) return resultado;
 
   const control = correrPlantillas(
     sinCamposDeducidos(entidades, camposDeducidos),
     tipoObra,
     rubros,
+    laminas,
   );
   // Los hallazgos son los de la pasada real: la de control es una hipótesis
   // ("¿qué pasaría si el dato deducido no estuviera?"), no el estado de la obra.
