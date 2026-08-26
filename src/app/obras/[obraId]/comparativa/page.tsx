@@ -361,7 +361,6 @@ export default async function ComparativaPage({
                               total: columna.totalDeclarado === null
                                 ? null
                                 : montoDe(columna.totalDeclarado, columna.moneda),
-                              moneda: columna.moneda,
                               itemsComparables: columna.itemsComparables,
                               itemsExcluidos: columna.itemsExcluidos,
                               totalComparable: montoDe(columna.totalComparable, columna.moneda),

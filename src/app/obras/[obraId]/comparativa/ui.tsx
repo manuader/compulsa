@@ -25,7 +25,6 @@ export interface ResumenAdjudicacion {
   proveedorNombre: string;
   /** Total ya formateado con su símbolo ("$ 1.875.400,50"). */
   total: string | null;
-  moneda: string;
   itemsComparables: number;
   itemsExcluidos: number;
   totalComparable: string;
@@ -127,6 +126,8 @@ export function BotonAdjudicar({
             </p>
           ) : null}
 
+          {/* El total se persiste en la cotización: es el número por el que se
+              compró y contra el que se va a medir el ahorro. */}
           {requiereTotal ? (
             <Input
               label="Total de la cotización"
@@ -134,9 +135,6 @@ export function BotonAdjudicar({
               placeholder="1.234.500"
               value={total}
               onChange={(event) => setTotal(event.target.value)}
-              // Se persiste en la cotización: es el número por el que se compró
-              // y contra el que se va a medir el ahorro.
-              error={undefined}
             />
           ) : null}
 
