@@ -974,16 +974,18 @@ export async function conciliarCotizacion(
     .returning();
 
   // --- 2. Repreguntas como borrador saliente --------------------------------
-  if (resultado.repreguntas.length > 0) {
-    await db.insert(mensajes).values(
-      resultado.repreguntas.map((repregunta) => ({
-        contactoId: contexto.contacto.id,
-        direccion: 'saliente' as const,
-        canal: contexto.contacto.canal,
-        cuerpo: repregunta.texto,
-        registradoPor: null,
-      })),
-    );
+  // De a una y no en un solo `insert`: `now()` es el reloj de la transacción,
+  // así que un insert múltiple les pone el mismo `at` y el hilo las mostraría
+  // en orden de uuid. Salen en el orden del pedido, que es el que tiene sentido
+  // para quien las va a mandar.
+  for (const repregunta of resultado.repreguntas) {
+    await db.insert(mensajes).values({
+      contactoId: contexto.contacto.id,
+      direccion: 'saliente',
+      canal: contexto.contacto.canal,
+      cuerpo: repregunta.texto,
+      registradoPor: null,
+    });
   }
 
   // --- 3. Índice de precios (RF-1103) ---------------------------------------

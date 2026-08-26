@@ -447,6 +447,15 @@ describe('flujo manual completo sobre el rubro seco', () => {
     expect(segunda.requiereDecision).toBe(false);
     expect(segunda.cotizacion.total).toBe(414440);
 
+    // Las 7 repreguntas quedan en el orden del pedido, no en orden de uuid.
+    const hiloFerreteria = await leerHilo(db, estudioId, contactoFerreteria.id);
+    const borradoresFerreteria = hiloFerreteria.mensajes.filter(
+      (m) => m.estado === 'pendiente_envio_manual',
+    );
+    expect(borradoresFerreteria).toHaveLength(7);
+    expect(borradoresFerreteria[0].texto).toContain('Banda acústica autoadhesiva de 70 mm');
+    expect(borradoresFerreteria[6].texto).toContain('Tornillos para placa de roca de yeso');
+
     const placasConDosMuestras = await db
       .select()
       .from(priceIndex)
