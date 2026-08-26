@@ -1,0 +1,121 @@
+{
+  "rotulo": {
+    "titulo": "PLANTA PB",
+    "codigo": "A-01",
+    "disciplina": "arquitectura",
+    "tipoLamina": "planta",
+    "escala": "1:100",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.95
+  },
+  "entidades": [
+    {
+      "tipo": "ambiente",
+      "nombre": "Estar",
+      "bbox": [
+        0.08,
+        0.2,
+        0.34,
+        0.45
+      ],
+      "confianza": 0.92,
+      "estadoReforma": "na",
+      "atributos": {
+        "superficieM2": 20,
+        "perimetroM": 18,
+        "alturaM": 2.6,
+        "vanosM2": 4
+      }
+    },
+    {
+      "tipo": "ambiente",
+      "nombre": "Dormitorio",
+      "bbox": [
+        0.44,
+        0.2,
+        0.24,
+        0.32
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "superficieM2": 12,
+        "perimetroM": 14,
+        "alturaM": 2.6,
+        "vanosM2": 2
+      }
+    },
+    {
+      "tipo": "tabique",
+      "nombre": "T1",
+      "bbox": [
+        0.42,
+        0.2,
+        0.02,
+        0.45
+      ],
+      "confianza": 0.84,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 5.6,
+        "alturaM": 2.6,
+        "caras": 2
+      }
+    },
+    {
+      "tipo": "muro",
+      "nombre": "M1",
+      "bbox": [
+        0.06,
+        0.18,
+        0.02,
+        0.49
+      ],
+      "confianza": 0.86,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "mamposteria",
+        "largoM": 6,
+        "alturaM": 2.6
+      }
+    },
+    {
+      "tipo": "abertura",
+      "nombre": "P1",
+      "bbox": [
+        0.2,
+        0.64,
+        0.06,
+        0.02
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tag": "P1",
+        "tipologia": "puerta",
+        "anchoM": 0.8,
+        "altoM": 2.05
+      }
+    },
+    {
+      "tipo": "abertura",
+      "nombre": "P2",
+      "bbox": [
+        0.42,
+        0.34,
+        0.02,
+        0.06
+      ],
+      "confianza": 0.85,
+      "estadoReforma": "na",
+      "atributos": {
+        "tag": "P2",
+        "tipologia": "puerta",
+        "anchoM": 0.8,
+        "altoM": 2.05
+      }
+    }
+  ]
+}
