@@ -22,6 +22,8 @@ import {
   COLOR_ENTIDAD,
   ETIQUETA_TIPO_ENTIDAD,
   Overlay,
+  VIOLETA_DEDUCCION,
+  type MarcaDeduccion,
   type MarcaEntidad,
   type MarcaHallazgo,
 } from './overlay';
@@ -39,6 +41,8 @@ export interface VisorLaminaProps {
   archivoUrl: string;
   entidades: readonly MarcaEntidad[];
   hallazgos: readonly MarcaHallazgo[];
+  /** Deducciones propuestas cuyo elemento se dibuja en esta lámina. */
+  deducciones: readonly MarcaDeduccion[];
   /** Bbox del target de `?highlight=…`. */
   destacados: readonly BBox[];
 }
@@ -50,13 +54,22 @@ function mensajeDeError(error: unknown): string {
   return 'Error desconocido.';
 }
 
-export function VisorLamina({ archivoUrl, entidades, hallazgos, destacados }: VisorLaminaProps) {
+export function VisorLamina({
+  archivoUrl,
+  entidades,
+  hallazgos,
+  deducciones,
+  destacados,
+}: VisorLaminaProps) {
   const contenedorRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [estado, setEstado] = useState<EstadoVisor>('cargando');
   const [detalleError, setDetalleError] = useState<string>('');
   const [verEntidades, setVerEntidades] = useState(true);
   const [verHallazgos, setVerHallazgos] = useState(true);
+  // Prendida cuando hay algo que mostrar: si la obra tiene deducciones
+  // esperando, que se vean sin que nadie tenga que descubrir el checkbox.
+  const [verDeducciones, setVerDeducciones] = useState(deducciones.length > 0);
   const [ancho, setAncho] = useState(0);
   /** Ancho con el que se rasterizó lo que está en pantalla. */
   const anchoUsadoRef = useRef(0);
@@ -159,6 +172,26 @@ export function VisorLamina({ archivoUrl, entidades, hallazgos, destacados }: Vi
           Consultas ({hallazgos.length})
         </label>
 
+        {/* La capa solo existe si hay deducciones: un checkbox en cero es ruido. */}
+        {deducciones.length > 0 ? (
+          <label className="flex items-center gap-2 text-sm text-neutral-800">
+            <input
+              type="checkbox"
+              checked={verDeducciones}
+              onChange={(evento) => setVerDeducciones(evento.target.checked)}
+              className="h-4 w-4"
+            />
+            <span className="flex items-center gap-1.5">
+              <span
+                aria-hidden="true"
+                className="inline-block h-2.5 w-2.5 rounded-sm border-2 border-dashed"
+                style={{ borderColor: VIOLETA_DEDUCCION }}
+              />
+              Deducciones ({deducciones.length})
+            </span>
+          </label>
+        ) : null}
+
         {verEntidades && tiposPresentes.length > 0 ? (
           <ul className="flex flex-wrap items-center gap-3">
             {tiposPresentes.map((tipo) => (
@@ -187,9 +220,11 @@ export function VisorLamina({ archivoUrl, entidades, hallazgos, destacados }: Vi
           <Overlay
             entidades={entidades}
             hallazgos={hallazgos}
+            deducciones={deducciones}
             destacados={destacados}
             verEntidades={verEntidades}
             verHallazgos={verHallazgos}
+            verDeducciones={verDeducciones}
           />
         ) : null}
 
