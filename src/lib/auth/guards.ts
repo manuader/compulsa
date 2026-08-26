@@ -26,11 +26,20 @@ export class ObraNoEncontradaError extends Error {
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * `true` si el texto tiene forma de uuid. Cualquier id que venga de una URL o de
+ * un payload pasa por acá antes de tocar la base: sin el chequeo, `no-es-uuid`
+ * no es un "no existe" sino un error del driver que sube como 500.
+ */
+export function esUuid(valor: string): boolean {
+  return UUID_RE.test(valor);
+}
+
 export async function requireObraCore(db: Db, estudioId: string, obraId: string): Promise<Obra> {
   // Un `[obraId]` de la URL es texto arbitrario. Sin este chequeo, `not-a-uuid` no llega a ser un
   // "no existe" sino un error del driver ("invalid input syntax for type uuid") que sube como 500;
   // un id mal formado nombra tan poco una obra como uno que no está en la tabla, así que es 404.
-  if (!UUID_RE.test(obraId)) throw new ObraNoEncontradaError(obraId);
+  if (!esUuid(obraId)) throw new ObraNoEncontradaError(obraId);
 
   const [obra] = await db
     .select()
