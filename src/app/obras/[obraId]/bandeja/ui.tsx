@@ -4,9 +4,9 @@
  * Tarjetas de la bandeja de consultas.
  *
  * Cada consulta es una tarjeta con lo necesario para decidir sin salir de la
- * pantalla: qué falta, si frena la aprobación del rubro (🔴), en qué lámina
- * está el dato —el link resalta el hallazgo en el visor— y las acciones de un
- * click. Cuando el hallazgo apunta a un campo de una entidad, el input inline
+ * pantalla: qué falta, si frena la aprobación del rubro, en qué lámina está el
+ * dato —el link resalta el hallazgo en el visor— y las acciones de un
+ * clic. Cuando el hallazgo apunta a un campo de una entidad, el input inline
  * pide **ese** campo con su nombre en es-AR ("Alto (m)"), no un "valor"
  * genérico: lo que se responde es el dato que falta, no un formulario.
  *
@@ -133,7 +133,7 @@ function textoRespuesta(consulta: ConsultaVista): string {
       case 'escala':
         return valor === undefined ? 'Escala confirmada.' : `Escala confirmada: ${String(valor)}`;
       case 'existente':
-        return 'Marcada como existente: no es alcance de obra.';
+        return 'Marcada como existente: no está dentro del alcance de la obra.';
       case 'supuesto_confirmado':
         return 'Supuesto confirmado.';
       case 'descartado':
@@ -207,9 +207,14 @@ function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: Tarjet
             />
           ) : null}
           <Badge tone={TONO_TIPO[consulta.tipo]}>{ETIQUETA_TIPO[consulta.tipo]}</Badge>
-          {consulta.bloqueante ? (
+          {/* Solo mientras está abierta: una consulta respondida o descartada ya
+              no frena nada, y el badge rojo al lado de «Respondida» hacía creer
+              que sí. Es el mismo criterio que el borde de la Card, arriba. El
+              rojo lo pone el `tone`; el emoji sobraba y ningún otro badge de la
+              app lleva uno. */}
+          {consulta.bloqueante && abierta ? (
             <Badge tone="error" title="Frena la aprobación del rubro">
-              🔴 Bloqueante
+              Bloqueante
             </Badge>
           ) : null}
           {abierta ? null : (
@@ -473,9 +478,11 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
       >
         <div className="flex flex-col gap-3">
           <p className="text-sm text-neutral-700">
-            Vas a dar por no aplicables {elegidas.length === 1 ? '1 consulta' : `${elegidas.length} consultas`}.
-            Dejan de frenar la aprobación del rubro y queda registrado con tu usuario. No se borra
-            nada: las podés seguir viendo con el filtro «Descartadas».
+            {elegidas.length === 1
+              ? 'Vas a dar por no aplicable 1 consulta. Deja de frenar la aprobación del rubro'
+              : `Vas a dar por no aplicables ${elegidas.length} consultas. Dejan de frenar la aprobación del rubro`}{' '}
+            y queda registrado con tu usuario. No se borra nada: las podés seguir viendo con el
+            filtro «Descartadas».
           </p>
           <Input
             label="Motivo (opcional)"

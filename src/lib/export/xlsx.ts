@@ -328,7 +328,7 @@ function hojaReferencias(
   ]);
   hoja.addRow([
     'Cant. compra',
-    'Cant. neta más el desperdicio, redondeada hacia arriba a presentación comercial.',
+    'Cant. neta más el desperdicio, redondeada hacia arriba a la presentación comercial.',
   ]);
   hoja.addRow([
     'Confianza',

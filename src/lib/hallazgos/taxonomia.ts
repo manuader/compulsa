@@ -88,10 +88,10 @@ export function clasificarHueco(entrada: EntradaHueco): Clasificacion {
     return armar('explicito', 'El dato está en la documentación.');
   }
   if (entrada.estadoReforma === 'existente') {
-    return armar('existente', 'El elemento ya está construido: no es alcance de obra.');
+    return armar('existente', 'El elemento ya está construido: no está dentro del alcance de la obra.');
   }
   if (entrada.estructural) {
-    return armar('faltante', 'Dato estructural o de seguridad: consultá al profesional competente (RF-506).');
+    return armar('faltante', 'Dato estructural o de seguridad: consultá al profesional competente.');
   }
   if (entrada.deduccion) {
     return entrada.deduccion.confianza >= UMBRAL_CONFIANZA
@@ -249,7 +249,7 @@ export function hallazgoBajaConfianza(entrada: EntradaBajaConfianza): HallazgoDe
     rubro: entrada.rubro,
     descripcion:
       `No computé "${entrada.descripcion}": los datos que lo sostienen tienen ${porcentaje}% de confianza, ` +
-      `por debajo del ${umbral}% que pide el motor. Revisá la documentación y confirmá el dato.`,
+      `por debajo del ${umbral}% que hace falta para computarlo sin preguntar. Revisá la documentación y confirmá el dato.`,
     clave: `${entrada.rubro}.baja_confianza.${sufijo}`,
     checklistItem: `${entrada.rubro}.baja_confianza`,
     bloqueante: true,

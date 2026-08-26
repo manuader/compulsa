@@ -119,8 +119,8 @@ export function FilaItem({ obraId, item }: FilaItemProps) {
               <span className={item.anulado ? 'line-through' : 'text-neutral-900'}>
                 {item.descripcion}
               </span>
-              {item.editado ? <Badge tone="info">editado</Badge> : null}
-              {item.anulado ? <Badge tone="neutral">anulado</Badge> : null}
+              {item.editado ? <Badge tone="info">Editado</Badge> : null}
+              {item.anulado ? <Badge tone="neutral">Anulado</Badge> : null}
             </div>
           )}
           <p className="mt-0.5 text-xs text-neutral-400">{item.claveItem}</p>

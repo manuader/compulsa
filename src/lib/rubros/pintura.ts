@@ -92,7 +92,7 @@ export const plantillaPintura = {
               clave: `${RUBRO}.vanos_sin_descontar.${entidad.nombre}`,
               checklistItem: `${RUBRO}.vanos_sin_descontar`,
               descripcion:
-                `En ${entidad.nombre} no hay superficie de vanos declarada: se computó sin descontar vanos, o sea de más. ` +
+                `En ${entidad.nombre} no hay superficie de vanos declarada: se computó sin descontar vanos, es decir, de más. ` +
                 'Confirmá los m² de puertas y ventanas para ajustar el litraje.',
               entidades: [entidad],
             }),

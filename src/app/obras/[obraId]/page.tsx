@@ -36,9 +36,11 @@ const ETIQUETA_ESTADO_RUBRO: Record<EstadoRubro, string> = {
   aprobado: 'Aprobado',
 };
 
+// Mismos tonos que la planilla (`computo/page.tsx`): el mismo estado no puede
+// ser ámbar en una pantalla y celeste en la de al lado.
 const TONO_ESTADO_RUBRO: Record<EstadoRubro, BadgeTone> = {
   borrador: 'neutral',
-  revision: 'warn',
+  revision: 'info',
   aprobado: 'ok',
 };
 
@@ -236,7 +238,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
         </Metrica>
 
         <Metrica
-          titulo="Export consolidado"
+          titulo="Cómputo consolidado"
           valor={totalItems === 0 ? null : totalItems}
           detalle={
             totalItems === 0
@@ -284,7 +286,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
             {rubrosAprobados} de {RUBROS.length} rubros aprobados
           </Badge>
           <p className="ml-auto text-xs text-neutral-500">
-            El % con provenance es la porción de ítems activos que cita al menos una lámina.
+            El % con fuente es la porción de ítems activos que cita al menos una lámina.
           </p>
         </div>
         <Table>
@@ -293,8 +295,8 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
               <TableHeaderCell>Rubro</TableHeaderCell>
               <TableHeaderCell numeric>Ítems activos</TableHeaderCell>
               <TableHeaderCell>Estado</TableHeaderCell>
-              <TableHeaderCell numeric>% con provenance</TableHeaderCell>
-              <TableHeaderCell>Export</TableHeaderCell>
+              <TableHeaderCell numeric>% con fuente</TableHeaderCell>
+              <TableHeaderCell>Exportar</TableHeaderCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -312,7 +314,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
                   </Badge>
                 </TableCell>
                 <TableCell numeric>
-                  {fila.provenancePct === null ? '—' : `${fila.provenancePct} %`}
+                  {fila.provenancePct === null ? '—' : `${fila.provenancePct}%`}
                 </TableCell>
                 <TableCell>
                   {fila.items === 0 ? (
@@ -338,7 +340,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
           <Acceso
             href={`${base}/expediente`}
             titulo="Expediente"
-            detalle="Subí PDFs, mirá cómo quedaron clasificadas las láminas y su estado."
+            detalle="Subí los PDF, mirá cómo quedaron clasificadas las láminas y su estado."
           />
           <Acceso
             href={primeraLamina ? `${base}/laminas/${primeraLamina}` : null}
@@ -357,7 +359,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
           <Acceso
             href={`${base}/bandeja`}
             titulo="Bandeja de consultas"
-            detalle="Lo que el sistema no pudo resolver solo, para responder de a un click."
+            detalle="Lo que el sistema no pudo resolver solo, para responder de a un clic."
           />
         </div>
       </section>
@@ -388,7 +390,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
             <h2 className="text-sm font-semibold text-neutral-900">Cómo leer el cómputo</h2>
             <p className="text-sm text-neutral-600">
               La cantidad neta es lo que la obra necesita; la cantidad de compra ya incluye el
-              desperdicio y está redondeada hacia arriba a presentación comercial. Cada ítem cita la
+              desperdicio y está redondeada hacia arriba a la presentación comercial. Cada ítem cita la
               lámina de la que salió: lo que no está en la documentación no se inventa, se pregunta
               en la bandeja.
             </p>

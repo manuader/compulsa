@@ -13,7 +13,7 @@ import { EmailYaRegistradoError, login, logout, registrarEstudio } from '@/lib/a
 
 /** Estado que `useActionState` devuelve al formulario. Todo serializable. */
 export interface EstadoAuth {
-  /** Error que no es de un campo puntual ("El mail o la contraseña no coinciden."). */
+  /** Error que no es de un campo puntual ("El mail o la contraseña no son correctos."). */
   mensaje?: string;
   /** Error por campo, con la clave del `name` del input. */
   errores?: Record<string, string>;
@@ -72,7 +72,7 @@ export async function ingresarAction(
   const sesion = await login(parseo.data);
   // Mail inexistente y contraseña equivocada dan el MISMO mensaje: decir cuál de
   // los dos falló es contarle a un desconocido qué mails están registrados.
-  if (!sesion) return { mensaje: 'El mail o la contraseña no coinciden.', valores };
+  if (!sesion) return { mensaje: 'El mail o la contraseña no son correctos.', valores };
 
   return irAlWorkspace();
 }

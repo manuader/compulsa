@@ -67,7 +67,7 @@ export const plantillaGruesa = {
             checklistItem: `${RUBRO}.sistema_muro`,
             descripcion:
               `El muro ${entidad.nombre} figura como "${sistema}", no como mampostería: no lo computo con esta plantilla. ` +
-              'Si es un elemento estructural, corresponde consultar al profesional competente antes de computarlo (RF-506).',
+              'Si es un elemento estructural, corresponde consultar al profesional competente antes de computarlo.',
             entidad,
             campo: 'tipo',
           }),
