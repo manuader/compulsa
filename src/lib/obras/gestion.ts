@@ -22,7 +22,8 @@
  *
  * `eliminarObra` es la única salida del sistema y es explícita: solo corre sobre
  * una obra **ya archivada** y purga el universo entero —documentos, láminas,
- * entidades, cómputo, consultas, archivos y la propia auditoría de la obra—.
+ * entidades, cómputo, consultas, compulsas con sus hilos, cotizaciones,
+ * negociaciones y adjudicaciones, archivos y la propia auditoría de la obra—.
  * La regla no se rompe: no quedan registros huérfanos que auditar, porque no
  * queda nada a lo que referirse. Lo único que sobrevive es una fila de
  * `auditoria` con `obra_id` en `null` que dice qué se llevó puesto y quién lo
@@ -53,14 +54,21 @@ import { and, count, desc, eq, inArray } from 'drizzle-orm';
 
 import type { Db } from '@/db/client';
 import {
+  adjudicaciones,
   auditoria,
+  compulsas,
   computoItems,
   computoRubros,
+  conciliacionItems,
+  contactosCompulsa,
+  cotizaciones,
   deducciones,
   documentos,
   entidades,
   hallazgos,
   laminas,
+  mensajes,
+  negociaciones,
   obras,
   recomputos,
   type EstadoObra,
@@ -116,6 +124,17 @@ export interface ConteosObra {
   computoRubros: number;
   hallazgos: number;
   auditoria: number;
+  /** Compulsas de la obra (todas sus versiones, RF-701). */
+  compulsas: number;
+  /** Proveedores contactados en esas compulsas. */
+  contactos: number;
+  /** Mensajes de esos hilos, en los dos sentidos. */
+  mensajes: number;
+  cotizaciones: number;
+  /** Rondas de negociación escritas (RF-1003). */
+  negociaciones: number;
+  /** Adjudicaciones con su orden de compra. */
+  adjudicaciones: number;
   /** Archivos que la obra tenía en el storage: los que se intentó borrar. */
   archivos: number;
   /**
@@ -351,6 +370,17 @@ export function desarchivarObra(
  *    que `laminas`, `laminas` antes que `documentos`, y la obra al final. No se
  *    usa `desvincularItemsDeEntidades` acá porque los ítems se van igual: la
  *    desvinculación existe para cuando la fila sobrevive.
+ *
+ *    **Son dos cadenas, no una.** La del expediente (documentos → láminas →
+ *    entidades → cómputo) y la de compulsa (`compulsas` → contactos → mensajes y
+ *    cotizaciones → conciliación, negociaciones y adjudicaciones), que cuelga de
+ *    la obra por `compulsas.obra_id`. Ninguna FK del esquema es `ON DELETE
+ *    CASCADE`: si la segunda cadena no se borra a mano, el `delete(obras)` tira
+ *    `23503` **después** de que la primera ya commiteó, y como acá no hay
+ *    transacción eso deja la obra destripada pero presente y las compulsas
+ *    huérfanas. La cadena de compulsa va primero justamente por eso: es la que
+ *    puede fallar por un `WHERE` mal armado, y fallar antes de tocar nada es
+ *    barato.
  *  - **Primero la base, después los archivos.** Si el storage falla a mitad de
  *    camino quedan archivos huérfanos —basura, recuperable a mano—; al revés
  *    quedaría una obra visible con sus PDF ya borrados, que es peor.
@@ -396,6 +426,97 @@ export async function eliminarObra(
     .where(eq(laminas.obraId, obra.id));
   const refs = [...refsDocumentos.map((f) => f.ref), ...refsLaminas.map((f) => f.ref)];
 
+  // --- La cadena de compulsa (F1–F3) ---------------------------------------
+  // De arriba hacia abajo para juntar los ids, de abajo hacia arriba para
+  // borrarlos. Los ids se leen en tres pasos porque las tablas hoja
+  // (`negociaciones`, `conciliacion_items`) no tienen `obra_id`: se llega a
+  // ellas por la cotización, a la cotización por el contacto y al contacto por
+  // la compulsa. Con la lista vacía se saltea el delete: `inArray(col, [])` es
+  // un `WHERE false` que no rompe, pero mandar la query igual solo agrega ruido.
+  const idsCompulsas = (
+    await db.select({ id: compulsas.id }).from(compulsas).where(eq(compulsas.obraId, obra.id))
+  ).map((fila) => fila.id);
+
+  const idsContactos =
+    idsCompulsas.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: contactosCompulsa.id })
+            .from(contactosCompulsa)
+            .where(inArray(contactosCompulsa.compulsaId, idsCompulsas))
+        ).map((fila) => fila.id);
+
+  const idsCotizaciones =
+    idsContactos.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: cotizaciones.id })
+            .from(cotizaciones)
+            .where(inArray(cotizaciones.contactoId, idsContactos))
+        ).map((fila) => fila.id);
+
+  let adjudicacionesBorradas = 0;
+  let negociacionesBorradas = 0;
+  let cotizacionesBorradas = 0;
+  let mensajesBorrados = 0;
+  let contactosBorrados = 0;
+  let compulsasBorradas = 0;
+
+  if (idsCotizaciones.length > 0) {
+    // `adjudicaciones` apunta a la compulsa **y** a la cotización: se va primero
+    // que las dos.
+    adjudicacionesBorradas = (
+      await db
+        .delete(adjudicaciones)
+        .where(inArray(adjudicaciones.cotizacionId, idsCotizaciones))
+        .returning({ id: adjudicaciones.id })
+    ).length;
+    negociacionesBorradas = (
+      await db
+        .delete(negociaciones)
+        .where(inArray(negociaciones.cotizacionId, idsCotizaciones))
+        .returning({ id: negociaciones.id })
+    ).length;
+    // La conciliación se va sin contarse, igual que las deducciones y los
+    // recomputos: es el detalle interno de una cotización que ya se cuenta.
+    await db
+      .delete(conciliacionItems)
+      .where(inArray(conciliacionItems.cotizacionId, idsCotizaciones));
+  }
+
+  if (idsContactos.length > 0) {
+    cotizacionesBorradas = (
+      await db
+        .delete(cotizaciones)
+        .where(inArray(cotizaciones.contactoId, idsContactos))
+        .returning({ id: cotizaciones.id })
+    ).length;
+    mensajesBorrados = (
+      await db
+        .delete(mensajes)
+        .where(inArray(mensajes.contactoId, idsContactos))
+        .returning({ id: mensajes.id })
+    ).length;
+  }
+
+  if (idsCompulsas.length > 0) {
+    contactosBorrados = (
+      await db
+        .delete(contactosCompulsa)
+        .where(inArray(contactosCompulsa.compulsaId, idsCompulsas))
+        .returning({ id: contactosCompulsa.id })
+    ).length;
+    compulsasBorradas = (
+      await db
+        .delete(compulsas)
+        .where(eq(compulsas.obraId, obra.id))
+        .returning({ id: compulsas.id })
+    ).length;
+  }
+
+  // --- La cadena del expediente (F0) ---------------------------------------
   const hallazgosBorrados = await db
     .delete(hallazgos)
     .where(eq(hallazgos.obraId, obra.id))
@@ -442,6 +563,12 @@ export async function eliminarObra(
     computoRubros: rubrosBorrados.length,
     hallazgos: hallazgosBorrados.length,
     auditoria: auditoriaBorrada.length,
+    compulsas: compulsasBorradas,
+    contactos: contactosBorrados,
+    mensajes: mensajesBorrados,
+    cotizaciones: cotizacionesBorradas,
+    negociaciones: negociacionesBorradas,
+    adjudicaciones: adjudicacionesBorradas,
     archivos: refs.length,
   };
 

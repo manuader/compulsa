@@ -20,24 +20,40 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { setDbForTests, type Db } from '@/db/client';
 import {
+  adjudicaciones,
   auditoria,
+  compulsas,
   computoItems,
   computoRubros,
+  conciliacionItems,
+  contactosCompulsa,
+  cotizaciones,
   documentos,
   entidades,
   estudios,
   hallazgos,
   laminas,
+  mensajes,
+  negociaciones,
   obras,
+  proveedores,
   usuarios,
   type Documento,
 } from '@/db/schema';
 import { ObraNoEncontradaError } from '@/lib/auth/guards';
+import { adjudicarCompulsa } from '@/lib/compulsa/adjudicar';
+import {
+  lanzarCompulsa,
+  proponerNegociacion,
+  registrarCotizacion,
+  registrarEnvio,
+  type ActorCompulsa,
+} from '@/lib/compulsa/flujo';
 import {
   archivarObra,
   desarchivarObra,
@@ -88,6 +104,145 @@ async function conteosDe(id: string) {
     hallazgos: await filas(db.select().from(hallazgos).where(eq(hallazgos.obraId, id))),
     auditoria: await filas(db.select().from(auditoria).where(eq(auditoria.obraId, id))),
   };
+}
+
+/**
+ * Lo mismo para la cadena de compulsa, a la que se llega por la obra en tres
+ * saltos (compulsa → contacto → cotización): esas tablas no tienen `obra_id`.
+ */
+async function conteosCompulsaDe(id: string) {
+  const idsCompulsas = (
+    await db.select({ id: compulsas.id }).from(compulsas).where(eq(compulsas.obraId, id))
+  ).map((fila) => fila.id);
+  if (idsCompulsas.length === 0) {
+    return {
+      compulsas: 0,
+      contactos: 0,
+      mensajes: 0,
+      cotizaciones: 0,
+      conciliacionItems: 0,
+      negociaciones: 0,
+      adjudicaciones: 0,
+    };
+  }
+
+  const idsContactos = (
+    await db
+      .select({ id: contactosCompulsa.id })
+      .from(contactosCompulsa)
+      .where(inArray(contactosCompulsa.compulsaId, idsCompulsas))
+  ).map((fila) => fila.id);
+  const idsCotizaciones =
+    idsContactos.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: cotizaciones.id })
+            .from(cotizaciones)
+            .where(inArray(cotizaciones.contactoId, idsContactos))
+        ).map((fila) => fila.id);
+
+  const cuantas = async <T,>(promesa: Promise<T[]>) => (await promesa).length;
+  const deCotizaciones = async <T,>(consulta: (ids: string[]) => Promise<T[]>) =>
+    idsCotizaciones.length === 0 ? 0 : (await consulta(idsCotizaciones)).length;
+
+  return {
+    compulsas: idsCompulsas.length,
+    contactos: idsContactos.length,
+    mensajes:
+      idsContactos.length === 0
+        ? 0
+        : await cuantas(
+            db.select().from(mensajes).where(inArray(mensajes.contactoId, idsContactos)),
+          ),
+    cotizaciones: idsCotizaciones.length,
+    conciliacionItems: await deCotizaciones((ids) =>
+      db.select().from(conciliacionItems).where(inArray(conciliacionItems.cotizacionId, ids)),
+    ),
+    negociaciones: await deCotizaciones((ids) =>
+      db.select().from(negociaciones).where(inArray(negociaciones.cotizacionId, ids)),
+    ),
+    adjudicaciones: await deCotizaciones((ids) =>
+      db.select().from(adjudicaciones).where(inArray(adjudicaciones.cotizacionId, ids)),
+    ),
+  };
+}
+
+/**
+ * Deja la obra con una compulsa **completa**, por el camino real: rubro
+ * aprobado → `lanzarCompulsa` → `registrarEnvio` → `registrarCotizacion` (que
+ * concilia) → `proponerNegociacion` → `adjudicarCompulsa`. Es el universo que la
+ * eliminación tiene que saber desarmar.
+ */
+async function prepararCompulsaCompleta(): Promise<void> {
+  const compulsero: ActorCompulsa = {
+    usuarioId: actor.usuarioId,
+    email: actor.email,
+    rol: 'titular',
+    estudioId,
+  };
+
+  const [proveedor] = await db
+    .insert(proveedores)
+    .values({
+      estudioId,
+      nombre: 'Corralón San Martín',
+      rubros: ['seco'],
+      zona: 'CABA',
+      origen: 'manual',
+    })
+    .returning();
+
+  await db.insert(computoRubros).values({
+    obraId,
+    rubro: 'seco',
+    estado: 'aprobado',
+    aprobadoPor: actor.usuarioId,
+    aprobadoAt: new Date(),
+  });
+
+  const lanzamiento = await lanzarCompulsa(db, storage, compulsero, obraId, 'seco', {
+    proveedorIds: [proveedor.id],
+    mandato: { objetivoMejoraPct: 5, palancas: ['volumen'], maxRondas: 2 },
+  });
+  const [contacto] = lanzamiento.contactos;
+  await registrarEnvio(db, compulsero, contacto.id);
+
+  // Una sola línea, deliberadamente sin sustituciones: lo que este test cuida
+  // es el borrado, y una `sustituto` frenaría la negociación (RF-1002).
+  const { cotizacion } = await registrarCotizacion(
+    db,
+    compulsero,
+    contacto.id,
+    {
+      nombre: 'presupuesto-corralon.txt',
+      lineas: [
+        {
+          // La descripción es la de la plantilla `seco`, palabra por palabra:
+          // sin al menos un ítem comparable no se puede adjudicar.
+          descripcion: 'Placa de roca de yeso (1,20 × 2,40 m)',
+          unidad: 'm2',
+          cantidad: 30,
+          precioUnitario: 8000,
+          precioTotal: 240000,
+          claveItemSugerida: null,
+          notas: null,
+        },
+      ],
+      metadatos: { total: 240000, incluyeIva: false, validezDias: 15, plazoDias: 10 },
+    },
+  );
+
+  const negociacion = await proponerNegociacion(db, compulsero, cotizacion.id);
+  if (!negociacion.procede) {
+    throw new Error(`La negociación del setup no procedió: ${negociacion.motivo}`);
+  }
+
+  await adjudicarCompulsa(
+    db,
+    { usuarioId: actor.usuarioId, email: actor.email, rol: 'titular', activo: true, estudioId },
+    { cotizacionId: cotizacion.id },
+  );
 }
 
 function auditoriaDe(accion: string, id = obraId) {
@@ -453,6 +608,83 @@ describe('eliminarObra', () => {
       refs: [intentos[1]],
       truncado: false,
       detalle: 'EACCES: permiso denegado',
+    });
+  });
+
+  it('se lleva también la cadena de compulsa, que es la que hacía fallar el delete', async () => {
+    // El caso que rompía: una obra archivada que **corrió una compulsa** (la
+    // misma «Casa Reforma — demo» del seed). Ninguna FK del esquema es `ON
+    // DELETE CASCADE`, así que sin esta cadena el `delete(obras)` tiraba 23503
+    // recién al final —con documentos, láminas, entidades, cómputo y auditoría
+    // ya borrados y sin transacción que los devolviera—: obra destripada,
+    // presente, y compulsas huérfanas.
+    //
+    // El universo se arma por el flujo real, no con inserts a mano: lo que
+    // tiene que quedar en cero son las filas que escriben `lanzarCompulsa`,
+    // `registrarCotizacion`, `proponerNegociacion` y `adjudicarCompulsa`.
+    await subirYProcesar('obra-demo.pdf');
+    await prepararCompulsaCompleta();
+
+    const antes = await conteosCompulsaDe(obraId);
+    expect(antes).toEqual({
+      compulsas: 1,
+      contactos: 1,
+      // El pedido, las 5 repreguntas por los ítems que no cotizó y la
+      // contraoferta de la ronda 1.
+      mensajes: 7,
+      cotizaciones: 1,
+      conciliacionItems: 6,
+      negociaciones: 1,
+      adjudicaciones: 1,
+    });
+
+    await archivarObra(db, estudioId, obraId, actor);
+    const conteos = await eliminarObra(db, storage, estudioId, obraId, actor);
+
+    expect(conteos.compulsas).toBe(1);
+    expect(conteos.contactos).toBe(1);
+    expect(conteos.mensajes).toBe(7);
+    expect(conteos.cotizaciones).toBe(1);
+    expect(conteos.negociaciones).toBe(1);
+    expect(conteos.adjudicaciones).toBe(1);
+
+    // Ni la obra ni una sola fila de las dos cadenas.
+    expect(await db.select().from(obras).where(eq(obras.id, obraId))).toHaveLength(0);
+    expect(await conteosCompulsaDe(obraId)).toEqual({
+      compulsas: 0,
+      contactos: 0,
+      mensajes: 0,
+      cotizaciones: 0,
+      conciliacionItems: 0,
+      negociaciones: 0,
+      adjudicaciones: 0,
+    });
+    expect(await conteosDe(obraId)).toEqual({
+      documentos: 0,
+      laminas: 0,
+      entidades: 0,
+      computoItems: 0,
+      computoRubros: 0,
+      hallazgos: 0,
+      auditoria: 0,
+    });
+
+    // Y el rastro los cuenta: sin estos números, "se borró una obra con una
+    // compulsa adjudicada" no queda escrito en ningún lado.
+    const rastro = await db
+      .select()
+      .from(auditoria)
+      .where(and(isNull(auditoria.obraId), eq(auditoria.accion, 'obra_eliminada')));
+    expect(rastro).toHaveLength(1);
+    expect(rastro[0].diffJson).toMatchObject({
+      obraId,
+      nombre: 'Casa Demo',
+      compulsas: 1,
+      contactos: 1,
+      mensajes: 7,
+      cotizaciones: 1,
+      negociaciones: 1,
+      adjudicaciones: 1,
     });
   });
 
