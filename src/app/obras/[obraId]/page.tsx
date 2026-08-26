@@ -15,6 +15,8 @@ import {
 import { getDb } from '@/db/client';
 import { computoItems, computoRubros, deducciones, documentos, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
+import { resumenCompulsasObra } from '@/lib/compulsa/adjudicar';
+import { formatearImporte } from '@/lib/compulsa/comparativa';
 import { PLANTILLAS } from '@/lib/rubros';
 import { RUBROS, type EstadoRubro } from '@/types/domain';
 
@@ -118,6 +120,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
     estadosFilas,
     [consultas],
     [deduccionesPropuestas],
+    compulsas,
   ] = await Promise.all([
       db.select({ total: count() }).from(documentos).where(eq(documentos.obraId, obra.id)),
       db
@@ -159,6 +162,11 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
         .select({ total: count() })
         .from(deducciones)
         .where(and(eq(deducciones.obraId, obra.id), eq(deducciones.estado, 'propuesta'))),
+      // El ahorro no está guardado en ninguna tabla: se recalcula al leer desde
+      // adjudicaciones + cotizaciones + negociaciones (ver el encabezado de
+      // `@/lib/compulsa/adjudicar`). Con el orden de magnitud de una obra son
+      // unidades de consultas, no cientos.
+      resumenCompulsasObra(db, obra.id),
     ]);
 
   const porEstado = new Map(laminasPorEstado.map((f) => [f.estado, f.total]));
@@ -295,6 +303,95 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
             <p className="text-[11px] leading-snug text-neutral-500">{`${DISCLAIMER}.`}</p>
           </div>
         </Metrica>
+      </section>
+
+      {/* La compulsa es la mitad del producto y no entra en la grilla de
+          métricas de arriba: las cuatro de arriba son sobre la documentación,
+          esta es sobre la plata. Va en su propia tarjeta, con los dos accesos
+          adentro — la comparativa no tiene solapa propia. */}
+      <section>
+        <Card>
+          <CardContent className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <h2 className="text-sm font-semibold text-neutral-900">Compulsas</h2>
+              {compulsas.total === 0 ? (
+                <Badge tone="neutral">Sin compulsas todavía</Badge>
+              ) : (
+                <>
+                  {compulsas.enCurso > 0 ? (
+                    <Badge tone="info">
+                      {plural(compulsas.enCurso, 'en curso', 'en curso')}
+                    </Badge>
+                  ) : null}
+                  {compulsas.adjudicadas > 0 ? (
+                    <Badge tone="ok">
+                      {plural(compulsas.adjudicadas, 'adjudicada', 'adjudicadas')}
+                    </Badge>
+                  ) : null}
+                </>
+              )}
+              <span className="ml-auto flex flex-wrap gap-3">
+                <Link
+                  href={`${base}/compulsas`}
+                  className="text-xs font-medium text-neutral-900 underline"
+                >
+                  Ver compulsas
+                </Link>
+                <Link
+                  href={`${base}/comparativa`}
+                  className="text-xs font-medium text-neutral-900 underline"
+                >
+                  Ir a la comparativa
+                </Link>
+              </span>
+            </div>
+
+            <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div>
+                <dt className="text-xs font-medium tracking-wide text-neutral-500 uppercase">
+                  En curso
+                </dt>
+                <dd className="text-2xl font-semibold tabular-nums text-neutral-900">
+                  {compulsas.total === 0 ? '—' : compulsas.enCurso}
+                </dd>
+                <dd className="text-xs text-neutral-500">
+                  {compulsas.total === 0
+                    ? 'Se lanzan desde un rubro aprobado del cómputo.'
+                    : `Sobre ${plural(compulsas.total, 'compulsa', 'compulsas')} de la obra.`}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium tracking-wide text-neutral-500 uppercase">
+                  Cotizaciones recibidas
+                </dt>
+                <dd className="text-2xl font-semibold tabular-nums text-neutral-900">
+                  {compulsas.total === 0 ? '—' : compulsas.cotizaciones}
+                </dd>
+                <dd className="text-xs text-neutral-500">
+                  Presupuestos cargados, listos para comparar.
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium tracking-wide text-neutral-500 uppercase">
+                  Ahorro acumulado
+                </dt>
+                {/* Sin ninguna adjudicada no hay ahorro que medir: un "$ 0" se
+                    leería como "no ahorramos nada" en vez de "todavía no hay
+                    contra qué medir". */}
+                <dd className="text-2xl font-semibold tabular-nums text-neutral-900">
+                  {compulsas.adjudicadas === 0
+                    ? '—'
+                    : `${obra.moneda === 'ARS' ? '$' : obra.moneda} ${formatearImporte(compulsas.ahorro)}`}
+                </dd>
+                <dd className="text-xs text-neutral-500">
+                  {compulsas.adjudicadas === 0
+                    ? 'Sale al adjudicar: mediana de las ofertas menos lo adjudicado, más lo que se negoció.'
+                    : 'Mediana de las ofertas menos lo adjudicado, más las mejoras de negociación.'}
+                </dd>
+              </div>
+            </dl>
+          </CardContent>
+        </Card>
       </section>
 
       {sinDocumentacion ? (
