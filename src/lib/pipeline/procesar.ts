@@ -667,6 +667,12 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     };
 
     const campos = fusionarRotulo(lamina, await provider.leerRotulo(entrada));
+    // El texto del PDF se guarda en la lámina (RF-106): es lo que después lee el
+    // Q&A del expediente para contestar con citas. Se persiste en las dos
+    // salidas —analizada y bloqueada por escala— porque una lámina sin escala
+    // igual dice cosas: una planilla de carpinterías es texto puro y no se
+    // computa. Vacío ⇒ `null`, que es "no hay texto que citar" y no "no leí".
+    const textoExtraido = entrada.textoExtraido?.trim() ? entrada.textoExtraido : null;
 
     if (!campos.escalaConfiable) {
       // RF-201: sin escala verificada no se mide nada. Si la lámina traía
@@ -674,7 +680,13 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
       const { eliminadas } = await sincronizarEntidades(db, lamina, []);
       await db
         .update(laminas)
-        .set({ ...campos, ...SOLTAR, estadoAnalisis: 'bloqueada_escala', errorDetalle: null })
+        .set({
+          ...campos,
+          ...SOLTAR,
+          textoExtraido,
+          estadoAnalisis: 'bloqueada_escala',
+          errorDetalle: null,
+        })
         .where(eq(laminas.id, laminaId));
       await upsertHallazgoEscala(db, lamina);
       const recomputado = eliminadas === 0 || (await recomputarTolerante(entorno, lamina));
@@ -705,7 +717,7 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     const resumen = await sincronizarEntidades(db, lamina, validas);
     await db
       .update(laminas)
-      .set({ ...campos, ...SOLTAR, estadoAnalisis: 'analizada', errorDetalle: null })
+      .set({ ...campos, ...SOLTAR, textoExtraido, estadoAnalisis: 'analizada', errorDetalle: null })
       .where(eq(laminas.id, laminaId));
     await cerrarHallazgoEscala(db, lamina);
     const recomputado = await recomputarTolerante(entorno, lamina);
