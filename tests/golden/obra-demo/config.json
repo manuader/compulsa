@@ -1,0 +1,6 @@
+{
+  "nombre": "Casa Demo — golden",
+  "tipoObra": "nueva",
+  "zona": "CABA",
+  "documentos": ["tests/fixtures/pdfs/obra-demo.pdf"]
+}
