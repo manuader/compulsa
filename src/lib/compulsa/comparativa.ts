@@ -292,6 +292,23 @@ const DETALLE_POR_MATCH: Record<MatchCelda, string> = {
   sin_conciliar: 'Esta cotización todavía no se concilió contra el pedido.',
 };
 
+/** Cómo se nombra cada match en pantalla y en el reporte. */
+export const ETIQUETA_MATCH: Record<MatchCelda, string> = {
+  exacto: 'Exacto',
+  parcial: 'Parcial',
+  sustituto: 'Sustituto',
+  no_cotizado: 'No cotizado',
+  extra: 'Extra',
+  sin_conciliar: 'Sin conciliar',
+};
+
+export const ETIQUETA_VALIDEZ: Record<EstadoValidez, string> = {
+  vigente: 'Vigente',
+  por_vencer: 'Por vencer',
+  vencida: 'Vencida',
+  sin_dato: 'Sin validez declarada',
+};
+
 function importeDeLinea(linea: LineaPresupuesto): number | null {
   if (linea.precioTotal !== null && Number.isFinite(linea.precioTotal)) {
     return redondear2(linea.precioTotal);
