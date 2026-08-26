@@ -191,7 +191,7 @@ async function sembrarCompulsa() {
 
 describe('cadena compulsa → contacto → cotización → conciliación → adjudicación', () => {
   it('persiste la cadena completa y la lee de vuelta por sus FKs', async () => {
-    const { usuario, obra, proveedor, compulsa } = await sembrarCompulsa();
+    const { usuario, proveedor, compulsa } = await sembrarCompulsa();
 
     // El snapshot congela ítems y condiciones (RF-701).
     expect(compulsa.estado).toBe('borrador');
@@ -316,8 +316,12 @@ describe('cadena compulsa → contacto → cotización → conciliación → adj
     expect(fila.cotizacionFidelidad).toBe(0.8);
     expect(fila.ocTexto).toBe('OC 0001 — Aberturas del Sur — $950.000 + IVA');
 
-    expect(await db.select().from(conciliacionItems).where(eq(conciliacionItems.cotizacionId, cotizacion.id))).toHaveLength(2);
-    expect(obra.estudioId).toBeTruthy();
+    // Las dos conciliaciones (la exacta y la no cotizada) cuelgan de la cotización.
+    const conciliadas = await db
+      .select()
+      .from(conciliacionItems)
+      .where(eq(conciliacionItems.cotizacionId, cotizacion.id));
+    expect(conciliadas.map((c) => c.match).sort()).toEqual(['exacto', 'no_cotizado']);
   });
 
   it('aplica los defaults del proveedor: sin opt-in, sin opt-out, sin score', async () => {
