@@ -15,7 +15,7 @@ import { Select } from '@/components/ui/select';
 import { getDb } from '@/db/client';
 import type { Proveedor } from '@/db/schema';
 import { requireUser } from '@/lib/auth/guards';
-import { contactosDe, listarProveedores, zonasDe } from '@/lib/proveedores/gestion';
+import { contactosDe, filtrarProveedores, listarProveedores, zonasDe } from '@/lib/proveedores/gestion';
 import { RUBROS, type RubroId } from '@/types/domain';
 
 import { TablaProveedores, type ProveedorVista } from './ui';
@@ -75,19 +75,25 @@ export default async function ProveedoresPage({
 }: {
   searchParams: Promise<{ rubro?: string; zona?: string }>;
 }) {
-  const { estudio } = await requireUser();
+  const { usuario, estudio } = await requireUser();
   const { rubro: rubroParam, zona: zonaParam } = await searchParams;
 
   const rubro = esRubro(rubroParam) ? rubroParam : undefined;
   const zona = zonaParam?.trim() ? zonaParam.trim() : undefined;
 
-  const db = await getDb();
-  // La agenda completa se lee igual: es la que puebla el desplegable de zonas,
-  // que tiene que ofrecer todas y no solo las del filtro puesto.
-  const agenda = await listarProveedores(db, estudio.id);
-  const filtrados = await listarProveedores(db, estudio.id, { rubro, zona });
+  // La agenda completa se lee igual —es la que puebla el desplegable de zonas,
+  // que tiene que ofrecer todas y no solo las del filtro puesto—, así que el
+  // filtrado sale de la misma lectura y no de una segunda consulta.
+  const agenda = await listarProveedores(await getDb(), estudio.id);
+  const filtrados = filtrarProveedores(agenda, { rubro, zona });
 
   const filtrando = rubro !== undefined || zona !== undefined;
+  /**
+   * Gestionar la agenda es de colaborador para arriba (RF-1201). Esconder los
+   * botones es cortesía, no seguridad: el core rechaza igual la mutación de un
+   * `lectura` que llame a la action a mano.
+   */
+  const puedeGestionar = usuario.rol !== 'lectura';
 
   return (
     <div className="flex flex-col gap-6">
@@ -96,14 +102,20 @@ export default async function ProveedoresPage({
           <h1 className="text-xl font-semibold tracking-tight text-neutral-900">Proveedores</h1>
           <p className="text-sm text-neutral-600">{estudio.nombre}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Link href="/proveedores/importar" className={estilosBoton('secondary')}>
-            Importar CSV
-          </Link>
-          <Link href="/proveedores/nuevo" className={estilosBoton()}>
-            Agregar proveedor
-          </Link>
-        </div>
+        {puedeGestionar ? (
+          <div className="flex items-center gap-2">
+            <Link href="/proveedores/importar" className={estilosBoton('secondary')}>
+              Importar CSV
+            </Link>
+            <Link href="/proveedores/nuevo" className={estilosBoton()}>
+              Agregar proveedor
+            </Link>
+          </div>
+        ) : (
+          <p className="text-sm text-neutral-500">
+            Tu rol es de solo lectura: podés consultar la agenda, no editarla.
+          </p>
+        )}
       </div>
 
       {agenda.length > 0 ? (
@@ -152,14 +164,16 @@ export default async function ProveedoresPage({
               Cargá el primero a mano o pegá el listado que ya tenés en un Excel: con la agenda
               armada, cada compulsa arranca con la shortlist hecha.
             </p>
-            <div className="flex items-center gap-2">
-              <Link href="/proveedores/nuevo" className={estilosBoton()}>
-                Agregar el primero
-              </Link>
-              <Link href="/proveedores/importar" className={estilosBoton('secondary')}>
-                Importar CSV
-              </Link>
-            </div>
+            {puedeGestionar ? (
+              <div className="flex items-center gap-2">
+                <Link href="/proveedores/nuevo" className={estilosBoton()}>
+                  Agregar el primero
+                </Link>
+                <Link href="/proveedores/importar" className={estilosBoton('secondary')}>
+                  Importar CSV
+                </Link>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       ) : filtrados.length === 0 ? (
@@ -180,7 +194,7 @@ export default async function ProveedoresPage({
               ? `${plural(filtrados.length, 'proveedor', 'proveedores')} de ${agenda.length}.`
               : plural(agenda.length, 'proveedor en la agenda', 'proveedores en la agenda') + '.'}
           </p>
-          <TablaProveedores proveedores={filtrados.map(aVista)} />
+          <TablaProveedores proveedores={filtrados.map(aVista)} puedeGestionar={puedeGestionar} />
         </>
       )}
     </div>

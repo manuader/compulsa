@@ -6,7 +6,9 @@
  * mientras se escribe.
  */
 import type { Metadata } from 'next';
+import Link from 'next/link';
 
+import { estilosBoton } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { requireUser } from '@/lib/auth/guards';
 
@@ -15,7 +17,26 @@ import { ImportadorCsv } from '../ui';
 export const metadata: Metadata = { title: 'Importar proveedores' };
 
 export default async function ImportarProveedoresPage() {
-  await requireUser();
+  const { usuario } = await requireUser();
+
+  // Igual que en el alta: el rol se ve antes de pegar 200 líneas de CSV.
+  if (usuario.rol === 'lectura') {
+    return (
+      <div className="mx-auto max-w-xl">
+        <Card>
+          <CardContent className="flex flex-col items-start gap-3 py-8">
+            <p className="text-sm font-medium text-neutral-900">
+              Tu rol es de solo lectura: la agenda de proveedores la gestionan los colaboradores y
+              el titular del estudio.
+            </p>
+            <Link href="/proveedores" className={estilosBoton('secondary')}>
+              Volver a la agenda
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-3xl">

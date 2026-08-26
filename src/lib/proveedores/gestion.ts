@@ -308,7 +308,20 @@ export async function listarProveedores(
   filtros: FiltrosProveedores = {},
 ): Promise<Proveedor[]> {
   const agenda = await db.select().from(proveedores).where(eq(proveedores.estudioId, estudioId));
+  return filtrarProveedores(agenda, filtros);
+}
 
+/**
+ * El mismo filtro y el mismo orden, sobre una agenda ya leída.
+ *
+ * Existe para que la pantalla no lea la base dos veces: necesita la agenda
+ * completa (para el desplegable de zonas) **y** la filtrada, y son la misma
+ * consulta con un `.filter()` de diferencia.
+ */
+export function filtrarProveedores(
+  agenda: readonly Proveedor[],
+  filtros: FiltrosProveedores = {},
+): Proveedor[] {
   const zona = filtros.zona ? normalizarNombre(filtros.zona) : null;
 
   return agenda

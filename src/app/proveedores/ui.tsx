@@ -80,7 +80,18 @@ function mensajeDe(error: unknown): string {
 
 // ---------------------------------------------------------------------------
 
-export function TablaProveedores({ proveedores }: { proveedores: ProveedorVista[] }) {
+export function TablaProveedores({
+  proveedores,
+  puedeGestionar,
+}: {
+  proveedores: ProveedorVista[];
+  /**
+   * Rol de colaborador para arriba (RF-1201). En `false` la columna de acciones
+   * ni se dibuja: esconder los botones es cortesía, el que rechaza la mutación
+   * es el core.
+   */
+  puedeGestionar: boolean;
+}) {
   const [error, setError] = useState<string | null>(null);
 
   return (
@@ -102,12 +113,17 @@ export function TablaProveedores({ proveedores }: { proveedores: ProveedorVista[
             <TableHeaderCell>Zona</TableHeaderCell>
             <TableHeaderCell>Contacto</TableHeaderCell>
             <TableHeaderCell>WhatsApp</TableHeaderCell>
-            <TableHeaderCell>Acciones</TableHeaderCell>
+            {puedeGestionar ? <TableHeaderCell>Acciones</TableHeaderCell> : null}
           </TableRow>
         </TableHead>
         <TableBody>
           {proveedores.map((proveedor) => (
-            <FilaProveedor key={proveedor.id} proveedor={proveedor} onError={setError} />
+            <FilaProveedor
+              key={proveedor.id}
+              proveedor={proveedor}
+              puedeGestionar={puedeGestionar}
+              onError={setError}
+            />
           ))}
         </TableBody>
       </Table>
@@ -117,9 +133,11 @@ export function TablaProveedores({ proveedores }: { proveedores: ProveedorVista[
 
 function FilaProveedor({
   proveedor,
+  puedeGestionar,
   onError,
 }: {
   proveedor: ProveedorVista;
+  puedeGestionar: boolean;
   onError: (mensaje: string | null) => void;
 }) {
   const [dialogo, setDialogo] = useState<'editar' | 'opt-in' | 'opt-out' | null>(null);
@@ -193,99 +211,101 @@ function FilaProveedor({
         )}
       </TableCell>
 
-      <TableCell>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => setDialogo('editar')}>
-            Editar
-          </Button>
-          {/* Un proveedor con opt-out no ofrece ninguna acción de contacto: la
-              única salida de ese estado es que él vuelva a pedir entrar, y eso
-              se carga como un alta nueva. */}
-          {!proveedor.optOut && !proveedor.optInWa ? (
-            <Button variant="ghost" size="sm" onClick={() => setDialogo('opt-in')}>
-              Marcar opt-in WA
+      {!puedeGestionar ? null : (
+        <TableCell>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => setDialogo('editar')}>
+              Editar
             </Button>
+            {/* Un proveedor con opt-out no ofrece ninguna acción de contacto: la
+                única salida de ese estado es que él vuelva a pedir entrar, y eso
+                se carga como un alta nueva. */}
+            {!proveedor.optOut && !proveedor.optInWa ? (
+              <Button variant="ghost" size="sm" onClick={() => setDialogo('opt-in')}>
+                Marcar opt-in WA
+              </Button>
+            ) : null}
+            {!proveedor.optOut ? (
+              <Button variant="ghost" size="sm" onClick={() => setDialogo('opt-out')}>
+                No contactar
+              </Button>
+            ) : null}
+          </div>
+
+          {/* Los tres diálogos van ADENTRO de la celda y no sueltos en el `<tr>`:
+              un `<tr>` solo admite `<td>`/`<th>`, y el navegador sacaría de ahí a
+              un `<dialog>` suelto. Que estén en una celda no los encierra —
+              `showModal()` los sube igual a la capa superior. */}
+          {/* Montado solo mientras está abierto: sus campos arrancan del proveedor
+              que se está viendo, y así después de guardar no reabre con los valores
+              viejos que quedaron en el `useState`. */}
+          {dialogo === 'editar' ? (
+            <DialogoEdicion
+              proveedor={proveedor}
+              corriendo={corriendo}
+              onCerrar={() => setDialogo(null)}
+              onGuardar={(cambios) => ejecutar(() => editarProveedorAction(cambios))}
+            />
           ) : null}
-          {!proveedor.optOut ? (
-            <Button variant="ghost" size="sm" onClick={() => setDialogo('opt-out')}>
-              No contactar
-            </Button>
-          ) : null}
-        </div>
 
-        {/* Los tres diálogos van ADENTRO de la celda y no sueltos en el `<tr>`:
-            un `<tr>` solo admite `<td>`/`<th>`, y el navegador sacaría de ahí a
-            un `<dialog>` suelto. Que estén en una celda no los encierra —
-            `showModal()` los sube igual a la capa superior. */}
-        {/* Montado solo mientras está abierto: sus campos arrancan del proveedor
-            que se está viendo, y así después de guardar no reabre con los valores
-            viejos que quedaron en el `useState`. */}
-        {dialogo === 'editar' ? (
-          <DialogoEdicion
-            proveedor={proveedor}
-            corriendo={corriendo}
-            onCerrar={() => setDialogo(null)}
-            onGuardar={(cambios) => ejecutar(() => editarProveedorAction(cambios))}
-          />
-        ) : null}
+          <Dialog
+            open={dialogo === 'opt-in'}
+            onClose={() => setDialogo(null)}
+            title="Registrar el opt-in de WhatsApp"
+            footer={
+              <>
+                <Button variant="secondary" disabled={corriendo} onClick={() => setDialogo(null)}>
+                  Cancelar
+                </Button>
+                <Button
+                  disabled={corriendo}
+                  onClick={() => ejecutar(() => marcarOptInAction({ proveedorId: proveedor.id }))}
+                >
+                  {corriendo ? 'Registrando…' : 'Sí, lo aceptó'}
+                </Button>
+              </>
+            }
+          >
+            <p>
+              {TEXTO_COMPLIANCE_OPT_IN}: <strong>{proveedor.nombre}</strong>.
+            </p>
+            <p className="mt-2 text-neutral-600">
+              Queda registrado con la fecha de hoy y con tu usuario. Nunca escribas en frío por
+              WhatsApp: sin este consentimiento, el contacto va por los canales de siempre (teléfono o
+              mail).
+            </p>
+          </Dialog>
 
-        <Dialog
-          open={dialogo === 'opt-in'}
-          onClose={() => setDialogo(null)}
-          title="Registrar el opt-in de WhatsApp"
-          footer={
-            <>
-              <Button variant="secondary" disabled={corriendo} onClick={() => setDialogo(null)}>
-                Cancelar
-              </Button>
-              <Button
-                disabled={corriendo}
-                onClick={() => ejecutar(() => marcarOptInAction({ proveedorId: proveedor.id }))}
-              >
-                {corriendo ? 'Registrando…' : 'Sí, lo aceptó'}
-              </Button>
-            </>
-          }
-        >
-          <p>
-            {TEXTO_COMPLIANCE_OPT_IN}: <strong>{proveedor.nombre}</strong>.
-          </p>
-          <p className="mt-2 text-neutral-600">
-            Queda registrado con la fecha de hoy y con tu usuario. Nunca escribas en frío por
-            WhatsApp: sin este consentimiento, el contacto va por los canales de siempre (teléfono o
-            mail).
-          </p>
-        </Dialog>
-
-        <Dialog
-          open={dialogo === 'opt-out'}
-          onClose={() => setDialogo(null)}
-          title="Marcar «no contactar»"
-          footer={
-            <>
-              <Button variant="secondary" disabled={corriendo} onClick={() => setDialogo(null)}>
-                Cancelar
-              </Button>
-              <Button
-                variant="danger"
-                disabled={corriendo}
-                onClick={() => ejecutar(() => marcarOptOutAction({ proveedorId: proveedor.id }))}
-              >
-                {corriendo ? 'Guardando…' : 'Marcar no contactar'}
-              </Button>
-            </>
-          }
-        >
-          <p>
-            <strong>{proveedor.nombre}</strong> deja de recibir cualquier mensaje del estudio y no va
-            a aparecer en ninguna shortlist de compulsa.
-          </p>
-          <p className="mt-2">
-            Es <span className="font-medium">permanente</span>: desde acá no se puede deshacer. Si más
-            adelante el proveedor pide volver, se lo carga de nuevo como alta.
-          </p>
-        </Dialog>
-      </TableCell>
+          <Dialog
+            open={dialogo === 'opt-out'}
+            onClose={() => setDialogo(null)}
+            title="Marcar «no contactar»"
+            footer={
+              <>
+                <Button variant="secondary" disabled={corriendo} onClick={() => setDialogo(null)}>
+                  Cancelar
+                </Button>
+                <Button
+                  variant="danger"
+                  disabled={corriendo}
+                  onClick={() => ejecutar(() => marcarOptOutAction({ proveedorId: proveedor.id }))}
+                >
+                  {corriendo ? 'Guardando…' : 'Marcar no contactar'}
+                </Button>
+              </>
+            }
+          >
+            <p>
+              <strong>{proveedor.nombre}</strong> deja de recibir cualquier mensaje del estudio y no va
+              a aparecer en ninguna shortlist de compulsa.
+            </p>
+            <p className="mt-2">
+              Es <span className="font-medium">permanente</span>: desde acá no se puede deshacer. Si más
+              adelante el proveedor pide volver, se lo carga de nuevo como alta.
+            </p>
+          </Dialog>
+        </TableCell>
+      )}
     </TableRow>
   );
 }
