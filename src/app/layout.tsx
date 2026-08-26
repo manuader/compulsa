@@ -44,6 +44,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
                   <Link href="/obras" className="hover:text-neutral-900">
                     Obras
                   </Link>
+                  <Link href="/proveedores" className="hover:text-neutral-900">
+                    Proveedores
+                  </Link>
                   <div className="ml-auto flex items-center gap-3">
                     <span className="hidden text-neutral-500 sm:inline">
                       {sesion.estudio.nombre} · {sesion.usuario.email}
