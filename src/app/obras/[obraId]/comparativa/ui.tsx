@@ -10,7 +10,9 @@
  * §6). No es un "¿estás seguro?": el diálogo repite a quién se le adjudica, por
  * cuánto, cuántos ítems entran y cuántos quedan sin comparar, y qué pasa con
  * los otros proveedores. Es la última pantalla antes de un documento comercial,
- * así que tiene que decir exactamente qué se va a firmar.
+ * así que tiene que decir exactamente qué se va a firmar — y si el proveedor
+ * cambió una especificación, lo dice **en rojo y con la lista** (PRD §12): eso
+ * no es un detalle del cuadro, es comprar otra cosa.
  *
  * El botón que se ve o no se ve **no es la autorización**: el rol lo exige el
  * núcleo (`adjudicarCompulsa` → `requireAccion`). Esconderlo es cortesía con el
@@ -22,6 +24,13 @@ import { adjudicarAction } from '@/app/obras/[obraId]/comparativa/actions';
 import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+
+/** Un ítem que este proveedor cotizó cambiando una especificación (PRD §12). */
+export interface SustitucionResumen {
+  claveItem: string;
+  descripcion: string;
+  detalle: string;
+}
 
 export interface ResumenAdjudicacion {
   proveedorNombre: string;
@@ -37,6 +46,11 @@ export interface ResumenAdjudicacion {
   validez: string;
   /** Cuántos proveedores más quedan en juego y se van a cerrar. */
   otrosContactos: number;
+  /**
+   * Las especificaciones que este proveedor cambió. Vacío en el caso normal;
+   * con una sola, el diálogo se pone en rojo y las lista (PRD §12).
+   */
+  sustituciones: SustitucionResumen[];
 }
 
 export interface BotonAdjudicarProps {
@@ -121,6 +135,30 @@ export function BotonAdjudicar({
             <dt className="text-neutral-500">Validez</dt>
             <dd className="text-neutral-900">{resumen.validez}</dd>
           </dl>
+
+          {/* PRD §12: una sustitución de especificación se ve EN ROJO y
+              adjudicarla es una decisión explícita. Va antes que el aviso de
+              total ≠ cuadro porque es la más cara de las dos: comprar otra cosa
+              es peor que comprar por otro número. */}
+          {resumen.sustituciones.length > 0 ? (
+            <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-red-800">
+              <p className="font-medium">
+                Esta cotización sustituye{' '}
+                {resumen.sustituciones.length === 1
+                  ? '1 especificación'
+                  : `${resumen.sustituciones.length} especificaciones`}{' '}
+                — revisalas antes de adjudicar.
+              </p>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {resumen.sustituciones.map((sustitucion) => (
+                  <li key={sustitucion.claveItem}>
+                    <strong className="font-medium">{sustitucion.descripcion}</strong> (
+                    {sustitucion.claveItem}): {sustitucion.detalle}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           {resumen.difiereDelDeclarado ? (
             <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">

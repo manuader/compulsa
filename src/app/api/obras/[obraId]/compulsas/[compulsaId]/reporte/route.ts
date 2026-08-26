@@ -37,6 +37,7 @@ import {
   ETIQUETA_MATCH,
   ETIQUETA_VALIDEZ,
   formatearImporte,
+  sustitucionesDe,
   type Comparativa,
   type MatchCelda,
 } from '@/lib/compulsa/comparativa';
@@ -58,6 +59,18 @@ const NUM2 = '0.00';
 
 const DISCLAIMER =
   'Comparativa asistida por Compulsa — sujeto a validación del profesional responsable';
+
+/**
+ * Lo que dice una celda `sustituto`, y en qué color (PRD §12).
+ *
+ * En el cuadro un `sustituto` y un `no_cotizado` valen los dos `—` porque
+ * ninguno suma; en un XLSX que se le manda al comitente eso los vuelve la misma
+ * cosa, y no lo son: uno es un ítem que falta y el otro es **otro producto**.
+ * La celda lo escribe y la fuente roja lo grita, porque una nota de celda hay
+ * que ir a buscarla.
+ */
+const TEXTO_SUSTITUCION = 'SUSTITUCIÓN';
+const ROJO: Partial<ExcelJS.Font> = { color: { argb: 'FFB91C1C' }, bold: true };
 
 function problema(status: number, mensaje: string): Response {
   return Response.json({ error: mensaje }, { status });
@@ -148,13 +161,17 @@ function hojaComparativa(wb: ExcelJS.Workbook, datos: DatosComparativa): void {
       fila.item.cantidad,
       // Lo que no se puede comparar viaja como el mismo "—" de la pantalla: en
       // una planilla, un 0 se sumaría y una celda vacía parecería un olvido.
-      ...fila.celdas.map((celda) => celda.importe ?? '—'),
+      // La excepción es `sustituto`, que se nombra (ver `TEXTO_SUSTITUCION`).
+      ...fila.celdas.map((celda) =>
+        celda.match === 'sustituto' ? TEXTO_SUSTITUCION : (celda.importe ?? '—'),
+      ),
     ];
     const excel = hoja.addRow(valores);
     excel.getCell(4).numFmt = NUM2;
     fila.celdas.forEach((celda, i) => {
       const cell = excel.getCell(5 + i);
       if (celda.importe !== null) cell.numFmt = NUM2;
+      if (celda.match === 'sustituto') cell.font = ROJO;
       // El motivo del match queda como nota de la celda: es el mismo tooltip
       // que muestra la pantalla, y sin él "—" no explica nada.
       cell.note = `${ETIQUETA_MATCH[celda.match]}: ${celda.detalle}`;
@@ -174,6 +191,10 @@ function hojaComparativa(wb: ExcelJS.Workbook, datos: DatosComparativa): void {
     ],
     ['Ítems comparables', (i) => comparativa.columnas[i].itemsComparables],
     ['Ítems sin comparar', (i) => comparativa.columnas[i].itemsExcluidos],
+    [
+      'Sustituciones de especificación',
+      (i) => sustitucionesDe(comparativa, comparativa.columnas[i].cotizacionId).length,
+    ],
     ['Score de fidelidad', (i) => comparativa.columnas[i].scoreFidelidad, NUM2],
     ['Plazo (días)', (i) => comparativa.columnas[i].plazoDias],
     ['Validez', (i) => ETIQUETA_VALIDEZ[comparativa.columnas[i].validez]],
@@ -274,7 +295,7 @@ function hojasPorCotizacion(
       hoja.addRow([]);
       hoja.addRow(['Ítems del pedido sin importe comparable']).getCell(1).font = { bold: true };
       for (const { fila, celda } of faltantes) {
-        hoja.addRow([
+        const excel = hoja.addRow([
           null,
           fila.item.descripcion,
           ETIQUETA_UNIDAD[fila.item.unidad],
@@ -282,9 +303,14 @@ function hojasPorCotizacion(
           null,
           null,
           fila.claveItem,
-          ETIQUETA_MATCH[(celda!.match ?? 'sin_conciliar') as MatchCelda],
+          celda!.match === 'sustituto'
+            ? TEXTO_SUSTITUCION
+            : ETIQUETA_MATCH[(celda!.match ?? 'sin_conciliar') as MatchCelda],
           celda!.detalle,
         ]);
+        // La misma marca roja que en el cuadro: acá está la lista de lo que le
+        // falta a este presupuesto, y una sustitución no es una falta más.
+        if (celda!.match === 'sustituto') excel.font = ROJO;
       }
     }
   }
@@ -341,10 +367,11 @@ function hojaCondiciones(wb: ExcelJS.Workbook, datos: DatosComparativa, fecha: D
     'Celda',
     'Precio unitario de la línea cotizada por la cantidad del pedido, no el importe que escribió el proveedor.',
   ]);
+  hoja.addRow(['"—"', 'El proveedor no cotizó ese ítem del pedido.']);
   hoja.addRow([
-    '"—"',
-    'El ítem no se puede comparar: no se cotizó, o el proveedor sustituyó una especificación. La nota de la celda dice cuál de las dos.',
-  ]);
+    `"${TEXTO_SUSTITUCION}"`,
+    'El proveedor cotizó cambiando una especificación que el pedido marcó como no sustituible. No suma al total —es otro producto— y adjudicar con una encima es una decisión explícita del profesional (PRD §12).',
+  ]).getCell(1).font = ROJO;
   hoja.addRow([
     'Total comparable',
     'Suma de las celdas comparables. Puede no coincidir con el total declarado: la fila «Diferencia» lo muestra.',

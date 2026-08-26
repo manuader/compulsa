@@ -32,6 +32,7 @@ import {
   ETIQUETA_MATCH,
   ETIQUETA_VALIDEZ,
   formatearImporte,
+  sustitucionesDe,
   type CeldaComparativa,
   type ColumnaComparativa,
   type EstadoValidez,
@@ -102,7 +103,14 @@ function tituloCelda(celda: CeldaComparativa): string {
   return partes.join(' ');
 }
 
-function Columna({ columna }: { columna: ColumnaComparativa }) {
+function Columna({
+  columna,
+  sustituciones,
+}: {
+  columna: ColumnaComparativa;
+  /** Cuántas especificaciones cambió este proveedor (PRD §12: en rojo). */
+  sustituciones: number;
+}) {
   return (
     <div className="flex min-w-40 flex-col gap-1">
       <span className="font-medium text-neutral-900">{columna.proveedorNombre}</span>
@@ -114,6 +122,11 @@ function Columna({ columna }: { columna: ColumnaComparativa }) {
         </Badge>
         {columna.sinTotalDeclarado ? <Badge tone="warn">Sin total</Badge> : null}
         {columna.difiereDelDeclarado ? <Badge tone="warn">Total ≠ cuadro</Badge> : null}
+        {sustituciones > 0 ? (
+          <Badge tone="error">
+            {sustituciones === 1 ? '1 sustitución' : `${sustituciones} sustituciones`}
+          </Badge>
+        ) : null}
       </span>
     </div>
   );
@@ -162,6 +175,14 @@ export default async function ComparativaPage({
   const datos = await leerComparativa(db, estudio.id, elegida.id);
   const { comparativa, ranking, pesos, mepReferencia, adjudicacion } = datos;
   const puestos = new Map(ranking.map((p) => [p.id, p]));
+  // Una vez por columna: la usan el encabezado, el cuadro y el diálogo de
+  // adjudicar, que tienen que decir lo mismo (PRD §12).
+  const sustitucionesPorCotizacion = new Map(
+    comparativa.columnas.map((columna) => [
+      columna.cotizacionId,
+      sustitucionesDe(comparativa, columna.cotizacionId),
+    ]),
+  );
   const puedeAdjudicar = esRolSuficiente(usuario, 'titular');
   const ganadora = adjudicacion
     ? comparativa.columnas.find((c) => c.cotizacionId === adjudicacion.cotizacionId)
@@ -257,7 +278,12 @@ export default async function ComparativaPage({
                   </th>
                   {comparativa.columnas.map((columna) => (
                     <th key={columna.cotizacionId} scope="col" className="px-3 py-2 text-left font-medium text-neutral-600">
-                      <Columna columna={columna} />
+                      <Columna
+                        columna={columna}
+                        sustituciones={
+                          (sustitucionesPorCotizacion.get(columna.cotizacionId) ?? []).length
+                        }
+                      />
                     </th>
                   ))}
                 </tr>
@@ -279,9 +305,22 @@ export default async function ComparativaPage({
                       <td
                         key={celda.cotizacionId}
                         title={tituloCelda(celda)}
-                        className={`px-3 py-2 text-right align-top tabular-nums ${CLASE_BENCHMARK[celda.benchmark]}`}
+                        className={`px-3 py-2 text-right align-top tabular-nums ${
+                          celda.match === 'sustituto'
+                            ? 'text-red-700'
+                            : CLASE_BENCHMARK[celda.benchmark]
+                        }`}
                       >
-                        {celda.texto}
+                        {/* Un `sustituto` NO es un `no_cotizado` (PRD §12): los
+                            dos salen `—` del cuadro porque ninguno suma, pero el
+                            que cambió una especificación se nombra en rojo. Un
+                            tooltip no alcanza: es justo lo que nadie mira
+                            cuando está mirando precios. */}
+                        {celda.match === 'sustituto' ? (
+                          <span className="font-semibold">Sustitución</span>
+                        ) : (
+                          celda.texto
+                        )}
                         {celda.benchmark !== 'sin_datos' ? (
                           <span aria-hidden="true" className="ml-1">
                             ●
@@ -375,6 +414,17 @@ export default async function ComparativaPage({
                               posicion: puesto?.posicion ?? null,
                               validez: ETIQUETA_VALIDEZ[columna.validez],
                               otrosContactos: comparativa.columnas.length - 1,
+                              // PRD §12: adjudicar con una sustitución encima es
+                              // una decisión explícita, así que el diálogo la
+                              // nombra ítem por ítem en vez de esconderla en un
+                              // «N sin comparar».
+                              sustituciones: (
+                                sustitucionesPorCotizacion.get(columna.cotizacionId) ?? []
+                              ).map((sustitucion) => ({
+                                claveItem: sustitucion.claveItem,
+                                descripcion: sustitucion.descripcion,
+                                detalle: sustitucion.detalle,
+                              })),
                             }}
                           />
                         </td>
@@ -505,8 +555,14 @@ export default async function ComparativaPage({
                 <p className="text-sm text-neutral-600">
                   Cada celda es el precio unitario que cotizó el proveedor por la cantidad del
                   pedido: así dos presupuestos que cotizaron cantidades distintas se pueden
-                  comparar. Un «—» es un ítem que no se puede comparar —no lo cotizó, o cambió una
-                  especificación— y no suma al total; pasá el mouse por encima para ver por qué.
+                  comparar. Un «—» es un ítem que el proveedor no cotizó y no suma al total; pasá
+                  el mouse por encima para ver por qué.
+                </p>
+                <p className="text-sm text-neutral-600">
+                  <span className="font-medium text-red-700">Sustitución</span> es otra cosa: el
+                  proveedor cotizó cambiando una especificación que el pedido marcó como no
+                  sustituible. Tampoco suma —es otro producto— y adjudicar con una encima es una
+                  decisión tuya, que el diálogo de adjudicar te vuelve a mostrar.
                 </p>
                 <p className="text-sm text-neutral-600">
                   El punto de color compara el precio unitario contra el índice del estudio para ese

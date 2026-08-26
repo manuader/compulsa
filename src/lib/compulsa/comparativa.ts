@@ -508,6 +508,48 @@ export function armarComparativa(
 }
 
 // ---------------------------------------------------------------------------
+// Sustituciones de especificación (RF-1002 / PRD §12)
+// ---------------------------------------------------------------------------
+
+/** Un ítem que el proveedor cotizó cambiando una especificación no sustituible. */
+export interface SustitucionCelda {
+  claveItem: string;
+  /** La descripción del ítem **del pedido**, que es lo que se pidió y no vino. */
+  descripcion: string;
+  /** El motivo que escribió la conciliación, en es-AR. */
+  detalle: string;
+}
+
+/**
+ * Los ítems que esta cotización **sustituyó**.
+ *
+ * El §12 del PRD pide que una sustitución se vea en rojo y que adjudicar con
+ * una encima sea una decisión explícita. En el cuadro, `sustituto` y
+ * `no_cotizado` comparten la celda `—` y solo se distinguían por el tooltip: una
+ * spec cambiada es exactamente lo que nadie mira cuando mira precios, así que
+ * la pantalla, el XLSX y el diálogo de adjudicar la nombran los tres.
+ *
+ * Vive acá y no en la pantalla porque la usan las tres, y porque una función
+ * pura es lo único de esto que se puede pinnear en un test sin renderizar.
+ */
+export function sustitucionesDe(
+  comparativa: Comparativa,
+  cotizacionId: string,
+): SustitucionCelda[] {
+  const salida: SustitucionCelda[] = [];
+  for (const fila of comparativa.filas) {
+    const celda = fila.celdas.find((c) => c.cotizacionId === cotizacionId);
+    if (celda?.match !== 'sustituto') continue;
+    salida.push({
+      claveItem: fila.claveItem,
+      descripcion: fila.item.descripcion,
+      detalle: celda.detalle,
+    });
+  }
+  return salida;
+}
+
+// ---------------------------------------------------------------------------
 // Ranking multicriterio (RF-1101)
 // ---------------------------------------------------------------------------
 

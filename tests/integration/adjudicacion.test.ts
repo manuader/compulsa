@@ -689,6 +689,56 @@ describe('GET .../compulsas/[compulsaId]/reporte', () => {
     expect(hoja.getCell('G2').value).toBe('—');
   });
 
+  it('una sustitución sale con su texto y en rojo, distinta de un no cotizado (PRD §12)', async () => {
+    cookieActual = token;
+    // Maderera Norte cambió la placa: mismo lugar del cuadro que un
+    // `no_cotizado`, pero no es lo mismo y el XLSX tiene que decirlo.
+    await db
+      .update(conciliacionItems)
+      .set({ match: 'sustituto', nota: 'Cotizó placa de yeso común donde el pedido pide durlock.' })
+      .where(
+        and(eq(conciliacionItems.cotizacionId, cotC), eq(conciliacionItems.claveItem, 'seco.placas')),
+      );
+    // Y Ferretería del Centro directamente no cotizó ese ítem: las dos celdas
+    // están en la misma fila, así que el contraste se ve en el mismo test.
+    await db
+      .delete(conciliacionItems)
+      .where(
+        and(eq(conciliacionItems.cotizacionId, cotB), eq(conciliacionItems.claveItem, 'seco.placas')),
+      );
+
+    const hoja = (await libroDe(await pedirReporte())).getWorksheet('Comparativa')!;
+
+    expect(hoja.getCell('F2').value).toBe('—'); // el que no cotizó
+    expect(hoja.getCell('G2').value).toBe('SUSTITUCIÓN'); // el que cambió la spec
+    expect(hoja.getCell('G2').font?.color?.argb).toBe('FFB91C1C');
+    expect(hoja.getCell('G2').font?.bold).toBe(true);
+    // El "—" queda con la fuente por defecto: si los dos fueran rojos, el
+    // color dejaría de significar algo.
+    expect(hoja.getCell('F2').font?.color?.argb).toBeUndefined();
+    // Y el motivo sigue en la nota, como en todas las celdas.
+    expect(String(hoja.getCell('G2').note)).toContain('placa de yeso común');
+
+    const filas: Record<string, unknown[]> = {};
+    hoja.eachRow((row) => {
+      const etiqueta = row.getCell(1).value;
+      if (typeof etiqueta === 'string') {
+        filas[etiqueta] = [row.getCell(5).value, row.getCell(6).value, row.getCell(7).value];
+      }
+    });
+    expect(filas['Sustituciones de especificación']).toEqual([0, 0, 1]);
+
+    // La hoja del proveedor la repite en su lista de lo que no entró al total.
+    const suya = (await libroDe(await pedirReporte())).getWorksheet('Maderera Norte')!;
+    const textos: string[] = [];
+    suya.eachRow((row) => {
+      row.eachCell((cell) => {
+        if (typeof cell.value === 'string') textos.push(cell.value);
+      });
+    });
+    expect(textos).toContain('SUSTITUCIÓN');
+  });
+
   it('cada hoja de cotización trae sus líneas con el match contra el pedido', async () => {
     cookieActual = token;
 

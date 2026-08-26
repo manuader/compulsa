@@ -27,6 +27,7 @@ import {
   formatearImporte,
   formatearMonto,
   rankear,
+  sustitucionesDe,
   vencimientoDe,
   type CompulsaComparativa,
   type ConciliacionComparativa,
@@ -369,6 +370,57 @@ describe('armarComparativa: el benchmark contra el índice del estudio', () => {
 // ---------------------------------------------------------------------------
 // Validez
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Sustituciones (PRD §12)
+// ---------------------------------------------------------------------------
+
+describe('sustitucionesDe: lo que el diálogo de adjudicar tiene que nombrar', () => {
+  it('devuelve el ítem del PEDIDO, no la línea que mandó el proveedor', () => {
+    const sustituciones = sustitucionesDe(armar(), 'cot-b');
+
+    expect(sustituciones).toEqual([
+      {
+        claveItem: 'seco.montantes',
+        descripcion: 'Montante 70 mm para tabique de durlock',
+        detalle: 'Se pidió durlock y la línea dice ladrillo.',
+      },
+    ]);
+  });
+
+  it('un no_cotizado NO es una sustitución: cot-c tiene dos y ninguna cuenta', () => {
+    // Es exactamente la confusión que el cuadro tenía: las dos celdas salen "—"
+    // y solo el tooltip las distinguía.
+    const cuadro = armar();
+    const celdas = cuadro.filas.map(
+      (fila) => fila.celdas.find((c) => c.cotizacionId === 'cot-c')!.texto,
+    );
+
+    expect(celdas.slice(1)).toEqual(['—', '—']);
+    expect(sustitucionesDe(cuadro, 'cot-c')).toEqual([]);
+  });
+
+  it('sin sustituciones da la lista vacía y una cotización desconocida también', () => {
+    expect(sustitucionesDe(armar(), 'cot-a')).toEqual([]);
+    expect(sustitucionesDe(armar(), 'no-existe')).toEqual([]);
+  });
+
+  it('sigue el orden del snapshot, no el de las conciliaciones', () => {
+    const conciliaciones: ConciliacionComparativa[] = [
+      conc('cot-a', 'seco.tornillos', 0, 'sustituto', 'Cambió el tipo de tornillo.'),
+      conc('cot-a', 'seco.placas', 0, 'sustituto', 'Cambió la placa.'),
+    ];
+    const cuadro = armarComparativa(COMPULSA, [COT_A], conciliaciones, [], {
+      zona: ZONA,
+      ahora: AHORA,
+    });
+
+    expect(sustitucionesDe(cuadro, 'cot-a').map((s) => s.claveItem)).toEqual([
+      'seco.placas',
+      'seco.tornillos',
+    ]);
+  });
+});
 
 describe('validez de la oferta: created_at + validez_dias', () => {
   const emitida = new Date('2026-08-20T12:00:00Z');
