@@ -1,6 +1,6 @@
 # HANDOFF — Compulsa, estado actual
 
-> **Banner:** La **F0 está completa y mergeada en `main`** (2026-08-25, commit 9e217a0): obra → upload PDF → pipeline de análisis → planilla con provenance → bandeja → export XLSX, con 252/252 tests y golden 0,00 %. Corre 100 % local (PGlite + provider mock); el provider real de Claude existe pero nunca corrió contra la API. Lo siguiente es F1 (compulsa integrada) o el deploy real — ambos bloqueados en credenciales del dueño.
+> **Banner:** **F0 + UI de gestión completas en `main`** (2026-08-26, commit efe5eb5, 273/273 tests). El **provider real de Claude ya corre en producción local**: el usuario está computando una obra real de 25 láminas con su API key — los rótulos reales se leen bien y el primer bug de producción (bbox inválido tiraba la lámina) está arreglado. Lo siguiente: acompañar la prueba real, paralelizar el pipeline (hoy secuencial), o F1.
 
 ## 0. Cómo usar este documento
 
@@ -34,6 +34,9 @@ Las operativas viven en `CLAUDE.md` (raíz) y en los CLAUDE.md por módulo (`src
 
 ## 4. Qué cambió, sesión por sesión
 
+### Sesión 2026-08-26 — UI de gestión + estreno del provider real con obra verdadera
+Se agregó la gestión completa (eliminar documentos con recompute, archivar/editar/eliminar obras con type-to-confirm server-side, toggle archivadas, redirect auth, filenames de export distinguidos; núcleo en `src/lib/obras/gestion.ts`). En paralelo, el usuario activó su API key y subió una obra real de 25 láminas: los rótulos se leyeron bien y apareció el primer bug de producción — la gramática de structured outputs no garantiza largos de array y un bbox de 3 elementos tiraba la lámina entera; se arregló con schema de cable laxo + saneo por entidad (`sanearAnalisis`). Detalle: [SESSION-2026-08-26-gestion-y-provider-real.md](SESSION-2026-08-26-gestion-y-provider-real.md).
+
 ### Sesión 2026-08-25 — F0 completa: de repo vacío a producto funcional mergeado
 Se instaló el sistema de handoffs, se escribió el plan de 11 tareas y se ejecutó entero por subagentes con revisión por tarea (5/11 con ronda de fixes) + revisión final de rama que encontró 3 defectos cross-tarea (auditorías fantasma por orden de claves jsonb, núcleos de bandeja expuestos en `'use server'`, bloqueantes rubro-null que no gateaban) — todos cerrados en una ola final. Cierre: 252/252 tests, golden 0,00 %, e2e 9/9 en navegador. Detalle y hallazgos: [SESSION-2026-08-25-f0-nucleo.md](SESSION-2026-08-25-f0-nucleo.md).
 
@@ -48,6 +51,8 @@ Se instaló el sistema de handoffs, se escribió el plan de 11 tareas y se ejecu
 7. **Núcleos DB-mutantes nunca en archivos `'use server'`** — todo export de esos archivos es endpoint público HTTP. Patrón: núcleo en `src/lib/*`, wrapper `*Action` guardado.
 8. **Worker de pdf.js = copia estática commiteada en `public/pdf.worker.min.mjs`** (hash verificado contra pdfjs-dist 4.10.38) — `new URL(..., import.meta.url)` no compila con pdfjs en `serverExternalPackages`.
 9. **F0 no incluye** deducciones (F2), capas de anotación (F2), RFQ/outreach (F1), DWG (F4) — PRD §14; no adelantar alcance.
+10. **Borrar obra = archivar; el borrado físico existe solo sobre archivadas** con confirmación del nombre validada en el server, y purga todo incluida la auditoría de la obra dejando UNA fila `obra_eliminada` (obra_id null) — excepción documentada a la regla de soft-delete. La fila de rastro se escribe ANTES del barrido de storage (un EACCES no puede dejar una obra borrada sin rastro).
+11. **El cable del LLM es laxo en lo numérico a propósito** (`zAnalisisLaminaCrudo` + `sanearAnalisis` en `src/lib/analysis/tipos.ts`): la gramática de structured outputs garantiza claves y enums pero no largos de array ni rangos; el contrato estricto se aplica por entidad (clamp de recuperables, descarte contado de inutilizables). El mock sigue estricto.
 
 ## 6. Cómo verificar
 
@@ -70,11 +75,14 @@ Orden: test → golden → build. Con agentes/procesos pesados activos en la má
 5. **Corridas de verificación con otros agentes activos dan falsos rojos**: 7 tests "fallaron" por timeouts de contención de CPU y pasaban solos. Verificación final siempre con máquina quieta.
 6. **`npm run build` con `dev` levantado corrompe `.next/`** — documentado en README.
 7. **`npm run seed` necesita `process.exit()`**: la PGlite persistida deja vivo el event loop (falta `closeDb()` en client.ts).
+8. **La gramática de structured outputs NO valida largos de array ni rangos numéricos**: un `bbox` de 3 elementos pasó la generación con documentación real y el schema estricto rechazaba la lámina completa. Por eso existe la decisión §5.11 — no "simplificar" volviendo al schema estricto en `zodOutputFormat`.
+9. **Con la máquina cargada la suite necesita `npx vitest run --hookTimeout=120000`**: sin el flag caen ~6 suites por `Hook timed out` en `createTestDb` (cero asserts rotos). Para build con el dev server vivo: worktree detached (`git worktree add --detach .worktrees/buildcheck <sha>`), nunca en el checkout principal.
 
 ## 8. Qué falta
 
 - **Deuda aceptada por la revisión final** (lista completa con razones al final de [SESSION-2026-08-25-f0-nucleo.md](SESSION-2026-08-25-f0-nucleo.md)); las dos para F1 temprano: unique `computo_items(obra_id, clave_item)` + índices FK, y columna `procesando_desde` en `laminas`.
-- **Bloqueado en humanos:** credenciales Supabase/Vercel (deploy), `ANTHROPIC_API_KEY` (probar `claude.ts`, que nunca corrió contra la API — y arreglar el cache que pisa `ObraContexto`), obras reales del colega para el golden real, respuestas del §18 del PRD.
+- **Bloqueado en humanos:** credenciales Supabase/Vercel (deploy), obras reales del colega con cómputo manual para el golden real, respuestas del §18 del PRD. (`ANTHROPIC_API_KEY` ya está activa y el provider real corre — queda arreglar el cache que pisa `ObraContexto` en reformas.)
+- **Paralelizar `procesarDocumento`** (hoy secuencial; 25 láminas reales se hacen largas) — cuidando la exclusión por lámina existente y el rate limit de la API.
 - **F1 (compulsa integrada)** según PRD §14.
 
 ## 9. Mapa de documentos
