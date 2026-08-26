@@ -99,7 +99,10 @@ export function crearProviderQaClaude(): QaProvider {
 
       const respuesta = await cliente.messages.parse({
         model: modelo(),
-        max_tokens: 4000,
+        // 16 000 como los otros dos providers, aunque la respuesta sean tres
+        // oraciones: el thinking adaptativo consume del mismo techo, y quedarse
+        // corto trunca la respuesta a mitad de una cita.
+        max_tokens: 16000,
         thinking: { type: 'adaptive' },
         system: SISTEMA,
         messages: [{ role: 'user', content: instruccion(limpia, { ...contexto, laminas: conTexto }) }],
