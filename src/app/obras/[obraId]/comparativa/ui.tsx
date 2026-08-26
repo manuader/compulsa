@@ -1,8 +1,10 @@
 'use client';
 
 /**
- * Las dos piezas interactivas de la comparativa. Todo lo demás —el cuadro, el
- * ranking, las leyendas— es server component: son datos, no interacción.
+ * La pieza interactiva de la comparativa: el botón de adjudicar con su
+ * confirmación. Todo lo demás —el cuadro, el ranking, las leyendas— es server
+ * component: son datos, no interacción. (El de copiar la orden de compra es la
+ * primitiva compartida `@/components/ui/boton-copiar`.)
  *
  * **Adjudicar pide confirmación con el resumen adentro** (`src/app/CLAUDE.md`
  * §6). No es un "¿estás seguro?": el diálogo repite a quién se le adjudica, por
@@ -29,7 +31,8 @@ export interface ResumenAdjudicacion {
   itemsExcluidos: number;
   totalComparable: string;
   difiereDelDeclarado: boolean;
-  puntaje: number | null;
+  /** Puntaje del ranking ya formateado en es-AR ("0,6179"). */
+  puntaje: string | null;
   posicion: number | null;
   validez: string;
   /** Cuántos proveedores más quedan en juego y se van a cerrar. */
@@ -153,25 +156,3 @@ export function BotonAdjudicar({
   );
 }
 
-/**
- * Copiar la orden de compra al portapapeles. El texto viaja desde el server ya
- * armado: el botón no lo genera ni lo reformatea, solo lo copia — el que se
- * manda tiene que ser byte por byte el que quedó guardado en `adjudicaciones`.
- */
-export function BotonCopiar({ texto, etiqueta = 'Copiar' }: { texto: string; etiqueta?: string }) {
-  const [copiado, setCopiado] = useState(false);
-
-  return (
-    <Button
-      variant="secondary"
-      size="sm"
-      onClick={async () => {
-        await navigator.clipboard.writeText(texto);
-        setCopiado(true);
-        setTimeout(() => setCopiado(false), 2000);
-      }}
-    >
-      {copiado ? '¡Copiado!' : etiqueta}
-    </Button>
-  );
-}

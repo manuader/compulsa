@@ -63,8 +63,16 @@ function problema(status: number, mensaje: string): Response {
   return Response.json({ error: mensaje }, { status });
 }
 
-/** `compulsa-casa-demo-seco-v1-2026-08-26.xlsx`. */
-export function nombreArchivoReporte(
+/**
+ * `compulsa-casa-demo-seco-v1-2026-08-26.xlsx`.
+ *
+ * Sin `export`, igual que la de la orden de compra: en un `route.ts` los únicos
+ * exports que Next admite son los verbos HTTP y las opciones de segmento
+ * (`runtime`, `dynamic`, …). Cualquier otro rompe el type-check contra los tipos
+ * que Next genera en `.next/types` —y con él el build—, aunque el módulo
+ * importado derecho desde un test compile perfecto.
+ */
+function nombreArchivoReporte(
   nombreObra: string,
   rubro: string,
   version: number,
@@ -75,7 +83,7 @@ export function nombreArchivoReporte(
 }
 
 /** `orden-compra-casa-demo-seco-v1-2026-08-26.pdf`. */
-export function nombreArchivoOrdenCompra(
+function nombreArchivoOrdenCompra(
   nombreObra: string,
   rubro: string,
   version: number,
