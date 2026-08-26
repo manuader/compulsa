@@ -107,9 +107,12 @@ export function proponerContraoferta(entrada: EntradaContraoferta): ResultadoCon
   if (!Number.isInteger(ronda) || ronda < 1) {
     throw new Error(`La ronda de negociación tiene que ser un entero desde 1: ${String(ronda)}.`);
   }
+  // Más estricto que `zMandato` (que acepta hasta 100): con 100 el objetivo da
+  // 0 y el texto le pediría al proveedor que regale el rubro. Preferimos que
+  // reviente acá antes que mandar eso.
   if (!Number.isFinite(mandato.objetivoMejoraPct) || mandato.objetivoMejoraPct < 0 || mandato.objetivoMejoraPct >= 100) {
     throw new Error(
-      `El objetivo de mejora del mandato tiene que estar entre 0 y 100: ${String(mandato.objetivoMejoraPct)}.`,
+      `El objetivo de mejora del mandato tiene que ser un porcentaje entre 0 y 100 (100 excluido): ${String(mandato.objetivoMejoraPct)}.`,
     );
   }
 
