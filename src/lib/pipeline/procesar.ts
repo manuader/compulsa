@@ -30,12 +30,15 @@ import { z } from 'zod';
 import { getDb, type Db } from '@/db/client';
 import {
   auditoria,
+  computoItems,
   documentos,
   entidades,
   hallazgos,
   laminas,
   obras,
+  recomputos,
   usuarios,
+  type ComputoItem,
   type Documento,
   type Entidad,
   type Lamina,
@@ -51,13 +54,22 @@ import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
   ACTOR_PIPELINE,
   borrarDeduccionesDeEntidades,
+  comoItemComputo,
   desvincularItemsDeEntidades,
+  diferenciasDeItem,
   recomputarObra,
 } from '@/lib/pipeline/recomputar';
 import { persistirResumen } from '@/lib/pipeline/resumen';
 import { getStorage, type StorageAdapter } from '@/lib/storage/index';
 import { DISCIPLINAS, TIPOS_LAMINA } from '@/types/domain';
-import type { BBox, EntidadDetectada, LaminaInput, RotuloDetectado } from '@/types/domain';
+import type {
+  BBox,
+  EntidadDetectada,
+  LaminaInput,
+  RotuloDetectado,
+  RubroId,
+  Unidad,
+} from '@/types/domain';
 
 /** 60 MB: un legajo de plantas grande entra; un video, no. */
 export const TAMANO_MAXIMO_BYTES = 60 * 1024 * 1024;
@@ -251,6 +263,146 @@ export async function subirDocumento(
 }
 
 // ---------------------------------------------------------------------------
+// Diff de revisiones (RF-308)
+// ---------------------------------------------------------------------------
+
+/** Por qué se recalculó la obra: la subida de una revisión, o un reproceso. */
+export type MotivoRecomputo = 'reproceso' | 'revision_nueva';
+
+export type EstadoCambio = 'agregado' | 'modificado' | 'anulado';
+
+/** Un ítem de la planilla que quedó distinto después de procesar el documento. */
+export interface CambioDeRevision {
+  claveItem: string;
+  rubro: RubroId;
+  descripcion: string;
+  unidad: Unidad;
+  estado: EstadoCambio;
+  cantCompraAntes: number | null;
+  cantCompraDespues: number | null;
+  /** El diff campo a campo, el mismo que el recompute deja en `auditoria`. */
+  campos: Record<string, unknown>;
+}
+
+/** Lo que se guarda en `recomputos.diff_json`. */
+export interface DiffDeRevision {
+  documentoId: string;
+  documentoNombre: string;
+  version: number;
+  cambios: CambioDeRevision[];
+  [clave: string]: unknown;
+}
+
+/** Los ítems **activos** de la obra por clave: lo que la planilla muestra hoy. */
+async function fotoDeItems(db: Db, obraId: string): Promise<Map<string, ComputoItem>> {
+  const filas = await db
+    .select()
+    .from(computoItems)
+    .where(and(eq(computoItems.obraId, obraId), eq(computoItems.estado, 'activo')));
+  return new Map(filas.map((fila) => [fila.claveItem, fila]));
+}
+
+/**
+ * Qué cambió en la planilla entre dos fotos, ordenado por clave.
+ *
+ * La comparación campo a campo es la **misma** que usa el recompute para
+ * auditar (`diferenciasDeItem`): si algún día cambia qué se considera un cambio,
+ * cambia en un solo lugar y las dos pantallas siguen diciendo lo mismo.
+ */
+export function diffDeRevision(
+  antes: ReadonlyMap<string, ComputoItem>,
+  despues: ReadonlyMap<string, ComputoItem>,
+): CambioDeRevision[] {
+  const claves = [...new Set([...antes.keys(), ...despues.keys()])].sort((a, b) =>
+    a.localeCompare(b, 'es-AR'),
+  );
+
+  const cambios: CambioDeRevision[] = [];
+  for (const claveItem of claves) {
+    const previo = antes.get(claveItem);
+    const actual = despues.get(claveItem);
+
+    if (previo && actual) {
+      const campos = diferenciasDeItem(previo, comoItemComputo(actual));
+      if (campos === null) continue;
+      cambios.push({
+        claveItem,
+        rubro: actual.rubro,
+        descripcion: actual.descripcion,
+        unidad: actual.unidad,
+        estado: 'modificado',
+        cantCompraAntes: previo.cantCompra,
+        cantCompraDespues: actual.cantCompra,
+        campos,
+      });
+      continue;
+    }
+
+    if (actual) {
+      cambios.push({
+        claveItem,
+        rubro: actual.rubro,
+        descripcion: actual.descripcion,
+        unidad: actual.unidad,
+        estado: 'agregado',
+        cantCompraAntes: null,
+        cantCompraDespues: actual.cantCompra,
+        campos: {},
+      });
+      continue;
+    }
+
+    if (previo) {
+      cambios.push({
+        claveItem,
+        rubro: previo.rubro,
+        descripcion: previo.descripcion,
+        unidad: previo.unidad,
+        estado: 'anulado',
+        cantCompraAntes: previo.cantCompra,
+        cantCompraDespues: null,
+        campos: {},
+      });
+    }
+  }
+
+  return cambios;
+}
+
+/**
+ * Deja en `recomputos` lo que este documento le hizo a la planilla.
+ *
+ * Es la memoria de "qué cambió" que la pantalla del expediente muestra después
+ * de subir una revisión (RF-308): la auditoría guarda el detalle ítem por ítem
+ * —una fila por cada uno—, y esto guarda **la corrida entera**, que es lo que se
+ * puede leer de un vistazo. Sin cambios no escribe: una revisión que no movió un
+ * número no tiene nada que contar.
+ */
+async function registrarRecomputo(
+  db: Db,
+  documento: Documento,
+  motivo: MotivoRecomputo,
+  antes: ReadonlyMap<string, ComputoItem>,
+): Promise<void> {
+  const cambios = diffDeRevision(antes, await fotoDeItems(db, documento.obraId));
+  if (cambios.length === 0) return;
+
+  const diff: DiffDeRevision = {
+    documentoId: documento.id,
+    documentoNombre: documento.nombreArchivo,
+    version: documento.version,
+    cambios,
+  };
+
+  await db.insert(recomputos).values({ obraId: documento.obraId, diffJson: diff, motivo });
+  await auditarAgente(documento.obraId, 'recomputo_registrado', `documentos:${documento.id}`, {
+    motivo,
+    cambios: cambios.length,
+    claves: cambios.map((cambio) => cambio.claveItem),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Documento → láminas
 // ---------------------------------------------------------------------------
 
@@ -277,6 +429,13 @@ export async function procesarDocumento(
 
   const existentes = await db.select().from(laminas).where(eq(laminas.documentoId, documentoId));
   const porPagina = new Map(existentes.map((lamina) => [lamina.numeroPagina, lamina]));
+
+  // La foto de la planilla ANTES de tocar nada: es la mitad izquierda del "qué
+  // cambió" (RF-308). Un documento que se procesa por primera vez y que trae una
+  // versión mayor a la 1 es una revisión nueva; todo lo demás es un reproceso.
+  const antes = await fotoDeItems(db, obra.id);
+  const motivo: MotivoRecomputo =
+    documento.version > 1 && existentes.length === 0 ? 'revision_nueva' : 'reproceso';
 
   const aProcesar: string[] = [];
 
@@ -313,6 +472,11 @@ export async function procesarDocumento(
   for (const laminaId of aProcesar) {
     await procesarLamina(laminaId, entorno);
   }
+
+  // RF-308: qué le hizo este documento a la planilla, para la pantalla "Qué
+  // cambió". Va antes del resumen porque el resumen es la foto final y esto es
+  // el movimiento.
+  await registrarRecomputo(db, documento, motivo, antes);
 
   // RF-205: el resumen ejecutivo se rehace recién acá, con todas las láminas del
   // documento analizadas y el cómputo ya sincronizado. Hacerlo por lámina sería
