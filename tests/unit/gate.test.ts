@@ -26,19 +26,44 @@ describe('puedeAprobarRubro (RF-404)', () => {
     expect(puedeAprobarRubro('pintura', [hallazgo({ rubro: 'pintura' })])).toEqual({ ok: false, bloqueantes: 1 });
   });
 
-  it('los hallazgos sin rubro (sanity) no frenan a ningún rubro', () => {
-    expect(puedeAprobarRubro('seco', [hallazgo({ rubro: null })])).toEqual({ ok: true, bloqueantes: 0 });
+  it('un bloqueante de obra (rubro null) frena a TODOS los rubros', () => {
+    // El caso vivo: la lámina bloqueada por escala (RF-201). No pertenece a
+    // ningún rubro porque no se midió nada de ella: aprobar cualquier rubro
+    // sería aprobar un cómputo al que le falta un pedazo.
+    const escala = hallazgo({ rubro: null });
+    expect(puedeAprobarRubro('seco', [escala])).toEqual({ ok: false, bloqueantes: 1 });
+    expect(puedeAprobarRubro('pintura', [escala])).toEqual({ ok: false, bloqueantes: 1 });
+    expect(puedeAprobarRubro('gruesa', [escala])).toEqual({ ok: false, bloqueantes: 1 });
+    expect(puedeAprobarRubro('aberturas', [escala])).toEqual({ ok: false, bloqueantes: 1 });
   });
 
-  it('cuenta todos los bloqueantes abiertos del rubro', () => {
+  it('un hallazgo de obra NO bloqueante (sanity) no frena a ningún rubro', () => {
+    // Los `inconsistencia` de sanity.ts nacen con `bloqueante: false`: quién
+    // frena y quién no lo decide el motor al crearlos, no el gate al contarlos.
+    expect(puedeAprobarRubro('seco', [hallazgo({ rubro: null, bloqueante: false })])).toEqual({
+      ok: true,
+      bloqueantes: 0,
+    });
+  });
+
+  it('un bloqueante de obra ya resuelto deja de frenar', () => {
+    expect(puedeAprobarRubro('seco', [hallazgo({ rubro: null, estado: 'respondido' })])).toEqual({ ok: true, bloqueantes: 0 });
+    expect(puedeAprobarRubro('seco', [hallazgo({ rubro: null, estado: 'descartado' })])).toEqual({ ok: true, bloqueantes: 0 });
+  });
+
+  it('cuenta los del rubro y los de obra juntos, y ninguno de otro rubro', () => {
     const hallazgos = [
-      hallazgo(),
-      hallazgo(),
-      hallazgo({ estado: 'respondido' }),
-      hallazgo({ rubro: 'gruesa' }),
-      hallazgo({ bloqueante: false }),
+      hallazgo(), // seco, abierto, bloqueante        → cuenta
+      hallazgo(), // seco, abierto, bloqueante        → cuenta
+      hallazgo({ rubro: null }), // escala, abierto   → cuenta
+      hallazgo({ estado: 'respondido' }), // resuelto → no
+      hallazgo({ rubro: 'gruesa' }), // otro rubro    → no
+      hallazgo({ bloqueante: false }), // no bloquea  → no
+      hallazgo({ rubro: null, bloqueante: false }), // sanity → no
     ];
-    expect(puedeAprobarRubro('seco', hallazgos)).toEqual({ ok: false, bloqueantes: 2 });
+    expect(puedeAprobarRubro('seco', hallazgos)).toEqual({ ok: false, bloqueantes: 3 });
+    // El mismo lote visto desde otro rubro: sus dos de seco no cuentan.
+    expect(puedeAprobarRubro('pintura', hallazgos)).toEqual({ ok: false, bloqueantes: 1 });
   });
 
   it('sin hallazgos se puede aprobar', () => {

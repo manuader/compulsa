@@ -213,7 +213,16 @@ function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: Tarjet
               rojo lo pone el `tone`; el emoji sobraba y ningún otro badge de la
               app lleva uno. */}
           {consulta.bloqueante && abierta ? (
-            <Badge tone="error" title="Frena la aprobación del rubro">
+            <Badge
+              tone="error"
+              title={
+                // Una consulta de obra (sin rubro) no se puede atribuir a uno:
+                // frena a todos, y el gate la cuenta en todos.
+                consulta.rubro === null
+                  ? 'Frena la aprobación de todos los rubros'
+                  : 'Frena la aprobación del rubro'
+              }
+            >
               Bloqueante
             </Badge>
           ) : null}

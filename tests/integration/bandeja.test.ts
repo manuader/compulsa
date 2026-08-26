@@ -583,6 +583,11 @@ describe('un hallazgo respondido no se reabre', () => {
     expect(abierto?.bloqueante).toBe(true);
     expect(abierto?.targetRef).toBeNull();
 
+    // RF-402/404: la lámina no se midió, así que ningún rubro se puede aprobar
+    // — el hallazgo de escala no tiene rubro porque los afecta a todos.
+    expect(abierto?.rubro).toBeNull();
+    expect(await gateDeAberturas()).toEqual({ ok: false, bloqueantes: 1 });
+
     const resultado = await responderHallazgo(
       { obraId, hallazgoId: abierto!.id, valor: '1:50' },
       actor,
@@ -598,6 +603,9 @@ describe('un hallazgo respondido no se reabre', () => {
     const resuelto = await hallazgoPorClave(`escala.${pagina.id}`);
     expect(resuelto?.estado).toBe('respondido');
     expect(resuelto?.respuestaJson).toEqual({ tipo: 'escala', valor: '1:50' });
+
+    // Con la escala confirmada el gate se libera solo.
+    expect(await gateDeAberturas()).toEqual({ ok: true, bloqueantes: 0 });
 
     // Volver a procesar el documento no reabre la consulta ni re-bloquea.
     await procesarDocumento(documento.id, { db, storage });
