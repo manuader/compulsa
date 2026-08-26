@@ -66,16 +66,25 @@ export function deducirCierreCotas(
     const faltante = redondear2(valorTotal - suma);
     const destino = sinValor[0]!;
     if (faltante <= 0) {
-      inconsistencias.push(seExcede({ sobre, suma, valorTotal, tramo: tramoDe(destino), cotas: [total, ...conValor, destino] }));
+      // Los parciales ya se comieron la total y todavía falta un tramo: la
+      // única "deducción" posible sería una cota de cero o negativa.
+      inconsistencias.push(
+        seExcede({
+          sobre,
+          suma,
+          valorTotal,
+          tramo: tramoDe(destino),
+          cotas: [total, ...conValor, destino],
+        }),
+      );
       continue;
     }
 
-    const aportes = [destino, total, ...conValor];
     candidatos.push({
       destino,
       campo: CAMPO,
       valor: faltante,
-      aportes,
+      aportes: [destino, total, ...conValor],
       explicacion:
         `El tramo ${tramoDe(destino)} sobre ${sobre} mide ${describirValor(CAMPO, faltante)} por cierre de cotas: ` +
         `la cota total ${describirValor(CAMPO, valorTotal)} menos los parciales ` +
