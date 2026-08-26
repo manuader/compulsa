@@ -472,7 +472,7 @@ async function sincronizarDeducciones(
  *    obsoleta: no se aplica y el ítem sale `explicito`. Lo escrito en el plano le
  *    gana siempre a lo deducido.
  */
-function aplicarDeduccionesValidadas(
+export function aplicarDeduccionesValidadas(
   entidades: readonly EntidadPersistida[],
   filas: readonly Deduccion[],
 ): { entidades: EntidadPersistida[]; camposDeducidos: CamposDeducidos } {
