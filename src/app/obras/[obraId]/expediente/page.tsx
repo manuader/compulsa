@@ -94,10 +94,12 @@ export default async function ExpedientePage({
   }));
 
   const [fila] = ultimoRecomputo;
+  // El `diff_json` va primero y los campos de la fila después: la columna es
+  // `jsonb` y lo que manda sobre el motivo y la fecha es la fila, no el JSON.
   const revision: RevisionVista | null = fila
     ? {
-        motivo: fila.motivo as MotivoRecomputo,
         ...(fila.diffJson as unknown as DiffDeRevision),
+        motivo: fila.motivo as MotivoRecomputo,
         cuando: FECHA_Y_HORA.format(fila.at),
       }
     : null;
