@@ -24,7 +24,7 @@
 import { and, eq, like } from 'drizzle-orm';
 import { z } from 'zod';
 
-import { getDb } from '@/db/client';
+import { getDb, type Db } from '@/db/client';
 import { computoItems, computoRubros, hallazgos } from '@/db/schema';
 import { registrarAuditoria } from '@/lib/audit';
 import { requireObra, requireUser } from '@/lib/auth/guards';
@@ -44,7 +44,7 @@ import {
   type CompraCalculada,
   type EntradaCompra,
 } from '@/lib/rubros/overrides';
-import { RUBROS, UNIDADES, type RolUsuario } from '@/types/domain';
+import { RUBROS, UNIDADES, type RolUsuario, type RubroId } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Resultado que ven las pantallas
@@ -444,6 +444,35 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
   const obra = await requireObra(obraId);
   const db = await getDb();
 
+  const resultado = await aprobarRubroCore(
+    db,
+    { usuarioId: usuario.id, email: usuario.email, estudioId: estudio.id },
+    obra.id,
+    rubro,
+  );
+  if (!resultado.ok) return resultado;
+
+  await revalidarPlanilla(obra.id);
+  return { ok: true };
+}
+
+/**
+ * El núcleo de la aprobación: gate + escritura + auditoría, sin sesión y sin
+ * revalidación de rutas.
+ *
+ * Vive separado del action para que lo pueda usar quien no tiene cookies —hoy
+ * `scripts/seed.ts`, que necesita un rubro aprobado para lanzar la compulsa de
+ * demo—. **El chequeo de rol NO está acá** sino en el llamador: el action lo
+ * hace con la sesión, y el seed corre como el titular que crea. Cualquier
+ * llamador nuevo tiene que hacer lo mismo (la matriz de roles de P7 es la
+ * fuente: `aprobar_rubro` es de titular).
+ */
+export async function aprobarRubroCore(
+  db: Db,
+  actor: { usuarioId: string; email: string; estudioId: string },
+  obraId: string,
+  rubro: RubroId,
+): Promise<ResultadoAccion> {
   const abiertos = await db
     .select({
       rubro: hallazgos.rubro,
@@ -452,9 +481,9 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
       checklistItem: hallazgos.checklistItem,
     })
     .from(hallazgos)
-    .where(eq(hallazgos.obraId, obra.id));
+    .where(eq(hallazgos.obraId, obraId));
 
-  const checklist = await checklistEfectivo(db, estudio.id, rubro);
+  const checklist = await checklistEfectivo(db, actor.estudioId, rubro);
   const gate = puedeAprobarRubro(rubro, ajustarHallazgosAlChecklist(abiertos, checklist));
   if (!gate.ok) {
     const una = gate.bloqueantes === 1;
@@ -471,31 +500,31 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
   const [previo] = await db
     .select({ estado: computoRubros.estado })
     .from(computoRubros)
-    .where(and(eq(computoRubros.obraId, obra.id), eq(computoRubros.rubro, rubro)));
+    .where(and(eq(computoRubros.obraId, obraId), eq(computoRubros.rubro, rubro)));
+  if (previo?.estado === 'aprobado') return { ok: true }; // idempotente: ni escribe ni audita
 
   await db
     .insert(computoRubros)
     .values({
-      obraId: obra.id,
+      obraId,
       rubro,
       estado: 'aprobado',
-      aprobadoPor: usuario.id,
+      aprobadoPor: actor.usuarioId,
       aprobadoAt: new Date(),
     })
     .onConflictDoUpdate({
       target: [computoRubros.obraId, computoRubros.rubro],
-      set: { estado: 'aprobado', aprobadoPor: usuario.id, aprobadoAt: new Date() },
+      set: { estado: 'aprobado', aprobadoPor: actor.usuarioId, aprobadoAt: new Date() },
     });
 
   await registrarAuditoria({
-    obraId: obra.id,
+    obraId,
     actorTipo: 'usuario',
-    actorNombre: usuario.email,
+    actorNombre: actor.email,
     accion: 'rubro_aprobado',
     targetRef: `computo_rubros:${rubro}`,
     diff: { estado: { antes: previo?.estado ?? 'borrador', despues: 'aprobado' } },
   });
 
-  await revalidarPlanilla(obra.id);
   return { ok: true };
 }

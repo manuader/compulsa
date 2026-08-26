@@ -191,10 +191,14 @@ const LAMINAS: Lamina[] = [
 //
 //   · un muro a demoler (M1, 4 × 2,60 m) ⇒ solo `gruesa.demolicion`;
 //   · un tabique EXISTENTE (T9) que no computa nada, al lado de uno nuevo (T2);
-//   · una ventana (V5) dibujada en la planta SIN medidas y listada en la
-//     planilla CON medidas ⇒ deducción `planilla_plano`. Validada, el ítem sale
-//     con `origen: 'deducido'` y con la cantidad de la planta (una sola V5, no
-//     dos: la planilla especifica, no suma).
+//   · dos carpinterías a medio acotar en la planta y completas en la planilla
+//     ⇒ deducciones `planilla_plano`: V5 (ventana) sin ancho ni alto —dos
+//     propuestas— y P3 (puerta) sin el ancho —una—. Validadas, los ítems salen
+//     con `origen: 'deducido'` y con la cantidad de la planta (una sola V5 y una
+//     sola P3, no dos de cada una: la planilla especifica, no suma).
+//
+// Las tres propuestas son también lo que siembra `scripts/seed.ts`, que valida
+// solo la de P3 y deja las dos de V5 esperando en la bandeja.
 // ---------------------------------------------------------------------------
 
 const R1: AnalisisLamina = {
@@ -243,6 +247,15 @@ const R1: AnalisisLamina = {
       atributos: { tag: 'V5', tipologia: 'ventana' },
     },
     {
+      // Media acotada: el alto está, el ancho no. Una sola deducción.
+      tipo: 'abertura',
+      nombre: 'P3',
+      bbox: [0.3, 0.62, 0.06, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'nueva',
+      atributos: { tag: 'P3', tipologia: 'puerta', altoM: 2.05 },
+    },
+    {
       tipo: 'ambiente',
       nombre: 'Cocina',
       bbox: [0.12, 0.24, 0.28, 0.32],
@@ -273,6 +286,15 @@ const R2: AnalisisLamina = {
       confianza: 0.9,
       estadoReforma: 'nueva',
       atributos: { tag: 'V5', tipologia: 'ventana', anchoM: 1.2, altoM: 1 },
+    },
+    {
+      // La misma P3, con las dos medidas: de acá sale el ancho que falta.
+      tipo: 'abertura',
+      nombre: 'P3',
+      bbox: [0.1, 0.45, 0.6, 0.1],
+      confianza: 0.9,
+      estadoReforma: 'nueva',
+      atributos: { tag: 'P3', tipologia: 'puerta', anchoM: 0.8, altoM: 2.05 },
     },
   ],
 };

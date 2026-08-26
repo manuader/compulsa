@@ -5,6 +5,11 @@
     "derivacion": "V5 está dibujada en la planta A-01 SIN medidas y listada en la planilla A-05 CON medidas (1,20 × 1,00 m). La deducción «planilla ↔ plano» las baja a la entidad de la planta (confianza 0,95 × 0,90 = 0,86) y el caso la valida. Es UNA sola ventana: la cantidad la pone la planta, la planilla solo especifica ⇒ 1 u neta, sin desperdicio, a medida: 1 u. El ítem sale con origen 'deducido' y cita las dos láminas."
   },
   {
+    "claveItem": "aberturas.P3",
+    "cantCompra": 1,
+    "derivacion": "P3 está medio acotada en la planta (alto 2,05 m) y completa en la planilla (0,80 × 2,05 m): la deducción trae solo el ancho. Una sola puerta ⇒ 1 u neta, sin desperdicio, a medida: 1 u, con origen 'deducido' porque sin el ancho deducido el ítem saldría distinto."
+  },
+  {
     "claveItem": "seco.placas",
     "cantCompra": 23.04,
     "derivacion": "Solo computa T2 (nuevo): 4 m × 2,50 m × 2 caras = 20 m² netos. T9 es 'existente' y no aporta un metro. +12 % de desperdicio = 22,40 m²; 22,40 / 2,88 = 7,78 ⇒ 8 placas × 2,88 = 23,04 m²."

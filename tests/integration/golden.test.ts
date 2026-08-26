@@ -121,13 +121,13 @@ describe('golden set — corrida real del pipeline', () => {
   );
 
   it(
-    'obra-reforma computa los 10 ítems de una reforma con deducción validada',
+    'obra-reforma computa los 11 ítems de una reforma con deducciones validadas',
     async () => {
       const resultado = await correr('obra-reforma');
 
-      expect(resultado.comparaciones).toHaveLength(10);
+      expect(resultado.comparaciones).toHaveLength(11);
       expect(resultado.porRubro.map((f) => [f.rubro, f.items])).toEqual([
-        ['aberturas', 1],
+        ['aberturas', 2],
         ['seco', 6],
         ['pintura', 2],
         ['gruesa', 1],
@@ -138,9 +138,11 @@ describe('golden set — corrida real del pipeline', () => {
       // La ventana sin acotar en la planta: la deducción «planilla ↔ plano»
       // validada le da las medidas, y es UNA sola (la planilla no suma).
       expect(reales.get('aberturas.V5')).toBe(1);
+      expect(reales.get('aberturas.P3')).toBe(1);
       // El origen es lo que prueba que la deducción corrió: la cantidad sola no
       // distingue "salió de la deducción" de "salió solo de la planilla".
       expect(resultado.origenes['aberturas.V5']).toBe('deducido');
+      expect(resultado.origenes['aberturas.P3']).toBe('deducido');
       expect(resultado.origenes['gruesa.demolicion']).toBe('explicito');
       // El tabique existente no aporta un metro: 4 × 2,50 × 2 = 20 m², no 35.
       expect(reales.get('seco.placas')).toBe(23.04);

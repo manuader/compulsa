@@ -27,6 +27,24 @@
         "anchoM": 1.2,
         "altoM": 1
       }
+    },
+    {
+      "tipo": "abertura",
+      "nombre": "P3",
+      "bbox": [
+        0.1,
+        0.45,
+        0.6,
+        0.1
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "nueva",
+      "atributos": {
+        "tag": "P3",
+        "tipologia": "puerta",
+        "anchoM": 0.8,
+        "altoM": 2.05
+      }
     }
   ]
 }

@@ -80,6 +80,23 @@
       }
     },
     {
+      "tipo": "abertura",
+      "nombre": "P3",
+      "bbox": [
+        0.3,
+        0.62,
+        0.06,
+        0.02
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "nueva",
+      "atributos": {
+        "tag": "P3",
+        "tipologia": "puerta",
+        "altoM": 2.05
+      }
+    },
+    {
       "tipo": "ambiente",
       "nombre": "Cocina",
       "bbox": [
