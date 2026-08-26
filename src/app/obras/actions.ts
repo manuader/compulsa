@@ -33,6 +33,7 @@ import {
 // edición tienen que aceptar exactamente lo mismo (ver `@/lib/obras/schema`), y
 // en un archivo `'use server'` solo pueden salir funciones async.
 import { erroresPorCampo, zDatosObra } from '@/lib/obras/schema';
+import { requireAccion, RolInsuficienteError, UsuarioInactivoError } from '@/lib/plataforma/roles';
 import { getStorage } from '@/lib/storage/index';
 
 export type ResultadoCrearObra =
@@ -92,6 +93,13 @@ export async function crearObraAction(
   formData: FormData,
 ): Promise<EstadoNuevaObra> {
   const { usuario, estudio } = await requireUser();
+  try {
+    requireAccion(usuario, 'crear_obra');
+  } catch (error) {
+    const mensaje = mensajeDeRol(error);
+    if (mensaje) return { errores: { form: mensaje } };
+    throw error;
+  }
 
   const valores = {
     nombre: texto(formData, 'nombre'),
@@ -143,6 +151,21 @@ const zUuid = z.string().refine(esUuid, 'Identificador inválido.');
 
 const PAYLOAD_ILEGIBLE = 'No pude leer de qué obra se trata.';
 
+/**
+ * El mensaje del guard de rol, si el error es de rol.
+ *
+ * La matriz (RF-1201) la aplican los cores de `@/lib/obras/gestion`: eliminar
+ * una obra es del titular, editar y archivar son de colaborador para arriba.
+ * Acá esos errores se traducen a texto de pantalla — un 500 no le dice al
+ * usuario que le falta permiso.
+ */
+function mensajeDeRol(error: unknown): string | null {
+  if (error instanceof RolInsuficienteError || error instanceof UsuarioInactivoError) {
+    return error.message;
+  }
+  return null;
+}
+
 interface ContextoObra {
   obraId: string;
   nombre: string;
@@ -157,7 +180,14 @@ async function contexto(entrada: unknown): Promise<ContextoObra | null> {
   return contextoDeObra(parseo.data.obraId);
 }
 
-/** La misma resolución, para quien ya validó la forma del id y no quiere parsearla dos veces. */
+/**
+ * La misma resolución, para quien ya validó la forma del id y no quiere
+ * parsearla dos veces.
+ *
+ * El actor sale entero de la sesión —incluidos `rol` y `activo`—, porque el
+ * enforcement de la matriz (RF-1201) lo aplica el core: ver `ActorObra` en
+ * `@/lib/obras/gestion`.
+ */
 async function contextoDeObra(obraId: string): Promise<ContextoObra> {
   const { usuario, estudio } = await requireUser();
   const obra = await requireObra(obraId);
@@ -165,7 +195,12 @@ async function contextoDeObra(obraId: string): Promise<ContextoObra> {
     obraId: obra.id,
     nombre: obra.nombre,
     estudioId: estudio.id,
-    actor: { usuarioId: usuario.id, email: usuario.email },
+    actor: {
+      usuarioId: usuario.id,
+      email: usuario.email,
+      rol: usuario.rol,
+      activo: usuario.activo,
+    },
   };
 }
 
@@ -195,13 +230,14 @@ export async function editarObraAction(
   const ctx = await contexto({ obraId: texto(formData, 'obraId') });
   if (!ctx) return { mensaje: PAYLOAD_ILEGIBLE, valores };
 
-  const resultado = await editarObra(
-    await getDb(),
-    ctx.estudioId,
-    ctx.obraId,
-    valores,
-    ctx.actor,
-  );
+  let resultado;
+  try {
+    resultado = await editarObra(await getDb(), ctx.estudioId, ctx.obraId, valores, ctx.actor);
+  } catch (error) {
+    const mensaje = mensajeDeRol(error);
+    if (mensaje) return { mensaje, valores };
+    throw error;
+  }
   if (!resultado.ok) return { errores: resultado.errores, valores };
 
   await revalidarObra(ctx.obraId);
@@ -219,7 +255,13 @@ export async function archivarObraAction(entrada: unknown): Promise<ResultadoAcc
   const ctx = await contexto(entrada);
   if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
 
-  await archivarObra(await getDb(), ctx.estudioId, ctx.obraId, ctx.actor);
+  try {
+    await archivarObra(await getDb(), ctx.estudioId, ctx.obraId, ctx.actor);
+  } catch (error) {
+    const mensaje = mensajeDeRol(error);
+    if (mensaje) return { ok: false, error: mensaje };
+    throw error;
+  }
   await revalidarObra(ctx.obraId);
 
   const { redirect } = await import('next/navigation');
@@ -230,7 +272,13 @@ export async function desarchivarObraAction(entrada: unknown): Promise<Resultado
   const ctx = await contexto(entrada);
   if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
 
-  await desarchivarObra(await getDb(), ctx.estudioId, ctx.obraId, ctx.actor);
+  try {
+    await desarchivarObra(await getDb(), ctx.estudioId, ctx.obraId, ctx.actor);
+  } catch (error) {
+    const mensaje = mensajeDeRol(error);
+    if (mensaje) return { ok: false, error: mensaje };
+    throw error;
+  }
   await revalidarObra(ctx.obraId);
   return { ok: true };
 }
@@ -263,6 +311,8 @@ export async function eliminarObraAction(entrada: unknown): Promise<ResultadoAcc
     await eliminarObra(await getDb(), getStorage(), ctx.estudioId, ctx.obraId, ctx.actor);
   } catch (error) {
     if (error instanceof ObraNoArchivadaError) return { ok: false, error: error.message };
+    const mensaje = mensajeDeRol(error);
+    if (mensaje) return { ok: false, error: mensaje };
     throw error;
   }
 

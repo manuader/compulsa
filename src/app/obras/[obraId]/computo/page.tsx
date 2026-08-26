@@ -16,8 +16,9 @@ import type { ItemPlanilla } from '@/components/planilla/planilla-rubro';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { getDb } from '@/db/client';
 import { computoItems, computoRubros, hallazgos } from '@/db/schema';
-import { requireObra } from '@/lib/auth/guards';
+import { requireObra, requireUser } from '@/lib/auth/guards';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
+import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
 import { PLANTILLAS } from '@/lib/rubros/index';
 import { ORIGENES, RUBROS, type EstadoRubro, type Origen, type RubroId } from '@/types/domain';
 
@@ -93,6 +94,7 @@ export default async function ComputoPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const [{ obraId }, query] = await Promise.all([params, searchParams]);
+  const { estudio } = await requireUser();
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -107,7 +109,12 @@ export default async function ComputoPage({
       .from(computoRubros)
       .where(eq(computoRubros.obraId, obra.id)),
     db
-      .select({ rubro: hallazgos.rubro, bloqueante: hallazgos.bloqueante, estado: hallazgos.estado })
+      .select({
+        rubro: hallazgos.rubro,
+        bloqueante: hallazgos.bloqueante,
+        estado: hallazgos.estado,
+        checklistItem: hallazgos.checklistItem,
+      })
       .from(hallazgos)
       .where(eq(hallazgos.obraId, obra.id)),
   ]);
@@ -155,7 +162,12 @@ export default async function ComputoPage({
       laminaId: fila.fuentesJson[0]?.laminaId ?? null,
     }));
 
-  const gate = puedeAprobarRubro(rubro, consultas);
+  // El mismo gate que aplica `aprobarRubroAction`, checklist del estudio
+  // incluido: si la pantalla dijera otra cosa que el server, el botón mentiría.
+  const gate = puedeAprobarRubro(
+    rubro,
+    ajustarHallazgosAlChecklist(consultas, await checklistEfectivo(db, estudio.id, rubro)),
+  );
   const vistaActual: Vista = { rubro, origen, verAnulados };
 
   return (

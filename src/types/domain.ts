@@ -253,9 +253,20 @@ export const zItemRfq = z.object({
   specsCriticas: z.record(z.string(), z.string()),
 });
 
-/** Mandato de negociación. `maxRondas` es 2 y punto (RF-1001). */
+/**
+ * Mandato de negociación. `maxRondas` es 2 y punto (RF-1001).
+ *
+ * `objetivoMejoraPct` es `[0, 100)`, con el 100 **excluido**: con 100 el
+ * objetivo de precio da 0 y el motor le estaría pidiendo al proveedor que
+ * regale el rubro. `src/lib/negociacion/motor.ts` ya lo rechazaba en runtime;
+ * el schema tiene que rechazarlo antes, o el formulario de configuración deja
+ * guardar un mandato que después revienta al negociar.
+ */
 export const zMandato = z.object({
-  objetivoMejoraPct: z.number().min(0).max(100),
+  objetivoMejoraPct: z
+    .number()
+    .min(0, 'El objetivo de mejora no puede ser negativo.')
+    .lt(100, 'El objetivo de mejora tiene que ser menor a 100%: con 100 le estarías pidiendo al proveedor que regale el rubro.'),
   palancas: z.array(z.enum(PALANCAS)),
   maxRondas: z.literal(2),
 });
