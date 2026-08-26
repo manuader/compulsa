@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { setDbForTests, type Db } from '@/db/client';
 import { estudios, obras, recomputos, usuarios, type Documento } from '@/db/schema';
 import { crearProviderMock, SUFIJO_SEGUNDA_PASADA } from '@/lib/analysis/mock';
+import { archivarObra, eliminarObra } from '@/lib/obras/gestion';
 import { procesarDocumento, subirDocumento, type DiffDeRevision } from '@/lib/pipeline/procesar';
 import type { StorageAdapter } from '@/lib/storage/index';
 import { crearStorageLocal } from '@/lib/storage/local';
@@ -33,6 +34,7 @@ let raizStorage: string;
 let storage: StorageAdapter;
 let obraId: string;
 let usuarioId: string;
+let estudioId: string;
 
 /** El provider que lee la revisión: los fixtures `-b`. */
 const providerRevisado = () => crearProviderMock(undefined, { sufijoClave: SUFIJO_SEGUNDA_PASADA });
@@ -81,6 +83,7 @@ beforeEach(async () => {
 
   usuarioId = usuario.id;
   obraId = obra.id;
+  estudioId = estudio.id;
 });
 
 afterEach(async () => {
@@ -139,6 +142,23 @@ describe('reproceso con el plano cambiado', () => {
     await procesarDocumento(documento.id, { db, storage });
 
     expect(await filasDeRecomputos()).toHaveLength(1);
+  });
+});
+
+describe('la purga de la obra se lleva los recomputos', () => {
+  it('eliminar una obra archivada no se traba con las filas de recomputos', async () => {
+    const documento = await subir('obra-demo.pdf');
+    await procesarDocumento(documento.id, { db, storage });
+    expect(await filasDeRecomputos()).toHaveLength(1);
+
+    // `recomputos.obra_id` es una FK NOT NULL: si la purga no las borra, el
+    // `delete from obras` falla y la obra queda a medio eliminar.
+    const actor = { usuarioId, email: 'arq@estudionorte.ar', rol: 'titular' as const, activo: true };
+    await archivarObra(db, estudioId, obraId, actor);
+    await eliminarObra(db, storage, estudioId, obraId, actor);
+
+    expect(await filasDeRecomputos()).toHaveLength(0);
+    expect(await db.select().from(obras).where(eq(obras.id, obraId))).toHaveLength(0);
   });
 });
 

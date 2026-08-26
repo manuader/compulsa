@@ -62,6 +62,7 @@ import {
   hallazgos,
   laminas,
   obras,
+  recomputos,
   type EstadoObra,
   type Obra,
 } from '@/db/schema';
@@ -422,6 +423,11 @@ export async function eliminarObra(
     .delete(documentos)
     .where(eq(documentos.obraId, obra.id))
     .returning({ id: documentos.id });
+  // `recomputos` (el "qué cambió" de cada revisión, RF-308) apunta a la obra con
+  // una FK NOT NULL: sin este delete, la purga falla al llegar a `obras`. Se va
+  // sin contarse, igual que las deducciones: es historia de la obra, no un
+  // recurso que el usuario esté por perder.
+  await db.delete(recomputos).where(eq(recomputos.obraId, obra.id));
   const auditoriaBorrada = await db
     .delete(auditoria)
     .where(eq(auditoria.obraId, obra.id))
