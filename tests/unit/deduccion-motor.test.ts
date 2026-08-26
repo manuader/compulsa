@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { EntidadPersistida } from '@/lib/computo/engine';
+import { redondear2 } from '@/lib/computo/unidades';
 import {
   CAMPOS_DEDUCIBLES,
   deducir,
@@ -179,6 +180,34 @@ describe('motor de deducción · las tres reglas de oro', () => {
 
     // 0,95 × 0,6 = 0,57
     expect(deducir([dudosa, enPlanilla], LAMINAS)).toEqual({ propuestas: [], inconsistencias: [] });
+  });
+
+  it('el gate mira el número crudo: 0,69825 no pasa aunque redondee a 0,70', () => {
+    // El redondeo es de presentación y no puede correr la línea que decide si
+    // el sistema propone algo o lo manda a la bandeja (P4). Con el gate del
+    // lado equivocado, esta deducción salía con «confianza 0,70» en pantalla.
+    const casi = (confianzaDudosa: number) => {
+      const dudosa = entidad({ id: 'v2a', confianza: confianzaDudosa });
+      const enPlanilla = entidad({
+        id: 'v2a-planilla',
+        laminaId: 'L-planilla',
+        bbox: [0.4, 0.3, 0.2, 0.04],
+        confianza: 1,
+        atributos: { tag: 'V2a', tipologia: 'ventana', anchoM: 0.8 },
+      });
+      return deducir([dudosa, enPlanilla], LAMINAS).propuestas;
+    };
+
+    // 0,95 × 0,735 = 0,69825, que redondeado a dos decimales da exactamente el
+    // umbral. Crudo está por debajo, así que no sale.
+    expect(redondear2(0.95 * 0.735)).toBe(UMBRAL_DEDUCCION);
+    expect(casi(0.735)).toEqual([]);
+
+    // Un pelo más arriba —0,95 × 0,74 = 0,703— sí llega, y se muestra con el
+    // mismo 0,70: el número en pantalla es el mismo, la decisión no.
+    const [propuesta] = casi(0.74);
+    expect(propuesta.campo).toBe('anchoM');
+    expect(propuesta.confianza).toBe(0.7);
   });
 
   it('RF-506: ningún campo fuera de la lista blanca se propone', () => {

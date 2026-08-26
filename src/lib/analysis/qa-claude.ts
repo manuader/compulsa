@@ -97,6 +97,10 @@ export function crearProviderQaClaude(): QaProvider {
       );
       if (conTexto.length === 0) return respuestaVacia();
 
+      /** El expediente **tal como lo vio el modelo**: lo que va al prompt y lo
+       *  único contra lo que después se pueden resolver las citas. */
+      const visto: ContextoQa = { ...contexto, laminas: conTexto };
+
       const respuesta = await cliente.messages.parse({
         model: modelo(),
         // 16 000 como los otros dos providers, aunque la respuesta sean tres
@@ -105,16 +109,22 @@ export function crearProviderQaClaude(): QaProvider {
         max_tokens: 16000,
         thinking: { type: 'adaptive' },
         system: SISTEMA,
-        messages: [{ role: 'user', content: instruccion(limpia, { ...contexto, laminas: conTexto }) }],
+        messages: [{ role: 'user', content: instruccion(limpia, visto) }],
         output_config: { format: zodOutputFormat(zRespuestaQaCruda) },
       });
 
       // El cable es laxo a propósito (ver `qa-tipos.ts`): acá se resuelven las
       // citas contra el expediente real y se descarta lo que no existe.
+      //
+      // El saneo va contra `visto`, **las mismas láminas que vio el prompt**, y
+      // no contra el `contexto` sin filtrar: si no, una lámina sin texto
+      // extraído —que el modelo nunca leyó— seguía siendo citable, y una cita
+      // adivinada de memoria sobre un plano que no se le mandó pasaba el filtro
+      // como si fuera una lectura (P4: deducir no es inventar).
       const saneo =
         respuesta.parsed_output === null
           ? { respuesta: respuestaVacia(), citasDescartadas: 0 }
-          : sanearRespuestaQa(respuesta.parsed_output, contexto);
+          : sanearRespuestaQa(respuesta.parsed_output, visto);
 
       // RNF-7: el costo por obra se mide desde acá.
       await registrarAuditoria({

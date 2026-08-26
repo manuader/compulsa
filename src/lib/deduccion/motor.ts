@@ -271,8 +271,14 @@ export function deducir(
       if (resueltos.has(clave)) continue; // ya lo resolvió una regla de más prioridad
       if (!esCampoDeducible(candidato.destino.tipo, candidato.campo)) continue; // RF-506
 
-      const confianza = redondear2(FACTOR_POR_REGLA[regla] * confianzaMinima(candidato.aportes));
-      if (confianza < UMBRAL_DEDUCCION) continue; // §11.b
+      // El gate del §11.b mira el número **crudo**, y recién después se
+      // redondea para mostrarlo. Al revés, `redondear2(0,695) = 0,7` colaba una
+      // deducción que no llega al umbral: el redondeo es de presentación y no
+      // puede correr la línea que decide si el sistema propone algo o lo manda
+      // a la bandeja (P4).
+      const cruda = FACTOR_POR_REGLA[regla] * confianzaMinima(candidato.aportes);
+      if (cruda < UMBRAL_DEDUCCION) continue; // §11.b
+      const confianza = redondear2(cruda);
 
       const fuentes = fuentesDeEntidades(candidato.aportes);
       if (fuentes.length < MINIMO_FUENTES) continue; // ≥ 2 fuentes documentales
