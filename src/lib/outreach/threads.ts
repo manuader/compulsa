@@ -67,6 +67,22 @@ export class CompulsaNoEncontradaError extends Error {
   }
 }
 
+/**
+ * Cambiar el estado del contacto a mano a algo que la base no sostiene.
+ *
+ * Lo tira `cambiarEstadoContactoCore`, que vive en el `'use server'` de la
+ * pantalla. La clase vive **acá** y no allá porque en un archivo `'use server'`
+ * lo único exportable son funciones `async`: exportar una clase de ahí rompe el
+ * build entero de Next con «Only async functions are allowed to be exported in
+ * a "use server" file». Es el mismo motivo por el que están acá las otras dos.
+ */
+export class EstadoContactoInvalidoError extends Error {
+  constructor(mensaje: string) {
+    super(mensaje);
+    this.name = 'EstadoContactoInvalidoError';
+  }
+}
+
 export class CotizacionNoEncontradaError extends Error {
   constructor(readonly cotizacionId: string) {
     super('No encontré esa cotización en una obra de este estudio.');
