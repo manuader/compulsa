@@ -27,7 +27,8 @@
  */
 import { randomInt } from 'node:crypto';
 
-import { and, asc, count, eq, isNull, ne } from 'drizzle-orm';
+import { and, asc, eq, exists, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { alias, QueryBuilder } from 'drizzle-orm/pg-core';
 
 import type { Db } from '@/db/client';
 import { estudios, invitaciones, usuarios, type Invitacion } from '@/db/schema';
@@ -111,10 +112,22 @@ export class UltimoTitularError extends Error {
 // Invitaciones
 // ---------------------------------------------------------------------------
 
+/** Cuántas veces se reintenta un código antes de darse por vencido. */
+const INTENTOS_CODIGO = 5;
+
 /**
- * Crea una invitación con un código nuevo. Reintenta ante una colisión de PK:
- * con 2^40 códigos vivos siete días no va a pasar, pero "no va a pasar" no es
- * una estrategia de manejo de errores.
+ * Crea una invitación con un código nuevo.
+ *
+ * **La colisión se detecta con la unicidad de la base, no con un `SELECT`
+ * previo.** Mirar antes y escribir después deja la misma ventana que tenía el
+ * guard del último titular: dos pedidos sacan el mismo código, los dos ven que
+ * está libre, y el segundo `INSERT` revienta con un `23505` crudo que sube como
+ * 500. Con `INSERT` primero y reintento sobre el `23505`, la carrera se
+ * resuelve sola y el usuario no se entera.
+ *
+ * Con 2^40 códigos vivos siete días, cinco intentos son más que de sobra; el
+ * caso en que se agotan (que sería una base con casi todos los códigos tomados)
+ * sale con un mensaje que se puede leer, no con un error de driver.
  */
 export async function crearInvitacion(
   db: Db,
@@ -126,18 +139,21 @@ export async function crearInvitacion(
   const expiraAt = new Date(Date.now() + DIAS_INVITACION * 24 * 60 * 60 * 1000);
 
   let invitacion: Invitacion | undefined;
-  for (let intento = 0; intento < 5 && !invitacion; intento += 1) {
-    const codigo = generarCodigoInvitacion();
-    const [existente] = await db
-      .select({ codigo: invitaciones.codigo })
-      .from(invitaciones)
-      .where(eq(invitaciones.codigo, codigo));
-    if (existente) continue;
-
-    [invitacion] = await db
-      .insert(invitaciones)
-      .values({ codigo, estudioId: actor.estudioId, rol, expiraAt })
-      .returning();
+  for (let intento = 0; intento < INTENTOS_CODIGO && !invitacion; intento += 1) {
+    try {
+      [invitacion] = await db
+        .insert(invitaciones)
+        .values({
+          codigo: generarCodigoInvitacion(),
+          estudioId: actor.estudioId,
+          rol,
+          expiraAt,
+        })
+        .returning();
+    } catch (error) {
+      // Solo la colisión de código se reintenta; cualquier otra cosa sube.
+      if (!esViolacionDeUnicidad(error)) throw error;
+    }
   }
   if (!invitacion) throw new Error('No pude generar un código de invitación libre. Probá de nuevo.');
 
@@ -303,20 +319,77 @@ async function requireUsuarioDelEstudio(db: Db, estudioId: string, usuarioId: st
   return usuario;
 }
 
-/** Cuántos titulares **activos** quedan además de este. */
-async function otrosTitularesActivos(db: Db, estudioId: string, usuarioId: string): Promise<number> {
-  const [fila] = await db
-    .select({ total: count() })
-    .from(usuarios)
-    .where(
-      and(
-        eq(usuarios.estudioId, estudioId),
-        eq(usuarios.rol, 'titular'),
-        eq(usuarios.activo, true),
-        ne(usuarios.id, usuarioId),
+/**
+ * `EXISTS (…)`: hay **otro** titular activo del estudio, distinto de este.
+ *
+ * Se arma con `QueryBuilder`, que construye SQL sin necesitar una conexión: la
+ * subconsulta se embebe en el `WHERE` del `UPDATE` y la ejecuta el mismo
+ * statement. El alias es obligatorio — sin él, `usuarios` de adentro y
+ * `usuarios` de afuera serían la misma tabla para Postgres.
+ */
+function hayOtroTitularActivo(estudioId: string, usuarioId: string): SQL {
+  const otro = alias(usuarios, 'otro_titular');
+  return exists(
+    new QueryBuilder()
+      .select({ uno: sql`1` })
+      .from(otro)
+      .where(
+        and(
+          eq(otro.estudioId, estudioId),
+          eq(otro.rol, 'titular'),
+          eq(otro.activo, true),
+          ne(otro.id, usuarioId),
+        ),
       ),
-    );
-  return fila?.total ?? 0;
+  );
+}
+
+/**
+ * LA INVARIANTE DEL ÚLTIMO TITULAR, Y POR QUÉ NO ALCANZA UN `SELECT` ANTES
+ *
+ * La regla es: **un estudio nunca se queda sin titular activo.** Escrita como
+ * condición sobre la fila que se va a tocar:
+ *
+ *     esta fila NO es un titular activo   ⋁   hay otro titular activo
+ *
+ * Si eso se chequea con un `SELECT count(*)` y después se escribe con un
+ * `UPDATE`, hay una ventana entre los dos: dos pedidos concurrentes contra
+ * **dos titulares distintos** leen "queda otro" al mismo tiempo, los dos pasan,
+ * y el estudio termina con cero. Es el TOCTOU clásico, y ninguna de las dos
+ * llamadas hizo nada malo por separado.
+ *
+ * La condición viaja entonces adentro del `WHERE` del `UPDATE`, como el
+ * `usada_por IS NULL` del flujo de invitaciones: **un solo statement**, que
+ * Postgres evalúa y aplica de forma atómica sobre la fila que bloquea. Si
+ * afecta 0 filas, la invariante no se cumplía y el cambio se rechaza.
+ *
+ * **Qué cubre y qué no, sin vueltas.** Un `UPDATE` toma un row lock sobre su
+ * propia fila y re-evalúa el `WHERE` después de esperarla, así que dos pedidos
+ * sobre el **mismo** usuario quedan serializados en cualquier Postgres. Dos
+ * pedidos sobre **filas distintas** no se bloquean entre sí, y bajo READ
+ * COMMITTED cada uno evalúa su `EXISTS` con su propio snapshot: en un Postgres
+ * real con dos conexiones queda una ventana teórica.
+ *
+ * Se cierra tomando el lock del estudio (`SELECT 1 FROM estudios WHERE id = …
+ * FOR UPDATE`) adentro de una transacción, que serializa todos los cambios de
+ * titularidad de ese estudio. **No se hizo**, y la razón es explícita: en
+ * desarrollo y en los tests esto corre sobre PGlite, que tiene **una sola
+ * conexión**; dos `db.transaction()` concurrentes ahí se pisan los `BEGIN` en
+ * vez de esperarse, así que el lock no protegería nada y encima volvería
+ * frágil el test de la carrera. Con una sola conexión, los statements ya están
+ * serializados y el `UPDATE` condicional es exacto.
+ *
+ * **P11, al pasar a Postgres real con pool:** envolver las dos funciones de
+ * abajo en `db.transaction` con el `FOR UPDATE` sobre `estudios`. El
+ * `UPDATE` condicional se queda igual — es correcto en los dos mundos, solo
+ * deja de ser suficiente por sí solo.
+ */
+function invarianteUltimoTitular(estudioId: string, usuarioId: string): SQL {
+  return or(
+    ne(usuarios.rol, 'titular'),
+    eq(usuarios.activo, false),
+    hayOtroTitularActivo(estudioId, usuarioId),
+  ) as SQL;
 }
 
 export async function cambiarRolUsuario(
@@ -329,24 +402,25 @@ export async function cambiarRolUsuario(
   const usuario = await requireUsuarioDelEstudio(db, actor.estudioId, usuarioId);
   if (usuario.rol === rol) return aListado(usuario);
 
-  if (usuario.rol === 'titular' && usuario.activo && rol !== 'titular') {
-    if ((await otrosTitularesActivos(db, actor.estudioId, usuarioId)) === 0) {
-      throw new UltimoTitularError('rol');
-    }
-  }
+  // Subir a titular nunca puede dejar al estudio sin titulares: sin guard.
+  const guard =
+    rol === 'titular' ? [] : [invarianteUltimoTitular(actor.estudioId, usuarioId)];
 
   const [actualizado] = await db
     .update(usuarios)
     .set({ rol })
-    .where(eq(usuarios.id, usuario.id))
+    .where(and(eq(usuarios.id, usuario.id), eq(usuarios.estudioId, actor.estudioId), ...guard))
     .returning();
+
+  // 0 filas con el usuario ya validado ⇒ lo que falló fue la invariante.
+  if (!actualizado) throw new UltimoTitularError('rol');
 
   await registrarAuditoria({
     actorTipo: 'usuario',
     actorNombre: actor.email,
     accion: 'usuario_rol_cambiado',
     targetRef: `usuarios:${usuario.email}`,
-    diff: { rol: { antes: usuario.rol, despues: rol } },
+    diff: { rol: { antes: usuario.rol, despues: actualizado.rol } },
   });
 
   return aListado(actualizado);
@@ -362,24 +436,23 @@ export async function cambiarActivoUsuario(
   const usuario = await requireUsuarioDelEstudio(db, actor.estudioId, usuarioId);
   if (usuario.activo === activo) return aListado(usuario);
 
-  if (!activo && usuario.rol === 'titular') {
-    if ((await otrosTitularesActivos(db, actor.estudioId, usuarioId)) === 0) {
-      throw new UltimoTitularError('baja');
-    }
-  }
+  // Reactivar nunca deja al estudio sin titulares: sin guard.
+  const guard = activo ? [] : [invarianteUltimoTitular(actor.estudioId, usuarioId)];
 
   const [actualizado] = await db
     .update(usuarios)
     .set({ activo })
-    .where(eq(usuarios.id, usuario.id))
+    .where(and(eq(usuarios.id, usuario.id), eq(usuarios.estudioId, actor.estudioId), ...guard))
     .returning();
+
+  if (!actualizado) throw new UltimoTitularError('baja');
 
   await registrarAuditoria({
     actorTipo: 'usuario',
     actorNombre: actor.email,
     accion: 'usuario_activo_cambiado',
     targetRef: `usuarios:${usuario.email}`,
-    diff: { activo: { antes: usuario.activo, despues: activo } },
+    diff: { activo: { antes: usuario.activo, despues: actualizado.activo } },
   });
 
   return aListado(actualizado);

@@ -26,9 +26,10 @@ import {
   invitaciones,
   notificaciones,
   obras,
+  sesiones,
   usuarios,
 } from '@/db/schema';
-import { registrarEstudioCore } from '@/lib/auth/session';
+import { crearSesion, leerSesion, loginCore, registrarEstudioCore } from '@/lib/auth/session';
 import {
   archivarObra,
   editarObra,
@@ -405,6 +406,233 @@ describe('gestión de usuarios', () => {
     );
     const [sigue] = await db.select().from(usuarios).where(eq(usuarios.id, ajeno.id));
     expect(sigue.rol).toBe('titular');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La baja lógica le corta la entrada, no solo la escritura
+// ---------------------------------------------------------------------------
+
+/**
+ * `roles.ts` promete que "un usuario inactivo queda afuera de todo". Eso no lo
+ * puede sostener solo el guard de rol: si la sesión se sigue resolviendo, el
+ * desactivado conserva **lectura completa** del estudio hasta que su cookie
+ * venza sola (30 días), y si además se puede loguear, la baja no le sacó nada.
+ */
+describe('baja lógica: sesión y login', () => {
+  async function sumarColaborador(): Promise<string> {
+    const invitacion = await crearInvitacion(db, titular, 'colaborador');
+    const alta = await aceptarInvitacionCore(db, {
+      codigo: invitacion.codigo,
+      nombre: 'Caro Díaz',
+      email: 'caro@estudionorte.ar',
+      password: 'durlock1234',
+    });
+    return alta.sesion.usuario.id;
+  }
+
+  it('un usuario desactivado no puede loguearse, y no se le crea sesión', async () => {
+    const caroId = await sumarColaborador();
+    const sesionesAntes = await db.select().from(sesiones).where(eq(sesiones.usuarioId, caroId));
+
+    await cambiarActivoUsuario(db, titular, caroId, false);
+
+    const alta = await loginCore(db, {
+      email: 'caro@estudionorte.ar',
+      password: 'durlock1234',
+    });
+
+    expect(alta).toBeNull();
+    // Ni una sesión más que las que ya tenía: el login no llegó a crearla.
+    expect(await db.select().from(sesiones).where(eq(sesiones.usuarioId, caroId))).toHaveLength(
+      sesionesAntes.length,
+    );
+  });
+
+  it('el login de un desactivado da lo mismo que una contraseña mala: null pelado', async () => {
+    const caroId = await sumarColaborador();
+    await cambiarActivoUsuario(db, titular, caroId, false);
+
+    // Desactivado con la contraseña buena, activo con la contraseña mala y un
+    // mail que no existe: los tres devuelven exactamente lo mismo. Distinguir
+    // el primero le contaría a un desconocido que la cuenta existe y está dada
+    // de baja.
+    expect(await loginCore(db, { email: 'caro@estudionorte.ar', password: 'durlock1234' })).toBeNull();
+    expect(await loginCore(db, { email: 'ana@estudionorte.ar', password: 'mala' })).toBeNull();
+    expect(await loginCore(db, { email: 'nadie@estudionorte.ar', password: 'durlock1234' })).toBeNull();
+  });
+
+  it('la sesión YA ABIERTA de un usuario deja de resolver al desactivarlo', async () => {
+    const caroId = await sumarColaborador();
+    const { token } = await crearSesion(db, caroId);
+
+    const antes = await leerSesion(db, token);
+    expect(antes?.usuario.id).toBe(caroId);
+
+    await cambiarActivoUsuario(db, titular, caroId, false);
+
+    // La cookie sigue en el browser y la fila de `sesiones` sigue en la base:
+    // lo que se cortó es que el token resuelva a alguien.
+    expect(await leerSesion(db, token)).toBeNull();
+    expect(await db.select().from(sesiones).where(eq(sesiones.token, token))).toHaveLength(1);
+  });
+
+  it('reactivarlo le devuelve la sesión si todavía no venció', async () => {
+    const caroId = await sumarColaborador();
+    const { token } = await crearSesion(db, caroId);
+
+    await cambiarActivoUsuario(db, titular, caroId, false);
+    expect(await leerSesion(db, token)).toBeNull();
+
+    await cambiarActivoUsuario(db, titular, caroId, true);
+
+    const devuelta = await leerSesion(db, token);
+    expect(devuelta?.usuario.id).toBe(caroId);
+    expect(devuelta?.usuario.activo).toBe(true);
+    expect(devuelta?.estudio.id).toBe(estudioId);
+  });
+
+  it('reactivado, también puede volver a loguearse', async () => {
+    const caroId = await sumarColaborador();
+    await cambiarActivoUsuario(db, titular, caroId, false);
+    await cambiarActivoUsuario(db, titular, caroId, true);
+
+    const alta = await loginCore(db, {
+      email: 'caro@estudionorte.ar',
+      password: 'durlock1234',
+    });
+
+    expect(alta?.sesion.usuario.id).toBe(caroId);
+  });
+
+  it('una sesión vencida sigue sin resolver aunque el usuario esté activo', async () => {
+    const caroId = await sumarColaborador();
+    const { token } = await crearSesion(db, caroId);
+    await db
+      .update(sesiones)
+      .set({ expiraAt: new Date(Date.now() - 1000) })
+      .where(eq(sesiones.token, token));
+
+    expect(await leerSesion(db, token)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La carrera del último titular
+// ---------------------------------------------------------------------------
+
+/**
+ * El guard del último titular era read-then-write: `SELECT count(*)` y después
+ * `UPDATE`. Dos pedidos concurrentes contra **dos titulares distintos** leían
+ * "queda otro" los dos, pasaban los dos, y el estudio se quedaba con cero.
+ *
+ * Estos tests corren las dos llamadas en paralelo de verdad (`Promise.allSettled`,
+ * sin `await` en el medio) y exigen que gane exactamente una. Contra la versión
+ * anterior fallan.
+ */
+describe('carrera: el estudio nunca se queda sin titular activo', () => {
+  let segundoTitularId: string;
+
+  beforeEach(async () => {
+    const invitacion = await crearInvitacion(db, titular, 'titular');
+    const alta = await aceptarInvitacionCore(db, {
+      codigo: invitacion.codigo,
+      nombre: 'Caro Díaz',
+      email: 'caro@estudionorte.ar',
+      password: 'durlock1234',
+    });
+    segundoTitularId = alta.sesion.usuario.id;
+  });
+
+  async function titularesActivos(): Promise<number> {
+    const filas = await db
+      .select({ id: usuarios.id })
+      .from(usuarios)
+      .where(
+        and(
+          eq(usuarios.estudioId, estudioId),
+          eq(usuarios.rol, 'titular'),
+          eq(usuarios.activo, true),
+        ),
+      );
+    return filas.length;
+  }
+
+  /** El actor del otro titular, para que las dos llamadas sean de gente distinta. */
+  function comoSegundoTitular(): ActorPlataforma {
+    return { ...titular, usuarioId: segundoTitularId, email: 'caro@estudionorte.ar' };
+  }
+
+  it('arranca con los dos titulares activos', async () => {
+    expect(await titularesActivos()).toBe(2);
+  });
+
+  it('dos bajas simultáneas, una por cada titular: gana una sola', async () => {
+    const resultados = await Promise.allSettled([
+      cambiarActivoUsuario(db, titular, titular.usuarioId, false),
+      cambiarActivoUsuario(db, comoSegundoTitular(), segundoTitularId, false),
+    ]);
+
+    const rechazados = resultados.filter((r) => r.status === 'rejected');
+    expect(resultados.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(rechazados).toHaveLength(1);
+    expect((rechazados[0] as PromiseRejectedResult).reason).toBeInstanceOf(UltimoTitularError);
+
+    expect(await titularesActivos()).toBe(1);
+  });
+
+  it('dos bajadas de rol simultáneas, una por cada titular: gana una sola', async () => {
+    const resultados = await Promise.allSettled([
+      cambiarRolUsuario(db, titular, titular.usuarioId, 'colaborador'),
+      cambiarRolUsuario(db, comoSegundoTitular(), segundoTitularId, 'lectura'),
+    ]);
+
+    const rechazados = resultados.filter((r) => r.status === 'rejected');
+    expect(resultados.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(rechazados).toHaveLength(1);
+    expect((rechazados[0] as PromiseRejectedResult).reason).toBeInstanceOf(UltimoTitularError);
+
+    expect(await titularesActivos()).toBe(1);
+  });
+
+  it('una baja y una bajada de rol simultáneas tampoco se cruzan', async () => {
+    const resultados = await Promise.allSettled([
+      cambiarActivoUsuario(db, titular, titular.usuarioId, false),
+      cambiarRolUsuario(db, comoSegundoTitular(), segundoTitularId, 'colaborador'),
+    ]);
+
+    expect(resultados.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(await titularesActivos()).toBe(1);
+  });
+
+  it('el que pierde la carrera no queda auditado (no pasó nada que auditar)', async () => {
+    await Promise.allSettled([
+      cambiarActivoUsuario(db, titular, titular.usuarioId, false),
+      cambiarActivoUsuario(db, comoSegundoTitular(), segundoTitularId, false),
+    ]);
+
+    const auditadas = (await acciones()).filter((a) => a === 'usuario_activo_cambiado');
+    expect(auditadas).toHaveLength(1);
+  });
+
+  it('con tres titulares, dos bajas simultáneas pasan las dos', async () => {
+    const invitacion = await crearInvitacion(db, titular, 'titular');
+    const tercero = await aceptarInvitacionCore(db, {
+      codigo: invitacion.codigo,
+      nombre: 'Dani Paz',
+      email: 'dani@estudionorte.ar',
+      password: 'durlock1234',
+    });
+    expect(await titularesActivos()).toBe(3);
+
+    const resultados = await Promise.allSettled([
+      cambiarActivoUsuario(db, titular, segundoTitularId, false),
+      cambiarActivoUsuario(db, titular, tercero.sesion.usuario.id, false),
+    ]);
+
+    // El guard no es "no toques a los titulares": es "que quede uno".
+    expect(resultados.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+    expect(await titularesActivos()).toBe(1);
   });
 });
 
