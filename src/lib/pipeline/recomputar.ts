@@ -48,21 +48,36 @@
  * Cuando el deploy corra sobre Postgres real (pool de conexiones), lo correcto
  * es pasar el handle de la transacción también a la auditoría y envolver todo.
  */
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import { getDb, type Db } from '@/db/client';
 import {
   computoItems,
+  deducciones,
   entidades,
   hallazgos,
+  laminas,
   obras,
   type ComputoItem,
+  type Deduccion,
   type Hallazgo,
+  type NuevaDeduccion,
   type NuevoComputoItem,
   type NuevoHallazgo,
 } from '@/db/schema';
 import { registrarAuditoria } from '@/lib/audit';
-import { computarObra, type EntidadPersistida } from '@/lib/computo/engine';
+import { computarObra, type CamposDeducidos, type EntidadPersistida } from '@/lib/computo/engine';
+import { fuenteDeEntidad, unirFuentes } from '@/lib/computo/presentacion';
+import { redondear2 } from '@/lib/computo/unidades';
+import { TITULO_REGLA } from '@/lib/deduccion/memoria';
+import {
+  deducir,
+  describirValor,
+  etiquetaCampo,
+  type DeduccionPropuesta,
+  type LaminaResumen,
+} from '@/lib/deduccion/motor';
+import { hallazgoInconsistencia } from '@/lib/hallazgos/taxonomia';
 import { esClaveDelMotor } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
 import type { BBox, HallazgoDetectado, ItemComputo } from '@/types/domain';
@@ -87,6 +102,12 @@ export interface ResumenRecompute {
   hallazgosInsertados: number;
   hallazgosActualizados: number;
   hallazgosDescartados: number;
+  deduccionesPropuestas: number;
+  deduccionesActualizadas: number;
+  /** Propuestas que el motor dejó de sostener y se borraron (no son historia). */
+  deduccionesRetiradas: number;
+  /** Marcas de "superada por la documentación" puestas **o** levantadas. */
+  deduccionesContradichas: number;
 }
 
 function resumenVacio(): ResumenRecompute {
@@ -97,7 +118,27 @@ function resumenVacio(): ResumenRecompute {
     hallazgosInsertados: 0,
     hallazgosActualizados: 0,
     hallazgosDescartados: 0,
+    deduccionesPropuestas: 0,
+    deduccionesActualizadas: 0,
+    deduccionesRetiradas: 0,
+    deduccionesContradichas: 0,
   };
+}
+
+/** Una deducción validada a la que la documentación le pasó por encima. */
+export interface DeduccionSuperada {
+  deduccion: Deduccion;
+  entidad: EntidadPersistida;
+  /** Lo que se validó en su momento. */
+  valorDeducido: number | string | boolean;
+  /** Lo que dice hoy la lámina, y con lo que se computa. */
+  valorDocumentado: number | string | boolean;
+}
+
+export interface ResultadoOverlay {
+  entidades: EntidadPersistida[];
+  camposDeducidos: CamposDeducidos;
+  contradichas: DeduccionSuperada[];
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +365,418 @@ async function sincronizarHallazgos(
 }
 
 // ---------------------------------------------------------------------------
+// Deducciones (§11 · RF-501)
+// ---------------------------------------------------------------------------
+
+/**
+ * Clave de una deducción: `(entidad, campo)` — la misma que el UNIQUE de la
+ * tabla, con la obra ya fijada por el `where`.
+ */
+function claveDeDeduccion(fila: { entidadId: string; campo: string }): string {
+  return `${fila.entidadId} ${fila.campo}`;
+}
+
+function valoresDeDeduccion(
+  obraId: string,
+  propuesta: DeduccionPropuesta,
+): Omit<NuevaDeduccion, 'id' | 'estado' | 'validadoPor'> {
+  return {
+    obraId,
+    entidadId: propuesta.entidadId,
+    campo: propuesta.campo,
+    regla: propuesta.regla,
+    fuentesJson: propuesta.fuentes,
+    // `{ [campo]: valor }`: se mergea tal cual en `entidades.atributos_json` al
+    // validarla (el contrato de la columna, `src/db/schema.ts`).
+    valorJson: { [propuesta.campo]: propuesta.valor },
+    confianza: propuesta.confianza,
+  };
+}
+
+function diferenciasDeDeduccion(
+  fila: Deduccion,
+  propuesta: DeduccionPropuesta,
+): Record<string, unknown> | null {
+  const diff: Record<string, unknown> = {};
+  const comparar = (campo: string, antes: unknown, despues: unknown): void => {
+    if (!igualJson(antes, despues)) diff[campo] = { antes, despues };
+  };
+
+  comparar('regla', fila.regla, propuesta.regla);
+  comparar('valor', fila.valorJson, { [propuesta.campo]: propuesta.valor });
+  comparar('confianza', fila.confianza, propuesta.confianza);
+  comparar('fuentes', fila.fuentesJson, propuesta.fuentes);
+
+  return Object.keys(diff).length > 0 ? diff : null;
+}
+
+/**
+ * Sincroniza las propuestas del motor con la tabla `deducciones`.
+ *
+ * Tres reglas, hermanas de las de los hallazgos:
+ *
+ *  1. **Lo que el arquitecto decidió no se pisa.** Una deducción `validada` o
+ *     `rechazada` es una decisión suya: el motor puede seguir proponiendo lo
+ *     mismo en cada corrida y no la toca. (Una validada, además, ya no se
+ *     propone: el dato está en la entidad y la regla no encuentra el hueco.)
+ *  2. **Una propuesta que el motor deja de sostener se borra.** No es historia:
+ *     es una sugerencia viva que dejó de tener sustento —cambió la lámina, el
+ *     arquitecto cargó el dato a mano—. Dejarla sería ofrecer validar algo que
+ *     ya nadie deduce. Lo que sí es historia (validadas y rechazadas) no se
+ *     borra nunca acá.
+ *  3. **Nada se escribe si nada cambió.** Misma regla y mismo valor ⇒ ni un
+ *     `update` ni una línea de auditoría (`igualJson`, no `JSON.stringify`).
+ */
+async function sincronizarDeducciones(
+  db: Db,
+  obraId: string,
+  propuestas: readonly DeduccionPropuesta[],
+  resumen: ResumenRecompute,
+): Promise<void> {
+  const existentes = await db.select().from(deducciones).where(eq(deducciones.obraId, obraId));
+  const porClave = new Map(existentes.map((fila) => [claveDeDeduccion(fila), fila]));
+  const emitidas = new Set<string>();
+
+  for (const propuesta of propuestas) {
+    const clave = claveDeDeduccion(propuesta);
+    if (emitidas.has(clave)) continue; // el motor ya garantiza una por clave
+    emitidas.add(clave);
+
+    const previa = porClave.get(clave);
+    if (!previa) {
+      await db.insert(deducciones).values(valoresDeDeduccion(obraId, propuesta));
+      resumen.deduccionesPropuestas += 1;
+      await auditar(obraId, 'deduccion_propuesta', `deducciones:${clave.replace(' ', '.')}`, {
+        regla: propuesta.regla,
+        valor: propuesta.valor,
+        confianza: propuesta.confianza,
+      });
+      continue;
+    }
+
+    if (previa.estado !== 'propuesta') continue; // regla 1
+    const diff = diferenciasDeDeduccion(previa, propuesta);
+    if (!diff) continue; // regla 3
+
+    await db
+      .update(deducciones)
+      .set(valoresDeDeduccion(obraId, propuesta))
+      .where(eq(deducciones.id, previa.id));
+    resumen.deduccionesActualizadas += 1;
+    await auditar(obraId, 'deduccion_actualizada', `deducciones:${clave.replace(' ', '.')}`, diff);
+  }
+
+  for (const fila of existentes) {
+    if (fila.estado !== 'propuesta') continue;
+    if (emitidas.has(claveDeDeduccion(fila))) continue;
+
+    await db.delete(deducciones).where(eq(deducciones.id, fila.id));
+    resumen.deduccionesRetiradas += 1;
+    await auditar(obraId, 'deduccion_retirada', `deducciones:${fila.entidadId}.${fila.campo}`, {
+      regla: fila.regla,
+      valor: fila.valorJson,
+      motivo: 'El motor ya no deduce este dato.',
+    });
+  }
+}
+
+/**
+ * Las entidades **con las deducciones validadas aplicadas encima**, más el mapa
+ * de qué campo salió de dónde.
+ *
+ * Por qué es una capa y no solo una lectura de `atributos_json`: `validarDeduccion`
+ * escribe el dato en la entidad, sí, pero reprocesar la lámina reescribe
+ * `atributos_json` con lo que vuelve a leer el provider —y se llevaría puesto el
+ * dato validado—. Sin esta capa, un reanálisis dejaría la obra sin el número,
+ * sin consulta (el hallazgo ya se cerró) y sin propuesta (la deducción ya está
+ * validada y no se vuelve a proponer): un hueco silencioso, justo lo que P4
+ * prohíbe. Con la capa, la decisión del arquitecto sobrevive al reanálisis.
+ *
+ * Tres casos por campo, y el orden es la prioridad del PRD:
+ *
+ *  - la entidad **no** trae el dato ⇒ vale el de la deducción, y el ítem sale
+ *    `deducido`;
+ *  - la entidad trae el **mismo** dato (lo escribió `validarDeduccion`) ⇒ ídem;
+ *  - la entidad trae **otro** dato ⇒ manda la documentación y la deducción queda
+ *    obsoleta: no se aplica y el ítem sale `explicito`. Lo escrito en el plano le
+ *    gana siempre a lo deducido, **y el conflicto se avisa**: la deducción vuelve
+ *    en `contradichas` para que el recompute abra la consulta y la marque
+ *    (`sincronizarContradicciones`). Que la documentación gane en silencio sería
+ *    dejar una fila `validada` afirmando para siempre un número que ya no es.
+ */
+export function aplicarDeduccionesValidadas(
+  entidades: readonly EntidadPersistida[],
+  filas: readonly Deduccion[],
+): ResultadoOverlay {
+  const validadas = filas.filter((fila) => fila.estado === 'validada');
+  if (validadas.length === 0) {
+    return { entidades: [...entidades], camposDeducidos: new Map(), contradichas: [] };
+  }
+
+  const porEntidad = new Map<string, Deduccion[]>();
+  for (const fila of validadas) {
+    const cola = porEntidad.get(fila.entidadId);
+    if (cola) cola.push(fila);
+    else porEntidad.set(fila.entidadId, [fila]);
+  }
+
+  const camposDeducidos = new Map<string, Set<string>>();
+  const contradichas: DeduccionSuperada[] = [];
+  const conDeducciones = entidades.map((entidad) => {
+    const suyas = porEntidad.get(entidad.id);
+    if (suyas === undefined) return entidad;
+
+    const atributos = { ...entidad.atributos };
+    const campos = new Set<string>();
+    for (const fila of suyas) {
+      const valor = fila.valorJson[fila.campo];
+      if (valor === undefined || valor === null || valor === '') continue;
+      const actual = atributos[fila.campo];
+      if (actual === undefined || actual === null || actual === '') {
+        atributos[fila.campo] = valor;
+        campos.add(fila.campo);
+        continue;
+      }
+      if (mismoDato(actual, valor)) {
+        campos.add(fila.campo); // el dato es el mismo: sigue siendo deducido
+        continue;
+      }
+      // Gana la documentación, pero no en silencio.
+      contradichas.push({
+        deduccion: fila,
+        entidad,
+        valorDeducido: valor,
+        valorDocumentado: actual,
+      });
+    }
+
+    if (campos.size === 0) return entidad;
+    camposDeducidos.set(entidad.id, campos);
+    return { ...entidad, atributos };
+  });
+
+  return { entidades: conDeducciones, camposDeducidos, contradichas };
+}
+
+/**
+ * ¿Son el mismo dato? Con tolerancia **solo para el ruido binario**: los dos
+ * lados se redondean a los 2 decimales con los que el motor emite toda cantidad
+ * (`redondear2`), que es la precisión con la que se lee una cota. `2,60` y
+ * `2,6000000000000005` son el mismo dato; `2,60` y `2,61` **no** lo son y se
+ * avisan como contradicción — un centímetro en una carpintería es un premarco
+ * que no entra.
+ *
+ * Un número escrito como texto (`"2,60"`) se compara como número, igual que lo
+ * lee `leerNumero()`: el provider a veces devuelve las medidas como string y eso
+ * no puede contar como contradicción.
+ */
+export function mismoDato(a: unknown, b: unknown): boolean {
+  const na = comoNumero(a);
+  const nb = comoNumero(b);
+  if (na !== null && nb !== null) return redondear2(na) === redondear2(nb);
+  return a === b;
+}
+
+/** Mismo criterio que `leerNumero()` de la taxonomía, sin exigir que sea positivo. */
+function comoNumero(valor: unknown): number | null {
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : null;
+  if (typeof valor === 'string' && valor.trim() !== '') {
+    const parseado = Number(valor.replace(',', '.'));
+    return Number.isFinite(parseado) ? parseado : null;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Deducciones superadas por la documentación
+// ---------------------------------------------------------------------------
+
+/**
+ * Marcas que una deducción puede llevar en `valor_json` **además** de su
+ * `{ [campo]: valor }`.
+ *
+ * Van con guion bajo adelante justamente para que no se puedan confundir con un
+ * atributo: los atributos del dominio son todos camelCase sin guion (`anchoM`,
+ * `superficieM2`). Quien lea `valor_json` tiene que leer **su campo**
+ * (`valorJson[campo]`, que es lo que hacen `valorDeDeduccion` y el overlay), no
+ * mergear el objeto entero.
+ *
+ * Por qué acá y no en una columna: la tabla `deducciones` es de P1 y no tiene
+ * dónde poner esto; agregar una migración desde una rama paralela es peor
+ * negocio que dos claves meta documentadas. Si algún día hay columna, el cambio
+ * es reemplazar estas dos constantes y sus dos lectores.
+ */
+export const MARCA_CONTRADICHA = '_contradicha';
+export const MARCA_VALOR_DOCUMENTADO = '_valorDocumentado';
+
+/** `true` si la documentación pasó a decir otra cosa que lo que se validó. */
+export function estaContradicha(fila: Pick<Deduccion, 'valorJson'>): boolean {
+  return fila.valorJson[MARCA_CONTRADICHA] === true;
+}
+
+/** Lo que dice hoy la documentación para el campo de una deducción superada. */
+export function valorQueDocumenta(
+  fila: Pick<Deduccion, 'valorJson'>,
+): number | string | boolean | null {
+  return fila.valorJson[MARCA_VALOR_DOCUMENTADO] ?? null;
+}
+
+/** El `valor_json` sin las marcas: el `{ [campo]: valor }` limpio. */
+function sinMarcas(valorJson: Deduccion['valorJson']): Deduccion['valorJson'] {
+  const limpio = { ...valorJson };
+  delete limpio[MARCA_CONTRADICHA];
+  delete limpio[MARCA_VALOR_DOCUMENTADO];
+  return limpio;
+}
+
+/** Un valor de atributo, escrito para leer. */
+function comoTexto(campo: string, valor: number | string | boolean): string {
+  return typeof valor === 'boolean' ? String(valor) : describirValor(campo, valor);
+}
+
+/**
+ * La consulta que avisa que una deducción validada quedó superada.
+ *
+ * `inconsistencia` y **no bloqueante**: el cómputo no está mal —usa el dato de la
+ * documentación, que es el bueno— pero hay una decisión vieja del arquitecto que
+ * ya no se sostiene y alguien tiene que mirarla. La clave es estable por entidad
+ * y campo, así que el conciliador la abre una sola vez y **no la reabre** si el
+ * arquitecto la descarta (mismo patrón que el resto de la bandeja).
+ */
+function hallazgoContradiccion(superada: DeduccionSuperada): HallazgoDetectado {
+  const { campo, regla } = superada.deduccion;
+  const nombre = superada.entidad.nombre;
+  const deducido = comoTexto(campo, superada.valorDeducido);
+  const documentado = comoTexto(campo, superada.valorDocumentado);
+
+  return hallazgoInconsistencia({
+    rubro: null, // es coherencia del expediente, no de un rubro
+    clave: `deduccion.contradicha.${nombre}.${campo}`,
+    checklistItem: 'deduccion.contradicha',
+    descripcion:
+      `${etiquetaCampo(campo)} de ${nombre} se validó en ${deducido} por la regla ` +
+      `«${TITULO_REGLA[regla]}», pero la documentación ahora dice ${documentado}. ` +
+      `Computo con ${documentado}, que es lo que está escrito; la deducción quedó superada. ` +
+      'Revisá cuál de los dos vale.',
+    fuentes: unirFuentes(superada.deduccion.fuentesJson, [fuenteDeEntidad(superada.entidad)]),
+  });
+}
+
+/**
+ * Pone y saca la marca de "superada por la documentación" sobre las deducciones
+ * validadas. Idempotente en las dos direcciones: si la marca ya está con el
+ * mismo valor documentado no se escribe, y si el conflicto se resolvió —porque
+ * el reanálisis volvió a leer el dato deducido, o porque el dato desapareció de
+ * la lámina— la marca se levanta y queda auditado.
+ */
+async function sincronizarContradicciones(
+  db: Db,
+  obraId: string,
+  decididas: readonly Deduccion[],
+  contradichas: readonly DeduccionSuperada[],
+  resumen: ResumenRecompute,
+): Promise<void> {
+  const superadas = new Map(contradichas.map((superada) => [superada.deduccion.id, superada]));
+
+  for (const fila of decididas) {
+    if (fila.estado !== 'validada') continue;
+    const superada = superadas.get(fila.id);
+    const marcada = estaContradicha(fila);
+    const objetivo = `deducciones:${fila.entidadId}.${fila.campo}`;
+
+    if (superada) {
+      if (marcada && mismoDato(valorQueDocumenta(fila), superada.valorDocumentado)) continue;
+      await db
+        .update(deducciones)
+        .set({
+          valorJson: {
+            ...sinMarcas(fila.valorJson),
+            [MARCA_CONTRADICHA]: true,
+            [MARCA_VALOR_DOCUMENTADO]: superada.valorDocumentado,
+          },
+        })
+        .where(eq(deducciones.id, fila.id));
+      resumen.deduccionesContradichas += 1;
+      await auditar(obraId, 'deduccion_contradicha', objetivo, {
+        campo: fila.campo,
+        regla: fila.regla,
+        valorDeducido: superada.valorDeducido,
+        valorDocumentado: superada.valorDocumentado,
+        motivo: 'La documentación pasó a decir otra cosa: manda lo escrito.',
+      });
+      continue;
+    }
+
+    if (!marcada) continue;
+    await db
+      .update(deducciones)
+      .set({ valorJson: sinMarcas(fila.valorJson) })
+      .where(eq(deducciones.id, fila.id));
+    resumen.deduccionesContradichas += 1;
+    await auditar(obraId, 'deduccion_contradiccion_resuelta', objetivo, {
+      campo: fila.campo,
+      valorDocumentado: { antes: valorQueDocumenta(fila), despues: null },
+      motivo: 'La documentación volvió a coincidir con la deducción.',
+    });
+  }
+}
+
+/** Las láminas de la obra, con lo único que el motor de deducción mira de ellas. */
+function laminasResumen(db: Db, obraId: string): Promise<LaminaResumen[]> {
+  return db
+    .select({ id: laminas.id, tipo: laminas.tipo, codigo: laminas.codigo })
+    .from(laminas)
+    .where(eq(laminas.obraId, obraId));
+}
+
+/**
+ * Borra las deducciones de entidades que están por desaparecer, **en cualquier
+ * estado**.
+ *
+ * `deducciones.entidad_id` es una FK `NOT NULL`: sin esto, reprocesar una lámina
+ * que perdió una entidad falla con un error de integridad. Es la contracara de
+ * `desvincularItemsDeEntidades`, con una diferencia que hay que tener presente:
+ * un ítem editado a mano sobrevive sin su entidad (pierde el link), pero una
+ * deducción **es** un dicho sobre una entidad puntual y sin ella no significa
+ * nada. Por eso se borra incluso si estaba validada o rechazada, y por eso cada
+ * borrado deja su fila completa en `auditoria`: el rastro de RF-505 no se pierde
+ * aunque la deducción sí.
+ *
+ * Devuelve cuántas se borraron.
+ */
+export async function borrarDeduccionesDeEntidades(
+  db: Db,
+  obraId: string,
+  entidadIds: readonly string[],
+): Promise<number> {
+  if (entidadIds.length === 0) return 0;
+  const ids = [...entidadIds];
+
+  const afectadas = await db
+    .select()
+    .from(deducciones)
+    .where(and(eq(deducciones.obraId, obraId), inArray(deducciones.entidadId, ids)));
+  if (afectadas.length === 0) return 0;
+
+  await db
+    .delete(deducciones)
+    .where(and(eq(deducciones.obraId, obraId), inArray(deducciones.entidadId, ids)));
+
+  for (const fila of afectadas) {
+    await auditar(obraId, 'deduccion_borrada', `deducciones:${fila.entidadId}.${fila.campo}`, {
+      estado: fila.estado,
+      regla: fila.regla,
+      valor: fila.valorJson,
+      confianza: fila.confianza,
+      validadoPor: fila.validadoPor,
+      motivo: 'La entidad sobre la que hablaba ya no está en la lámina.',
+    });
+  }
+
+  return afectadas.length;
+}
+
+// ---------------------------------------------------------------------------
 
 function auditar(
   obraId: string,
@@ -342,11 +795,25 @@ function auditar(
 }
 
 /**
- * Recalcula la obra entera y sincroniza cómputo y bandeja.
+ * Recalcula la obra entera y sincroniza cómputo, bandeja y deducciones.
  *
  * Es la operación que corre después de cada lámina analizada y después de cada
  * respuesta a un hallazgo: tiene que ser barata de repetir y no dejar rastro si
  * nada cambió (por eso los updates comparan antes de escribir).
+ *
+ * El orden importa y es este:
+ *
+ *  1. Se leen las entidades y las deducciones ya decididas, y las **validadas**
+ *     se aplican como una capa encima de las entidades
+ *     (`aplicarDeduccionesValidadas`): así el dato validado sobrevive a un
+ *     reanálisis de la lámina y los ítems que dependen de él salen marcados
+ *     `origen: 'deducido'`.
+ *  2. `computarObra()` produce cómputo y consultas; `deducir()` produce
+ *     propuestas nuevas e inconsistencias.
+ *  3. Las inconsistencias del motor de deducción entran a la bandeja por el
+ *     mismo camino que el resto de los hallazgos (`deduccion.*` no es un
+ *     namespace protegido, ver `claves.ts`): se emiten en esta misma pasada, así
+ *     que el conciliador puede abrirlas y cerrarlas solo.
  */
 export async function recomputarObra(
   obraId: string,
@@ -357,22 +824,48 @@ export async function recomputarObra(
   const [obra] = await db.select().from(obras).where(eq(obras.id, obraId));
   if (!obra) throw new ObraInexistenteError(obraId);
 
-  const filas = await db.select().from(entidades).where(eq(entidades.obraId, obraId));
-  const { items, hallazgos: detectados } = computarObra(
+  const [filas, decididas, planos] = await Promise.all([
+    db.select().from(entidades).where(eq(entidades.obraId, obraId)),
+    db.select().from(deducciones).where(eq(deducciones.obraId, obraId)),
+    laminasResumen(db, obraId),
+  ]);
+
+  const { entidades: persistidas, camposDeducidos, contradichas } = aplicarDeduccionesValidadas(
     filas.map(comoEntidadPersistida),
-    obra.tipo,
+    decididas,
   );
+  const { items, hallazgos: detectados } = computarObra(
+    persistidas,
+    obra.tipo,
+    undefined,
+    camposDeducidos,
+  );
+  // El motor deduce sobre el estado real de conocimiento de la obra: un dato ya
+  // validado es un dato, y puede sostener la deducción siguiente.
+  const { propuestas, inconsistencias } = deducir(persistidas, planos);
+
+  // Las contradicciones son hallazgos como cualquier otro: se emiten en esta
+  // misma pasada, así que el conciliador las abre y las cierra solo.
+  const superadas = contradichas.map(hallazgoContradiccion);
 
   const resumen = resumenVacio();
   await sincronizarItems(db, obraId, items, resumen);
-  await sincronizarHallazgos(db, obraId, detectados, resumen);
+  await sincronizarHallazgos(
+    db,
+    obraId,
+    [...detectados, ...inconsistencias, ...superadas],
+    resumen,
+  );
+  await sincronizarDeducciones(db, obraId, propuestas, resumen);
+  await sincronizarContradicciones(db, obraId, decididas, contradichas, resumen);
 
   const huboCambios = Object.values(resumen).some((n) => n > 0);
   if (huboCambios) {
     await auditar(obraId, 'computo_recalculado', `obras:${obraId}`, {
       entidades: filas.length,
       items: items.length,
-      hallazgos: detectados.length,
+      hallazgos: detectados.length + inconsistencias.length + superadas.length,
+      deducciones: propuestas.length,
       ...resumen,
     });
   }

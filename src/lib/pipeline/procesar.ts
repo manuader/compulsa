@@ -50,6 +50,7 @@ import { igualJson } from '@/lib/pipeline/json';
 import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
   ACTOR_PIPELINE,
+  borrarDeduccionesDeEntidades,
   desvincularItemsDeEntidades,
   recomputarObra,
 } from '@/lib/pipeline/recomputar';
@@ -351,8 +352,15 @@ export function tieneBBoxUtil(bbox: BBox | undefined): bbox is BBox {
   return ancho > 0 && alto > 0;
 }
 
+/**
+ * Clave de identidad de una entidad dentro de una lámina, solo para agrupar en
+ * memoria. El separador es `::` y no un byte NUL: un NUL en el fuente le da a
+ * `git diff` un archivo binario y lo esconde de `grep`. No hay ambigüedad
+ * posible porque `tipo` sale de un enum cerrado y ninguno de sus valores lleva
+ * `:`, así que el primer `::` siempre parte donde corresponde.
+ */
 function claveDeEntidad(tipo: string, nombre: string): string {
-  return `${tipo}\u0000${nombre}`;
+  return `${tipo}::${nombre}`;
 }
 
 /**
@@ -421,6 +429,9 @@ async function sincronizarEntidades(
   const sobrantes = previas.filter((previa) => !conservadas.has(previa.id)).map((e) => e.id);
   if (sobrantes.length > 0) {
     await desvincularItemsDeEntidades(db, lamina.obraId, sobrantes);
+    // `deducciones.entidad_id` es una FK NOT NULL: lo que se dijo de una entidad
+    // que ya no está no se puede quedar apuntando a la nada (queda auditado).
+    await borrarDeduccionesDeEntidades(db, lamina.obraId, sobrantes);
     await db.delete(entidades).where(inArray(entidades.id, sobrantes));
   }
 

@@ -1,0 +1,37 @@
+{
+  "rotulo": {
+    "titulo": "PLANTA PB",
+    "codigo": "A-01",
+    "disciplina": "arquitectura",
+    "tipoLamina": "planta",
+    "escala": "1:100",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.95
+  },
+  "entidades": [
+    {
+      "tipo": "abertura",
+      "nombre": "V2",
+      "bbox": [0.16, 0.18, 0.1, 0.02],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tag": "V2",
+        "tipologia": "ventana"
+      }
+    },
+    {
+      "tipo": "tabique",
+      "nombre": "T1",
+      "bbox": [0.42, 0.2, 0.02, 0.45],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 5,
+        "caras": 2
+      }
+    }
+  ]
+}

@@ -13,7 +13,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { getDb } from '@/db/client';
-import { computoItems, computoRubros, documentos, hallazgos, laminas } from '@/db/schema';
+import { computoItems, computoRubros, deducciones, documentos, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
 import { PLANTILLAS } from '@/lib/rubros';
 import { RUBROS, type EstadoRubro } from '@/types/domain';
@@ -110,8 +110,15 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
   const obra = await requireObra(obraId);
   const db = await getDb();
 
-  const [[docs], laminasPorEstado, primeras, itemsPorRubro, estadosFilas, [consultas]] =
-    await Promise.all([
+  const [
+    [docs],
+    laminasPorEstado,
+    primeras,
+    itemsPorRubro,
+    estadosFilas,
+    [consultas],
+    [deduccionesPropuestas],
+  ] = await Promise.all([
       db.select({ total: count() }).from(documentos).where(eq(documentos.obraId, obra.id)),
       db
         .select({ estado: laminas.estadoAnalisis, total: count() })
@@ -148,6 +155,10 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
         })
         .from(hallazgos)
         .where(and(eq(hallazgos.obraId, obra.id), eq(hallazgos.estado, 'abierto'))),
+      db
+        .select({ total: count() })
+        .from(deducciones)
+        .where(and(eq(deducciones.obraId, obra.id), eq(deducciones.estado, 'propuesta'))),
     ]);
 
   const porEstado = new Map(laminasPorEstado.map((f) => [f.estado, f.total]));
@@ -184,7 +195,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
 
   return (
     <div className="flex flex-col gap-6">
-      <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Metrica
           titulo="Láminas"
           valor={totalLaminas === 0 ? null : `${analizadas}/${totalLaminas}`}
@@ -233,6 +244,30 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
               className="text-xs font-medium text-neutral-900 underline"
             >
               Ir a la bandeja
+            </Link>
+          </div>
+        </Metrica>
+
+        <Metrica
+          titulo="Deducciones"
+          valor={hayAnalisis ? (deduccionesPropuestas?.total ?? 0) : null}
+          detalle={
+            hayAnalisis
+              ? 'Propuestas esperando que las valides o las rechaces.'
+              : 'Salen de cruzar láminas: todavía no hay ninguna analizada.'
+          }
+        >
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            {(deduccionesPropuestas?.total ?? 0) > 0 ? (
+              <Badge tone="info">Ningún dato se escribe sin tu visto bueno</Badge>
+            ) : hayAnalisis ? (
+              <Badge tone="ok">Nada pendiente</Badge>
+            ) : null}
+            <Link
+              href={`${base}/deducciones`}
+              className="text-xs font-medium text-neutral-900 underline"
+            >
+              Ver deducciones
             </Link>
           </div>
         </Metrica>
