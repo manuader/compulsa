@@ -41,7 +41,14 @@ describe('deducción · planta ↔ corte', () => {
     const { propuestas, inconsistencias } = deducir([estarEnPlanta, estarEnCorte], LAMINAS);
 
     expect(inconsistencias).toEqual([]);
-    expect(propuestas).toHaveLength(1);
+    // El corte, que es el mismo ambiente, recibe de vuelta por continuidad los
+    // datos de planta que él no dibuja: la regla que se está pinneando acá es
+    // la primera.
+    expect(propuestas.map((p) => [p.entidadId, p.campo, p.regla])).toEqual([
+      ['estar-planta', 'alturaM', 'planta_corte'],
+      ['estar-corte', 'superficieM2', 'continuidad'],
+      ['estar-corte', 'perimetroM', 'continuidad'],
+    ]);
 
     const [altura] = propuestas;
     expect(altura!.entidadId).toBe('estar-planta');
@@ -78,8 +85,8 @@ describe('deducción · planta ↔ corte', () => {
 
     const { propuestas } = deducir([tabiquePlanta, tabiqueCorte], LAMINAS);
 
-    expect(propuestas).toHaveLength(1);
     expect(propuestas[0]!.entidadId).toBe('t1-planta');
+    expect(propuestas[0]!.campo).toBe('alturaM');
     expect(propuestas[0]!.valor).toBe(2.4);
     expect(propuestas[0]!.regla).toBe('planta_corte');
   });
@@ -120,9 +127,10 @@ describe('deducción · planta ↔ corte', () => {
       atributos: { alturaM: 2.4 },
     });
 
-    const { propuestas } = deducir([estarEnPlanta, estarEnCorte, otroCorte], LAMINAS);
+    const { propuestas, inconsistencias } = deducir([estarEnPlanta, estarEnCorte, otroCorte], LAMINAS);
 
-    expect(propuestas).toEqual([]);
+    expect(propuestas.filter((p) => p.campo === 'alturaM')).toEqual([]);
+    expect(inconsistencias.map((h) => h.clave)).toEqual(['deduccion.continuidad.Estar.alturaM']);
   });
 
   it('el corte que ya trae la altura no recibe propuesta', () => {
