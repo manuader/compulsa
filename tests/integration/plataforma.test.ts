@@ -49,6 +49,7 @@ import {
   checklistEfectivoDeTodos,
   ajustarHallazgosAlChecklist,
   contarBloqueantes,
+  esBloqueanteEfectivo,
   guardarItemChecklist,
   listarChecklist,
 } from '@/lib/plataforma/checklists';
@@ -1026,6 +1027,27 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
     const ajeno = await checklistEfectivoDeTodos(db, otroEstudioId);
 
     expect(contarBloqueantes(CONSULTAS, ajeno)).toBe(3);
+  });
+
+  it('el filtro «solo bloqueantes» de la bandeja usa el mismo ajuste que el contador', async () => {
+    // La bandeja no puede usar `ajustarHallazgosAlChecklist`: devuelve
+    // `HallazgoParaGate` y tira la identidad de la fila, así que no sirve para
+    // decidir qué mostrar. Con el `bloqueante` crudo, el encabezado decía «2
+    // bloqueantes» y el filtro seguía listando tres.
+    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    // La bandeja aplica primero el filtro de estado (por defecto, «abiertas») y
+    // después el de bloqueantes: es ese segundo paso el que se prueba acá.
+    const abiertas = CONSULTAS.filter((consulta) => consulta.estado === 'abierto');
+    const filtradas = abiertas.filter((consulta) => esBloqueanteEfectivo(consulta, efectivo));
+
+    // Las mismas que cuenta el contador: aberturas y escala. La de seco quedó
+    // afuera porque el estudio desactivó su chequeo — sigue en la bandeja sin
+    // el filtro, pero deja de frenar.
+    expect(filtradas.map((c) => c.checklistItem)).toEqual(['aberturas.medidas_vano', 'escala']);
+    expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(filtradas.length);
+    expect(abiertas).toHaveLength(3);
   });
 });
 

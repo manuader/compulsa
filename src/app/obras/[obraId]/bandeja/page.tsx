@@ -16,7 +16,11 @@ import { getDb } from '@/db/client';
 import { entidades, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
 import { PREFIJO_ESCALA } from '@/lib/pipeline/claves';
-import { checklistEfectivoDeTodos, contarBloqueantes } from '@/lib/plataforma/checklists';
+import {
+  checklistEfectivoDeTodos,
+  contarBloqueantes,
+  esBloqueanteEfectivo,
+} from '@/lib/plataforma/checklists';
 import { PLANTILLAS } from '@/lib/rubros/index';
 import { RUBROS, type EstadoHallazgo } from '@/types/domain';
 
@@ -130,7 +134,11 @@ export default async function BandejaPage({
 
   const visibles = filas
     .filter((fila) => (estado === null ? true : fila.estado === estado))
-    .filter((fila) => (soloBloqueantes ? fila.bloqueante : true));
+    // El mismo ajuste que el contador, y por el mismo motivo: con el
+    // `bloqueante` crudo de la fila, un estudio que desactivó un chequeo veía
+    // «0 bloqueantes» en el encabezado y la consulta seguía apareciendo al
+    // filtrar por bloqueantes.
+    .filter((fila) => (soloBloqueantes ? esBloqueanteEfectivo(fila, checklist) : true));
 
   const consultas: ConsultaVista[] = visibles.map((fila) => {
     const citadas: LaminaCitada[] = [];

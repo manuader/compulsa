@@ -346,16 +346,36 @@ export function ajustarHallazgosAlChecklist(
   hallazgos: readonly HallazgoConChecklist[],
   efectivo: ReadonlyMap<string, EstadoChecklist>,
 ): HallazgoParaGate[] {
-  return hallazgos.map((hallazgo) => {
-    const estado = hallazgo.checklistItem ? efectivo.get(hallazgo.checklistItem) : undefined;
-    if (!estado) return { rubro: hallazgo.rubro, bloqueante: hallazgo.bloqueante, estado: hallazgo.estado };
+  return hallazgos.map((hallazgo) => ({
+    rubro: hallazgo.rubro,
+    bloqueante: esBloqueanteEfectivo(hallazgo, efectivo),
+    estado: hallazgo.estado,
+  }));
+}
 
-    return {
-      rubro: hallazgo.rubro,
-      bloqueante: hallazgo.bloqueante && estado.activo && estado.bloqueante,
-      estado: hallazgo.estado,
-    };
-  });
+/**
+ * ¿Este hallazgo, en concreto, frena la aprobación hoy?
+ *
+ * Es la regla de una fila —lo que `ajustarHallazgosAlChecklist` aplica a la
+ * lista entera—, expuesta aparte porque hay un lugar que necesita **filtrar** y
+ * no puede usar la versión de lista: `ajustarHallazgosAlChecklist` devuelve
+ * `HallazgoParaGate`, que se queda con `rubro`, `bloqueante` y `estado` y tira
+ * la identidad de la fila, así que no sirve para decidir qué mostrar.
+ *
+ * Ese lugar es el filtro «solo bloqueantes» de la bandeja, que hasta acá miraba
+ * el `bloqueante` crudo de la fila mientras el contador de al lado ya miraba el
+ * checklist: en un estudio que desactivó un chequeo, el encabezado decía «0
+ * bloqueantes» y el filtro seguía mostrando la consulta.
+ */
+export function esBloqueanteEfectivo(
+  hallazgo: HallazgoConChecklist,
+  efectivo: ReadonlyMap<string, EstadoChecklist>,
+): boolean {
+  // Un hallazgo sin `checklistItem`, o con uno que no está en el checklist del
+  // rubro (`escala`, `sanity.*`), pasa tal cual.
+  const estado = hallazgo.checklistItem ? efectivo.get(hallazgo.checklistItem) : undefined;
+  if (!estado) return hallazgo.bloqueante;
+  return hallazgo.bloqueante && estado.activo && estado.bloqueante;
 }
 
 /**
