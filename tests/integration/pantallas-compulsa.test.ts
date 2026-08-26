@@ -774,9 +774,9 @@ describe('«sin respuesta hace 7+ días» (consulta, no cron)', () => {
     const contacto = await contactoConSaliente(HACE_OCHO_DIAS);
     const avisos = await detectarSinRespuestaCore(db, estudioId, obraId, AHORA);
 
-    const primera = await notificarSinRespuestaCore(db, estudioId, obraId, avisos);
-    const segunda = await notificarSinRespuestaCore(db, estudioId, obraId, avisos);
-    await notificarSinRespuestaCore(db, estudioId, obraId, avisos);
+    const primera = await notificarSinRespuestaCore(db, colaborador, obraId, avisos);
+    const segunda = await notificarSinRespuestaCore(db, colaborador, obraId, avisos);
+    await notificarSinRespuestaCore(db, colaborador, obraId, avisos);
 
     expect(primera).toBe(1);
     expect(segunda).toBe(0);
@@ -786,6 +786,45 @@ describe('«sin respuesta hace 7+ días» (consulta, no cron)', () => {
     expect(escritas[0].usuarioId).toBe(titular.usuarioId);
     expect(escritas[0].link).toContain(contacto.id);
     expect(escritas[0].titulo).toContain('sin respuesta');
+  });
+
+  /**
+   * El aviso lo dispara **abrir la pantalla**, que es un GET. Con rol de lectura
+   * eso no puede escribir nada: «lectura no muta nada» (RF-1201) vale también
+   * para los efectos secundarios de mirar, y el chequeo va en el núcleo, no en
+   * la página que lo llama.
+   */
+  it('con rol de lectura, abrir la pantalla no escribe ninguna notificación', async () => {
+    await contactoConSaliente(HACE_OCHO_DIAS);
+    const avisos = await detectarSinRespuestaCore(db, estudioId, obraId, AHORA);
+    expect(avisos).toHaveLength(1);
+
+    for (let vez = 0; vez < 3; vez += 1) {
+      expect(await notificarSinRespuestaCore(db, mirona, obraId, avisos)).toBe(0);
+    }
+    expect(await db.select().from(notificaciones)).toEqual([]);
+
+    // Y el que sí puede la escribe igual después: el silencio del de lectura no
+    // "consume" el aviso.
+    expect(await notificarSinRespuestaCore(db, colaborador, obraId, avisos)).toBe(1);
+    expect(await db.select().from(notificaciones)).toHaveLength(1);
+  });
+
+  it('dos renders concurrentes dejan una sola notificación, no dos', async () => {
+    await contactoConSaliente(HACE_OCHO_DIAS);
+    const avisos = await detectarSinRespuestaCore(db, estudioId, obraId, AHORA);
+
+    // Sin `await` en el medio: las dos llamadas salen de verdad en paralelo y
+    // las dos ven la base sin la notificación (el check-then-insert clásico).
+    const [una, otra] = await Promise.all([
+      notificarSinRespuestaCore(db, colaborador, obraId, avisos),
+      notificarSinRespuestaCore(db, titular, obraId, avisos),
+    ]);
+
+    const escritas = await db.select().from(notificaciones);
+    expect(escritas).toHaveLength(1);
+    // La cuenta que devuelven es la neta: entre las dos reportan una sola.
+    expect(una + otra).toBe(1);
   });
 });
 

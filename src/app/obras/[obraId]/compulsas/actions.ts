@@ -80,6 +80,7 @@ import {
 import { igualJson } from '@/lib/pipeline/json';
 import { leerConfig } from '@/lib/plataforma/config-estudio';
 import { crearNotificacion } from '@/lib/plataforma/notificaciones';
+import { esRolSuficiente } from '@/lib/plataforma/roles';
 import { listarProveedores } from '@/lib/proveedores/gestion';
 import { armarShortlist, type ProveedorRankeado } from '@/lib/proveedores/shortlist';
 import { PLANTILLAS } from '@/lib/rubros/index';
@@ -104,6 +105,17 @@ import {
 // ---------------------------------------------------------------------------
 
 export type ResultadoAccionCompulsa = { ok: true } | { ok: false; error: string };
+
+/**
+ * El actor de la sesión, con el `activo` que `esRolSuficiente` necesita.
+ *
+ * `activo` es opcional porque el actor **siempre** sale de la sesión y
+ * `leerSesion` ya filtra a los desactivados (P7, fix round 1): quien llega acá
+ * está activo. Se deja pasar igual para que un llamador que lo tenga —la
+ * pantalla lo tiene— no tenga que tirarlo, y para que la suposición esté escrita
+ * en un `?? true` y no escondida.
+ */
+export type ActorPantalla = ActorCompulsa & { activo?: boolean };
 
 export interface SeleccionProveedores {
   rankeados: ProveedorRankeado<Proveedor>[];
@@ -234,14 +246,32 @@ const zRubro = z.enum(RUBROS);
 
 const PAYLOAD_ILEGIBLE = 'No pude leer los datos de la compulsa.';
 
+/**
+ * ¿Este actor puede escribir? (colaborador para arriba, RF-1201).
+ *
+ * Los núcleos que mutan a pedido del usuario **lanzan** con `requireRolCore`, que
+ * es lo correcto: el usuario apretó un botón y merece el mensaje. Este helper es
+ * para la mutación que cuelga de una lectura —la notificación de silencio—,
+ * donde lo correcto es **no hacerla** y seguir mostrando la pantalla.
+ */
+function puedeEscribir(actor: ActorPantalla): boolean {
+  return esRolSuficiente({ rol: actor.rol, activo: actor.activo ?? true }, 'colaborador');
+}
+
 /** Sesión + obra del estudio + actor con el rol de la sesión. */
-async function contexto(obraId: string): Promise<{ db: Db; obraId: string; actor: ActorCompulsa }> {
+async function contexto(obraId: string): Promise<{ db: Db; obraId: string; actor: ActorPantalla }> {
   const { usuario, estudio } = await requireUser();
   const obra = await requireObra(obraId);
   return {
     db: await getDb(),
     obraId: obra.id,
-    actor: { usuarioId: usuario.id, email: usuario.email, rol: usuario.rol, estudioId: estudio.id },
+    actor: {
+      usuarioId: usuario.id,
+      email: usuario.email,
+      rol: usuario.rol,
+      activo: usuario.activo,
+      estudioId: estudio.id,
+    },
   };
 }
 
@@ -703,6 +733,20 @@ function linkDelAviso(aviso: AvisoSinRespuesta, obraId: string): string {
 /**
  * Le avisa al titular del silencio, **una sola vez por contacto**.
  *
+ * ## Quién puede disparar esta escritura
+ *
+ * El aviso lo detecta **abrir la pantalla**, que es un GET, así que esta función
+ * es una mutación colgada de una lectura. Por eso pide el actor y no el estudio:
+ * con rol de `lectura` **no escribe nada y devuelve 0** (RF-1201, "lectura no
+ * muta nada" — también los efectos secundarios de mirar). El chequeo vive acá, en
+ * el núcleo, y no en la página: la página es una más de las que podría llamarlo.
+ *
+ * No lanza, saltea. Un `lectura` tiene que poder abrir la compulsa y ver el
+ * aviso en pantalla; lo único que no pasa es que le llegue a la campanita del
+ * titular. Consecuencia aceptada: si **solo** entra gente de lectura, el titular
+ * no se entera por notificación — el dato sigue estando en la pantalla, que es
+ * donde vive de verdad.
+ *
  * ## El dedup, explicado (porque no tiene columna donde apoyarse)
  *
  * No hay dónde marcar "de este contacto ya avisé": `contactos_compulsa` no tiene
@@ -712,6 +756,19 @@ function linkDelAviso(aviso: AvisoSinRespuesta, obraId: string): string {
  * estudio, no se escribe otra. Alcanza porque la notificación no se borra (solo
  * se marca leída) y el link no cambia.
  *
+ * **La carrera y por qué se resuelve limpiando y no bloqueando.** Consultar y
+ * después insertar es un check-then-insert: dos renders simultáneos ven la base
+ * sin la notificación y las dos escriben. El patrón que usa P7 —la condición
+ * adentro del `WHERE` del `UPDATE`— acá no aplica, porque esto es un `INSERT` y
+ * `notificaciones` no tiene `UNIQUE (usuario_id, link)` sobre el que apoyar un
+ * `ON CONFLICT DO NOTHING` (esa columna es una migración de P1, y sería el
+ * arreglo bueno). Así que se inserta y **después se limpia**: `limpiarDuplicados`
+ * deja una sola por usuario y link, quedándose con la más vieja por
+ * `(created_at, id)`. El desempate es determinístico, así que dos limpiezas
+ * simultáneas conservan **la misma** fila y ninguna puede vaciar el par.
+ * La cuenta que devuelve esta función es la **neta**: lo insertado menos lo que
+ * la limpieza sacó.
+ *
  * **Limitación conocida:** si el proveedor contesta, se lo vuelve a contactar y
  * se calla de nuevo, no hay segundo aviso — la primera notificación sigue ahí. Se
  * arregla con una columna (`contactos_compulsa.aviso_silencio_at`) el día que
@@ -720,10 +777,13 @@ function linkDelAviso(aviso: AvisoSinRespuesta, obraId: string): string {
  */
 export async function notificarSinRespuestaCore(
   db: Db,
-  estudioId: string,
+  actor: ActorPantalla,
   obraId: string,
   avisos: readonly AvisoSinRespuesta[],
 ): Promise<number> {
+  if (!puedeEscribir(actor)) return 0;
+  const estudioId = actor.estudioId;
+
   let escritas = 0;
   for (const aviso of avisos) {
     const link = linkDelAviso(aviso, obraId);
@@ -736,7 +796,7 @@ export async function notificarSinRespuestaCore(
       .limit(1);
     if (yaAvisada) continue;
 
-    escritas += await crearNotificacion(
+    const insertadas = await crearNotificacion(
       db,
       { estudioId, roles: ['titular'] },
       {
@@ -747,9 +807,48 @@ export async function notificarSinRespuestaCore(
         link,
       },
     );
+
+    const borradas = await limpiarDuplicados(db, estudioId, link);
+    escritas += Math.max(0, insertadas - borradas);
   }
 
   return escritas;
+}
+
+/**
+ * Deja una sola notificación por usuario para ese link y devuelve cuántas borró.
+ *
+ * Se queda con la **más vieja** por `(created_at, id)` —el mismo desempate
+ * keyset que usa la auditoría de P7— para que dos limpiezas concurrentes
+ * conserven la misma fila. Solo toca filas con ese link exacto, que es una que
+ * escribió el sistema hace un instante: no borra nada que una persona haya
+ * escrito.
+ */
+async function limpiarDuplicados(db: Db, estudioId: string, link: string): Promise<number> {
+  const filas = await db
+    .select({
+      id: notificaciones.id,
+      usuarioId: notificaciones.usuarioId,
+      createdAt: notificaciones.createdAt,
+    })
+    .from(notificaciones)
+    .innerJoin(usuarios, eq(usuarios.id, notificaciones.usuarioId))
+    .where(and(eq(usuarios.estudioId, estudioId), eq(notificaciones.link, link)))
+    .orderBy(asc(notificaciones.createdAt), asc(notificaciones.id));
+
+  const vistos = new Set<string>();
+  const sobrantes: string[] = [];
+  for (const fila of filas) {
+    if (vistos.has(fila.usuarioId)) sobrantes.push(fila.id);
+    else vistos.add(fila.usuarioId);
+  }
+  if (sobrantes.length === 0) return 0;
+
+  const borradas = await db
+    .delete(notificaciones)
+    .where(inArray(notificaciones.id, sobrantes))
+    .returning({ id: notificaciones.id });
+  return borradas.length;
 }
 
 // ---------------------------------------------------------------------------

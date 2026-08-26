@@ -205,7 +205,9 @@ async function PasosDelRubro({
           >
             su pantalla
           </Link>{' '}
-          en vez de lanzar otra: el server rechaza una versión nueva con el mismo hash.
+          en vez de lanzar otra: una compulsa nueva del mismo cómputo se rechaza. Si cambiaste
+          especificaciones o condiciones, decide el server — esta comparación mira los ítems, no el
+          hash.
         </p>
       ) : null}
 

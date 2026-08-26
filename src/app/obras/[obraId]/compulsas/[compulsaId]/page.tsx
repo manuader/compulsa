@@ -147,12 +147,25 @@ export default async function CompulsaPage({
       .limit(1),
   ]);
 
-  const deEstaCompulsa = avisos.filter((aviso) => aviso.compulsaId === compulsa.id);
-  // Ver el encabezado del archivo: escritura idempotente durante el render.
-  await notificarSinRespuestaCore(db, estudio.id, obra.id, deEstaCompulsa);
-  const diasDeSilencio = new Map(deEstaCompulsa.map((aviso) => [aviso.contactoId, aviso.dias]));
-
   const puedeEscribir = esRolSuficiente(usuario, 'colaborador');
+
+  const deEstaCompulsa = avisos.filter((aviso) => aviso.compulsaId === compulsa.id);
+  // Ver el encabezado del archivo: escritura idempotente durante el render, y
+  // **solo si el que mira puede escribir** — el núcleo lo decide con el actor,
+  // que va entero (rol y `activo` incluidos), no con el estudio pelado.
+  await notificarSinRespuestaCore(
+    db,
+    {
+      usuarioId: usuario.id,
+      email: usuario.email,
+      rol: usuario.rol,
+      activo: usuario.activo,
+      estudioId: estudio.id,
+    },
+    obra.id,
+    deEstaCompulsa,
+  );
+  const diasDeSilencio = new Map(deEstaCompulsa.map((aviso) => [aviso.contactoId, aviso.dias]));
   const base = `/obras/${obra.id}`;
   const condiciones = compulsa.condicionesJson;
   const mandato = compulsa.mandatoJson;
