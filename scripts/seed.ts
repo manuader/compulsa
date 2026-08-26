@@ -29,7 +29,6 @@ import path from 'node:path';
 
 import { and, asc, eq } from 'drizzle-orm';
 
-import { responderHallazgo } from '@/app/obras/[obraId]/bandeja/actions';
 import { diffDeItem, recalcularCompra } from '@/app/obras/[obraId]/computo/actions';
 import { getDb, type Db } from '@/db/client';
 import {
@@ -48,6 +47,7 @@ import {
 import { crearProviderMock } from '@/lib/analysis/mock';
 import { registrarAuditoria } from '@/lib/audit';
 import { hashearPassword } from '@/lib/auth/password';
+import { responderHallazgo } from '@/lib/bandeja/resolver';
 import { claveEscala } from '@/lib/pipeline/claves';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import { getStorage } from '@/lib/storage/index';

@@ -1,7 +1,7 @@
 /**
  * Bandeja de consultas: resolver un hallazgo y ver el efecto en el cómputo.
  *
- * Se testean los **núcleos** de las server actions (`responderHallazgo`,
+ * Se testean los **núcleos** de `@/lib/bandeja/resolver` (`responderHallazgo`,
  * `marcarExistente`, …), no los envoltorios `*Action`: esos solo agregan
  * `requireUser()` / `requireObra()` y `revalidatePath()`, que necesitan el
  * request de Next. Lo que hay que proteger es qué queda escrito en la base.
@@ -19,14 +19,6 @@ import path from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  confirmarSupuesto,
-  descartarHallazgo,
-  descartarLote,
-  marcarExistente,
-  responderHallazgo,
-  type ActorBandeja,
-} from '@/app/obras/[obraId]/bandeja/actions';
 import { setDbForTests, type Db } from '@/db/client';
 import {
   auditoria,
@@ -41,6 +33,14 @@ import {
   type ComputoItem,
   type Hallazgo,
 } from '@/db/schema';
+import {
+  confirmarSupuesto,
+  descartarHallazgo,
+  descartarLote,
+  marcarExistente,
+  responderHallazgo,
+  type ActorBandeja,
+} from '@/lib/bandeja/resolver';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import { recomputarObra } from '@/lib/pipeline/recomputar';
