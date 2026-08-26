@@ -30,6 +30,13 @@ import { registrarAuditoria } from '@/lib/audit';
 import { requireObra, requireUser } from '@/lib/auth/guards';
 import { redondear2 } from '@/lib/computo/unidades';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
+import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
+import {
+  requireAccion,
+  RolInsuficienteError,
+  UsuarioInactivoError,
+  type AccionConRol,
+} from '@/lib/plataforma/roles';
 import { PLANTILLAS } from '@/lib/rubros/index';
 import {
   numeroEsAr,
@@ -37,7 +44,7 @@ import {
   type CompraCalculada,
   type EntradaCompra,
 } from '@/lib/rubros/overrides';
-import { RUBROS, UNIDADES } from '@/types/domain';
+import { RUBROS, UNIDADES, type RolUsuario } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Resultado que ven las pantallas
@@ -151,6 +158,27 @@ function primerError(error: z.ZodError, porDefecto: string): string {
   return error.issues[0]?.message ?? porDefecto;
 }
 
+/**
+ * Aplica la matriz de roles (RF-1201) y traduce el rechazo a un `ResultadoAccion`.
+ *
+ * Editar el cómputo es de colaborador para arriba; **aprobar un rubro es del
+ * titular**, porque es una de las cinco acciones que la matriz le saca al
+ * colaborador (y porque sin cómputo aprobado no arranca ninguna compulsa).
+ * El chequeo va en el server: que el botón esté deshabilitado en la pantalla no
+ * es una verificación, estos exports son endpoints HTTP.
+ */
+function chequearRol(usuario: { rol: RolUsuario; activo: boolean }, accion: AccionConRol): ResultadoAccion {
+  try {
+    requireAccion(usuario, accion);
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof RolInsuficienteError || error instanceof UsuarioInactivoError) {
+      return { ok: false, error: error.message };
+    }
+    throw error;
+  }
+}
+
 /** La planilla es una pantalla del server: tras mutar hay que revalidarla. */
 async function revalidarPlanilla(obraId: string): Promise<void> {
   const { revalidatePath } = await import('next/cache');
@@ -174,6 +202,8 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
   const { obraId, itemId, descripcion, cantNeta, desperdicioPct } = parseo.data;
 
   const { usuario } = await requireUser();
+  const permiso = chequearRol(usuario, 'editar_computo');
+  if (!permiso.ok) return permiso;
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -258,6 +288,8 @@ export async function anularItemAction(entrada: unknown): Promise<ResultadoAccio
   const { obraId, itemId } = parseo.data;
 
   const { usuario } = await requireUser();
+  const permiso = chequearRol(usuario, 'editar_computo');
+  if (!permiso.ok) return permiso;
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -323,6 +355,8 @@ export async function crearItemManualAction(entrada: unknown): Promise<Resultado
   }
 
   const { usuario } = await requireUser();
+  const permiso = chequearRol(usuario, 'editar_computo');
+  if (!permiso.ok) return permiso;
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -382,10 +416,20 @@ export async function crearItemManualAction(entrada: unknown): Promise<Resultado
 }
 
 /**
- * Aprueba el cómputo de un rubro (RF-404). El gate se verifica **en el server**:
- * que el botón esté habilitado en la pantalla no alcanza — mientras quede un
- * hallazgo bloqueante abierto del rubro, la aprobación se rechaza con el número
- * de consultas pendientes.
+ * Aprueba el cómputo de un rubro (RF-404).
+ *
+ * Tres cosas pasan acá, en este orden:
+ *
+ * 1. **Rol de titular** (RF-1201): aprobar un rubro es una de las cinco
+ *    acciones que la matriz le saca al colaborador. Sin cómputo aprobado no
+ *    arranca ninguna compulsa, así que la firma es del titular.
+ * 2. **El checklist del estudio decide qué frena** (RF-405): un ítem que el
+ *    estudio desactivó, o que marcó como no bloqueante, deja de contar para el
+ *    gate. Los hallazgos siguen en la bandeja: lo que cambia es si frenan.
+ *    Las familias que no son de checklist —`escala`, que administra el
+ *    pipeline, y los `sanity.*`— pasan intactas.
+ * 3. **El gate se verifica en el server**: que el botón esté habilitado en la
+ *    pantalla no alcanza, este export es un endpoint HTTP.
  */
 export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAccion> {
   const parseo = zAprobacion.safeParse(entrada);
@@ -394,7 +438,9 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
   }
   const { obraId, rubro } = parseo.data;
 
-  const { usuario } = await requireUser();
+  const { usuario, estudio } = await requireUser();
+  const permiso = chequearRol(usuario, 'aprobar_rubro');
+  if (!permiso.ok) return permiso;
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -403,11 +449,13 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
       rubro: hallazgos.rubro,
       bloqueante: hallazgos.bloqueante,
       estado: hallazgos.estado,
+      checklistItem: hallazgos.checklistItem,
     })
     .from(hallazgos)
     .where(eq(hallazgos.obraId, obra.id));
 
-  const gate = puedeAprobarRubro(rubro, abiertos);
+  const checklist = await checklistEfectivo(db, estudio.id, rubro);
+  const gate = puedeAprobarRubro(rubro, ajustarHallazgosAlChecklist(abiertos, checklist));
   if (!gate.ok) {
     const una = gate.bloqueantes === 1;
     const consultas = una

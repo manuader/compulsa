@@ -147,7 +147,10 @@ beforeEach(async () => {
     })
     .returning();
   usuarioId = usuario.id;
-  actor = { usuarioId: usuario.id, email: usuario.email };
+  // El rol va en el actor desde P7: los núcleos de gestión aplican la matriz de
+  // RF-1201 (eliminar una obra es del titular). La cobertura de la matriz vive
+  // en `tests/unit/roles.test.ts` y `tests/integration/plataforma.test.ts`.
+  actor = { usuarioId: usuario.id, email: usuario.email, rol: usuario.rol, activo: usuario.activo };
 
   const [obra, ajena] = await db
     .insert(obras)

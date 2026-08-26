@@ -28,7 +28,7 @@
  * `auditoria` con `obra_id` en `null` que dice qué se llevó puesto y quién lo
  * pidió. Sin ella, una obra desaparecida no dejaría ni una línea.
  *
- * ## Las cuatro reglas del módulo
+ * ## Las cinco reglas del módulo
  *
  * 1. **Aislamiento primero (RNF-4).** Toda función arranca con
  *    `requireObraCore(db, estudioId, obraId)`: la obra es del estudio o no
@@ -43,6 +43,11 @@
  *    quedan **anulados** por el recompute, con `entidad_id` en `null`. Un ítem
  *    que el arquitecto editó a mano sobrevive: pierde el link, no la fila.
  * 4. **Toda mutación se audita** con actor `usuario` y diff (CLAUDE.md §4).
+ * 5. **Toda mutación pide rol** (RF-1201): editar, archivar y borrar un
+ *    documento son de colaborador para arriba; **eliminar una obra es del
+ *    titular**, porque es la única salida irreversible del sistema. El chequeo
+ *    va antes que el de aislamiento a propósito: a un usuario sin permiso hay
+ *    que decirle que no tiene permiso, no que la obra no existe.
  */
 import { and, count, desc, eq, inArray } from 'drizzle-orm';
 
@@ -64,14 +69,23 @@ import { esUuid, requireObraCore } from '@/lib/auth/guards';
 import { erroresPorCampo, zCambiosObra } from '@/lib/obras/schema';
 import { claveEscala } from '@/lib/pipeline/claves';
 import { desvincularItemsDeEntidades, recomputarObra } from '@/lib/pipeline/recomputar';
+import { requireAccion, type UsuarioConRol } from '@/lib/plataforma/roles';
 import type { StorageAdapter } from '@/lib/storage/index';
 
 // ---------------------------------------------------------------------------
 // Contratos
 // ---------------------------------------------------------------------------
 
-/** Quién hace el cambio. Los `*Action` lo sacan de la sesión, nunca del payload. */
-export interface ActorObra {
+/**
+ * Quién hace el cambio. Los `*Action` lo sacan de la sesión, nunca del payload.
+ *
+ * Lleva el **rol** y si está activo porque el enforcement de la matriz (RF-1201)
+ * vive acá adentro, no en la pantalla: estas funciones son endpoints potenciales
+ * si alguien las exporta mal, y un botón escondido no esconde nada. El core no
+ * puede leer el rol por su cuenta —recibe la base por parámetro y no sabe de
+ * sesiones—, así que se lo tienen que pasar.
+ */
+export interface ActorObra extends UsuarioConRol {
   usuarioId: string;
   email: string;
 }
@@ -226,6 +240,7 @@ export async function editarObra(
   cambios: unknown,
   actor: ActorObra,
 ): Promise<ResultadoEdicion> {
+  requireAccion(actor, 'editar_obra');
   const obra = await requireObraCore(db, estudioId, obraId);
 
   const parseo = zCambiosObra.safeParse(cambios);
@@ -270,6 +285,7 @@ async function cambiarEstado(
   estado: EstadoObra,
   actor: ActorObra,
 ): Promise<Obra> {
+  requireAccion(actor, 'archivar_obra');
   const obra = await requireObraCore(db, estudioId, obraId);
   if (obra.estado === estado) return obra; // idempotente y sin auditar (regla 2)
 
@@ -357,6 +373,9 @@ export async function eliminarObra(
   obraId: string,
   actor: ActorObra,
 ): Promise<ConteosObra> {
+  // Eliminar una obra es una de las cinco acciones que la matriz le saca al
+  // colaborador: es la única salida irreversible del sistema.
+  requireAccion(actor, 'eliminar_obra');
   const obra = await requireObraCore(db, estudioId, obraId);
   if (obra.estado !== 'archivada') throw new ObraNoArchivadaError(obra.id);
 
@@ -484,6 +503,7 @@ export async function eliminarDocumento(
   documentoId: string,
   actor: ActorObra,
 ): Promise<ConteosDocumento> {
+  requireAccion(actor, 'eliminar_documento');
   const obra = await requireObraCore(db, estudioId, obraId);
   if (!esUuid(documentoId)) throw new DocumentoNoEncontradoError(documentoId);
 
