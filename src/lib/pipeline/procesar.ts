@@ -50,6 +50,7 @@ import { igualJson } from '@/lib/pipeline/json';
 import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
   ACTOR_PIPELINE,
+  borrarDeduccionesDeEntidades,
   desvincularItemsDeEntidades,
   recomputarObra,
 } from '@/lib/pipeline/recomputar';
@@ -421,6 +422,9 @@ async function sincronizarEntidades(
   const sobrantes = previas.filter((previa) => !conservadas.has(previa.id)).map((e) => e.id);
   if (sobrantes.length > 0) {
     await desvincularItemsDeEntidades(db, lamina.obraId, sobrantes);
+    // `deducciones.entidad_id` es una FK NOT NULL: lo que se dijo de una entidad
+    // que ya no está no se puede quedar apuntando a la nada (queda auditado).
+    await borrarDeduccionesDeEntidades(db, lamina.obraId, sobrantes);
     await db.delete(entidades).where(inArray(entidades.id, sobrantes));
   }
 

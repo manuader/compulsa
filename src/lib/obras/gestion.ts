@@ -51,6 +51,7 @@ import {
   auditoria,
   computoItems,
   computoRubros,
+  deducciones,
   documentos,
   entidades,
   hallazgos,
@@ -63,7 +64,11 @@ import { registrarAuditoria } from '@/lib/audit';
 import { esUuid, requireObraCore } from '@/lib/auth/guards';
 import { erroresPorCampo, zCambiosObra } from '@/lib/obras/schema';
 import { claveEscala } from '@/lib/pipeline/claves';
-import { desvincularItemsDeEntidades, recomputarObra } from '@/lib/pipeline/recomputar';
+import {
+  borrarDeduccionesDeEntidades,
+  desvincularItemsDeEntidades,
+  recomputarObra,
+} from '@/lib/pipeline/recomputar';
 import type { StorageAdapter } from '@/lib/storage/index';
 
 // ---------------------------------------------------------------------------
@@ -383,6 +388,9 @@ export async function eliminarObra(
     .delete(computoRubros)
     .where(eq(computoRubros.obraId, obra.id))
     .returning({ id: computoRubros.id });
+  // Las deducciones también apuntan a `entidades`: van antes que ellas, por la
+  // misma razón de FK que los ítems y los hallazgos.
+  await db.delete(deducciones).where(eq(deducciones.obraId, obra.id));
   const entidadesBorradas = await db
     .delete(entidades)
     .where(eq(entidades.obraId, obra.id))
@@ -509,6 +517,9 @@ export async function eliminarDocumento(
 
     if (entidadIds.length > 0) {
       itemsDesvinculados = await desvincularItemsDeEntidades(db, obra.id, entidadIds);
+      // `deducciones.entidad_id` es FK NOT NULL: lo que se dedujo sobre estas
+      // entidades se va con ellas (queda en `auditoria`, no en la tabla).
+      await borrarDeduccionesDeEntidades(db, obra.id, entidadIds);
       entidadesBorradas = (
         await db.delete(entidades).where(inArray(entidades.id, entidadIds)).returning({
           id: entidades.id,

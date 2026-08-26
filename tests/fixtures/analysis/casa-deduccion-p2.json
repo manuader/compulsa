@@ -1,0 +1,25 @@
+{
+  "rotulo": {
+    "titulo": "CORTE A-A",
+    "codigo": "A-02",
+    "disciplina": "arquitectura",
+    "tipoLamina": "corte",
+    "escala": "1:100",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.93
+  },
+  "entidades": [
+    {
+      "tipo": "tabique",
+      "nombre": "T1",
+      "bbox": [0.3, 0.3, 0.4, 0.2],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "durlock",
+        "alturaM": 2.6
+      }
+    }
+  ]
+}

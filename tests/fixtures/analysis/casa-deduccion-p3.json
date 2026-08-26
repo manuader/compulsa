@@ -1,0 +1,29 @@
+{
+  "rotulo": {
+    "titulo": "PLANILLA DE CARPINTERÍAS",
+    "codigo": "A-05",
+    "disciplina": "arquitectura",
+    "tipoLamina": "planilla",
+    "escala": null,
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.9
+  },
+  "entidades": [
+    {
+      "tipo": "abertura",
+      "nombre": "V2",
+      "bbox": [0.2, 0.3, 0.15, 0.1],
+      "confianza": 0.8,
+      "estadoReforma": "na",
+      "atributos": {
+        "tag": "V2",
+        "tipologia": "ventana",
+        "anchoM": 1.5,
+        "altoM": 1.1,
+        "material": "aluminio",
+        "vidrio": "DVH"
+      }
+    }
+  ]
+}
