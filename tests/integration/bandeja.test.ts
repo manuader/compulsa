@@ -38,6 +38,7 @@ import {
   descartarHallazgo,
   descartarLote,
   marcarExistente,
+  MEDIDA_NO_POSITIVA,
   responderHallazgo,
   type ActorBandeja,
 } from '@/lib/bandeja/resolver';
@@ -266,6 +267,47 @@ describe('responderHallazgo sobre un faltante de medidas', () => {
       tipo: 'nota',
       nota: 'Está en la planilla de carpinterías, lámina A-03.',
     });
+  });
+
+  it('rechaza un 0 y deja la consulta abierta: cerrarla no computaría nada', async () => {
+    // `leerMedida()` solo toma valores positivos: con altoM = 0 el motor sigue
+    // sin poder emitir el ítem, pero el hallazgo quedaría cerrado y el rubro
+    // aprobable con el dato faltando — el agujero exacto que el gate tapa.
+    const entidadId = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'P1',
+      atributos: { tag: 'P1', tipologia: 'puerta', anchoM: 0.9 },
+    });
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.P1');
+    expect(abierto?.targetRef).toEqual({ entidadId, campo: 'altoM' });
+
+    for (const valor of ['0', '0,00']) {
+      expect(await responderHallazgo({ obraId, hallazgoId: abierto!.id, valor }, actor)).toEqual({
+        ok: false,
+        error: MEDIDA_NO_POSITIVA,
+      });
+    }
+
+    // La consulta sigue viva, la entidad intacta, el ítem sin emitir.
+    const intacto = await hallazgoPorClave('aberturas.medidas_vano.P1');
+    expect(intacto?.estado).toBe('abierto');
+    expect(intacto?.respuestaJson).toBeNull();
+    expect(intacto?.resueltoPor).toBeNull();
+
+    const [entidad] = await db.select().from(entidades).where(eq(entidades.id, entidadId));
+    expect(entidad.atributosJson.altoM).toBeUndefined();
+    expect(await itemPorClave('aberturas.P1')).toBeUndefined();
+
+    // El gate del rubro no se movió y nada se escribió en la auditoría.
+    expect(await gateDeAberturas()).toEqual({ ok: false, bloqueantes: 1 });
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
+
+    // Y la medida de verdad se sigue pudiendo responder.
+    expect(await responderHallazgo({ obraId, hallazgoId: abierto!.id, valor: '2,05' }, actor)).toEqual({
+      ok: true,
+    });
+    expect((await hallazgoPorClave('aberturas.medidas_vano.P1'))?.estado).toBe('respondido');
   });
 
   it('rechaza la consulta de otra obra sin escribir nada', async () => {

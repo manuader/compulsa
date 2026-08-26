@@ -141,6 +141,9 @@ function primerError(error: z.ZodError, porDefecto: string): string {
 const NO_ENCONTRADO = 'No encontré esa consulta en esta obra.';
 const YA_RESUELTA = 'Esa consulta ya está resuelta. Refrescá la bandeja para ver cómo quedó.';
 
+/** Responder "0" a un faltante dimensional cierra la consulta sin resolverla. */
+export const MEDIDA_NO_POSITIVA = 'La medida tiene que ser mayor a cero.';
+
 function cargarHallazgo(db: Db, obraId: string, hallazgoId: string): Promise<Hallazgo | undefined> {
   return db
     .select()
@@ -256,6 +259,15 @@ export async function responderHallazgo(
 
   const numero = texto === '' ? null : await parsearCantidad(texto);
   const target = hallazgo.targetRef;
+
+  // Un "0" en una consulta que apunta a un campo de una entidad no es una
+  // respuesta: `leerMedida()` solo toma valores positivos, así que el motor
+  // seguiría sin poder computar, pero el hallazgo quedaría cerrado y el rubro
+  // aprobable con el dato todavía faltando — justo lo que el gate existe para
+  // impedir (RF-404). Se rechaza y la consulta sigue abierta.
+  if (target !== null && numero !== null && numero <= 0) {
+    return { ok: false, error: MEDIDA_NO_POSITIVA };
+  }
 
   // Camino bueno: el dato entra a la entidad y el cómputo lo levanta.
   if (target && numero !== null) {
