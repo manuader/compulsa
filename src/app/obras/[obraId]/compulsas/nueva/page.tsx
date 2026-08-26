@@ -16,7 +16,9 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Select } from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -110,30 +112,20 @@ export default async function NuevaCompulsaPage({
               y volvé.
             </p>
           ) : (
+            // El paso 1 viaja por la URL con un `<form method="get">`: la
+            // pantalla se comparte, sobrevive al F5 y no necesita JavaScript.
             <form method="get" className="flex flex-wrap items-end gap-2">
-              <label className="block">
-                <span className="mb-1 block text-sm font-medium text-neutral-700">
-                  Rubro aprobado
-                </span>
-                <select
-                  name="rubro"
-                  defaultValue={rubro ?? ''}
-                  className="block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900"
-                >
-                  <option value="">Elegí un rubro…</option>
-                  {aprobados.map((fila) => (
-                    <option key={fila.rubro} value={fila.rubro}>
-                      {PLANTILLAS[fila.rubro].nombre}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="submit"
-                className="inline-flex h-10 items-center justify-center rounded-md border border-neutral-300 bg-white px-4 text-sm font-medium text-neutral-900 hover:bg-neutral-100"
-              >
+              <Select name="rubro" label="Rubro aprobado" defaultValue={rubro ?? ''}>
+                <option value="">Elegí un rubro…</option>
+                {aprobados.map((fila) => (
+                  <option key={fila.rubro} value={fila.rubro}>
+                    {PLANTILLAS[fila.rubro].nombre}
+                  </option>
+                ))}
+              </Select>
+              <Button type="submit" variant="secondary">
                 Ver los ítems
-              </button>
+              </Button>
             </form>
           )}
         </CardContent>
@@ -219,9 +211,15 @@ async function PasosDelRubro({
 
       <Card>
         <CardContent className="flex flex-col gap-3">
-          <h2 className="text-sm font-semibold text-neutral-900">
-            Lo que se va a congelar · {PLANTILLAS[rubro].nombre}
-          </h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-semibold text-neutral-900">
+              Lo que se va a congelar · {PLANTILLAS[rubro].nombre}
+            </h2>
+            <Badge tone="neutral">
+              {preview.items.length} {preview.items.length === 1 ? 'ítem' : 'ítems'} · el hash se
+              calcula al lanzar
+            </Badge>
+          </div>
           <p className="text-xs text-neutral-600">
             Son los ítems activos del cómputo aprobado, tal cual van a viajar en el pedido. No se
             editan desde acá: si algo está mal, el lugar es la planilla.
@@ -272,11 +270,6 @@ async function PasosDelRubro({
           puedeLanzar ? null : 'Lanzar una compulsa es del titular del estudio (RF-1201).'
         }
       />
-
-      <Badge tone="neutral" className="self-start">
-        {preview.items.length} {preview.items.length === 1 ? 'ítem' : 'ítems'} · el hash se calcula
-        al lanzar
-      </Badge>
     </div>
   );
 }
