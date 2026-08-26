@@ -1340,3 +1340,68 @@ describe('notificaciones', () => {
     expect(await db.select().from(notificaciones)).toEqual([]);
   });
 });
+
+/**
+ * La marca de "de esto ya avisé" vive en `notificaciones.clave_dedup` y la
+ * garantiza el UNIQUE `(usuario_id, clave_dedup)`, no una consulta previa: dos
+ * escrituras simultáneas dejan una sola fila. Va en su propia columna y no sobre
+ * `link` porque el link no es único por evento —tres proveedores cotizando la
+ * misma compulsa llevan al mismo lugar y son tres avisos distintos.
+ */
+describe('deduplicación de notificaciones por clave', () => {
+  let caroId: string;
+
+  beforeEach(async () => {
+    const [caro] = await db
+      .insert(usuarios)
+      .values({
+        estudioId,
+        email: 'caro@estudionorte.ar',
+        nombre: 'Caro Colaboradora',
+        passwordHash: 'x',
+        rol: 'colaborador',
+      })
+      .returning();
+    caroId = caro.id;
+  });
+
+  it('con la misma clave, el segundo aviso no se escribe y la cuenta lo dice', async () => {
+    const aviso = { titulo: 'Sin respuesta', cuerpo: 'x', claveDedup: 'compulsa.sin_respuesta.7' };
+
+    expect(await crearNotificacion(db, [caroId], aviso)).toBe(1);
+    expect(await crearNotificacion(db, [caroId], aviso)).toBe(0);
+    expect(await crearNotificacion(db, [caroId], { ...aviso, titulo: 'Otro título' })).toBe(0);
+
+    expect(await db.select().from(notificaciones)).toHaveLength(1);
+  });
+
+  it('dos escrituras simultáneas con la misma clave dejan una sola fila', async () => {
+    const aviso = { titulo: 'Sin respuesta', cuerpo: 'x', claveDedup: 'compulsa.sin_respuesta.8' };
+
+    const [una, otra] = await Promise.all([
+      crearNotificacion(db, [caroId], aviso),
+      crearNotificacion(db, [caroId], aviso),
+    ]);
+
+    expect(una + otra).toBe(1);
+    expect(await db.select().from(notificaciones)).toHaveLength(1);
+  });
+
+  it('la clave es por usuario: el mismo aviso le llega a cada uno', async () => {
+    const escritas = await crearNotificacion(db, [caroId, titular.usuarioId], {
+      titulo: 'Sin respuesta',
+      cuerpo: 'x',
+      claveDedup: 'compulsa.sin_respuesta.9',
+    });
+
+    expect(escritas).toBe(2);
+  });
+
+  it('sin clave no hay dedup: dos avisos al mismo link son dos avisos', async () => {
+    const link = '/obras/1/compulsas/2';
+    expect(await crearNotificacion(db, [caroId], { titulo: 'Cotizó A', cuerpo: 'x', link })).toBe(1);
+    expect(await crearNotificacion(db, [caroId], { titulo: 'Cotizó B', cuerpo: 'x', link })).toBe(1);
+
+    expect(await db.select().from(notificaciones)).toHaveLength(2);
+  });
+});

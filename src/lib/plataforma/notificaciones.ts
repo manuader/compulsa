@@ -36,6 +36,16 @@ export interface DatosNotificacion {
   cuerpo: string;
   /** Ruta interna a la que lleva el click ("/estudio/usuarios"). */
   link?: string | null;
+  /**
+   * Marca de "de esto ya le avisé a esta persona". Con ella, escribir dos veces
+   * el mismo aviso deja **una** fila: el UNIQUE `(usuario_id, clave_dedup)` lo
+   * resuelve en la base con `ON CONFLICT DO NOTHING`, sin check-then-insert y
+   * sin carrera entre dos renders simultáneos.
+   *
+   * Sin ella —el caso normal— no hay dedup: tres proveedores que cotizan la
+   * misma compulsa son tres avisos, aunque los tres lleven al mismo link.
+   */
+  claveDedup?: string | null;
 }
 
 /** A quién avisarle: usuarios puntuales, o el estudio entero (por rol, si se acota). */
@@ -69,7 +79,8 @@ async function resolverDestinatarios(db: Db, destino: Destinatarios): Promise<st
 }
 
 /**
- * Escribe una notificación por destinatario y devuelve cuántas escribió.
+ * Escribe una notificación por destinatario y devuelve cuántas escribió **de
+ * verdad**: con `claveDedup`, las que ya estaban no se cuentan.
  *
  * No lanza si no hay a quién avisarle: cero destinatarios es un resultado
  * posible (un estudio de una sola persona al que se le avisa "a los demás"), no
@@ -83,15 +94,27 @@ export async function crearNotificacion(
   const ids = await resolverDestinatarios(db, destino);
   if (ids.length === 0) return 0;
 
-  await db.insert(notificaciones).values(
-    ids.map((usuarioId) => ({
-      usuarioId,
-      titulo: datos.titulo,
-      cuerpo: datos.cuerpo,
-      link: datos.link ?? null,
-    })),
-  );
-  return ids.length;
+  const escritas = await db
+    .insert(notificaciones)
+    .values(
+      ids.map((usuarioId) => ({
+        usuarioId,
+        titulo: datos.titulo,
+        cuerpo: datos.cuerpo,
+        link: datos.link ?? null,
+        claveDedup: datos.claveDedup ?? null,
+      })),
+    )
+    // El UNIQUE `(usuario_id, clave_dedup)` es el que decide, no una consulta
+    // previa: dos renders simultáneos escriben los dos y gana uno solo. Sin
+    // `claveDedup` la clave es `null` y en Postgres los NULL nunca chocan, así
+    // que esto no cambia nada para los productores que no deduplican.
+    .onConflictDoNothing({
+      target: [notificaciones.usuarioId, notificaciones.claveDedup],
+    })
+    .returning({ id: notificaciones.id });
+
+  return escritas.length;
 }
 
 /** Las últimas del usuario, de la más nueva a la más vieja. */

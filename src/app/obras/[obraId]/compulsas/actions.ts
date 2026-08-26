@@ -38,7 +38,6 @@ import {
   contactosCompulsa,
   cotizaciones,
   mensajes,
-  notificaciones,
   proveedores,
   usuarios,
   type Cotizacion,
@@ -725,9 +724,18 @@ export async function detectarSinRespuestaCore(
   return avisos.sort((a, b) => b.dias - a.dias || a.proveedor.localeCompare(b.proveedor, 'es-AR'));
 }
 
-/** El link de la notificación **es** la clave de deduplicación. Ver abajo. */
+/** A dónde lleva el aviso: la compulsa, anclada en el contacto que se calló. */
 function linkDelAviso(aviso: AvisoSinRespuesta, obraId: string): string {
   return `/obras/${obraId}/compulsas/${aviso.compulsaId}#contacto-${aviso.contactoId}`;
+}
+
+/**
+ * "De este contacto ya avisé". Es la clave del UNIQUE
+ * `(usuario_id, clave_dedup)` de `notificaciones`; el prefijo la separa de
+ * cualquier otra familia de avisos que quiera deduplicar en el futuro.
+ */
+function claveDedupDelAviso(aviso: AvisoSinRespuesta): string {
+  return `compulsa.sin_respuesta.${aviso.contactoId}`;
 }
 
 /**
@@ -747,33 +755,29 @@ function linkDelAviso(aviso: AvisoSinRespuesta, obraId: string): string {
  * no se entera por notificación — el dato sigue estando en la pantalla, que es
  * donde vive de verdad.
  *
- * ## El dedup, explicado (porque no tiene columna donde apoyarse)
+ * ## El dedup, explicado
  *
- * No hay dónde marcar "de este contacto ya avisé": `contactos_compulsa` no tiene
- * columna para eso y agregarla es una migración de P1. Lo que sí es único y
- * estable es el **link** de la notificación —lleva la compulsa y el contacto—,
- * así que la marca es la notificación misma: si ya existe una con ese link en el
- * estudio, no se escribe otra. Alcanza porque la notificación no se borra (solo
- * se marca leída) y el link no cambia.
+ * `contactos_compulsa` no tiene dónde marcar "de este ya avisé" y agregarle una
+ * columna sería tocar una tabla de P1 por un detalle de la campanita. La marca
+ * vive del otro lado: `notificaciones.clave_dedup` guarda
+ * `compulsa.sin_respuesta.<contactoId>` y el UNIQUE `(usuario_id, clave_dedup)`
+ * garantiza una sola fila por titular y contacto.
  *
- * **La carrera y por qué se resuelve limpiando y no bloqueando.** Consultar y
- * después insertar es un check-then-insert: dos renders simultáneos ven la base
- * sin la notificación y las dos escriben. El patrón que usa P7 —la condición
- * adentro del `WHERE` del `UPDATE`— acá no aplica, porque esto es un `INSERT` y
- * `notificaciones` no tiene `UNIQUE (usuario_id, link)` sobre el que apoyar un
- * `ON CONFLICT DO NOTHING` (esa columna es una migración de P1, y sería el
- * arreglo bueno). Así que se inserta y **después se limpia**: `limpiarDuplicados`
- * deja una sola por usuario y link, quedándose con la más vieja por
- * `(created_at, id)`. El desempate es determinístico, así que dos limpiezas
- * simultáneas conservan **la misma** fila y ninguna puede vaciar el par.
- * La cuenta que devuelve esta función es la **neta**: lo insertado menos lo que
- * la limpieza sacó.
+ * **La carrera, resuelta en la base.** Consultar y después insertar es un
+ * check-then-insert: dos renders simultáneos ven la base sin la notificación y
+ * las dos escriben. Con el UNIQUE eso ya no puede pasar —`crearNotificacion`
+ * inserta con `ON CONFLICT DO NOTHING` y devuelve lo que **realmente** escribió—,
+ * así que esta función no consulta antes: intenta y cuenta. Es el mismo patrón
+ * que P7 usa en el `WHERE` del `UPDATE` del último titular, del lado del INSERT.
+ * (Hasta P11 esto se hacía insertando y limpiando después; el `limpiarDuplicados`
+ * que hacía esa pasada ya no existe.)
  *
  * **Limitación conocida:** si el proveedor contesta, se lo vuelve a contactar y
- * se calla de nuevo, no hay segundo aviso — la primera notificación sigue ahí. Se
- * arregla con una columna (`contactos_compulsa.aviso_silencio_at`) el día que
- * moleste; mientras tanto, avisar de más en la campanita es peor que avisar una
- * vez y que el estado esté en la pantalla, que es donde vive el dato real.
+ * se calla de nuevo, no hay segundo aviso — la clave de dedup es el contacto y
+ * la primera notificación sigue ahí. Se arregla metiéndole la fecha del envío a
+ * la clave el día que moleste; mientras tanto, avisar de más en la campanita es
+ * peor que avisar una vez y que el estado esté en la pantalla, que es donde vive
+ * el dato real.
  */
 export async function notificarSinRespuestaCore(
   db: Db,
@@ -786,17 +790,7 @@ export async function notificarSinRespuestaCore(
 
   let escritas = 0;
   for (const aviso of avisos) {
-    const link = linkDelAviso(aviso, obraId);
-
-    const [yaAvisada] = await db
-      .select({ id: notificaciones.id })
-      .from(notificaciones)
-      .innerJoin(usuarios, eq(usuarios.id, notificaciones.usuarioId))
-      .where(and(eq(usuarios.estudioId, estudioId), eq(notificaciones.link, link)))
-      .limit(1);
-    if (yaAvisada) continue;
-
-    const insertadas = await crearNotificacion(
+    escritas += await crearNotificacion(
       db,
       { estudioId, roles: ['titular'] },
       {
@@ -804,51 +798,13 @@ export async function notificarSinRespuestaCore(
         cuerpo:
           `El pedido de ${PLANTILLAS[aviso.rubro].nombre.toLowerCase()} se mandó hace ${aviso.dias} días ` +
           'y todavía no contestó. Insistí, o marcá el contacto como cerrado.',
-        link,
+        link: linkDelAviso(aviso, obraId),
+        claveDedup: claveDedupDelAviso(aviso),
       },
     );
-
-    const borradas = await limpiarDuplicados(db, estudioId, link);
-    escritas += Math.max(0, insertadas - borradas);
   }
 
   return escritas;
-}
-
-/**
- * Deja una sola notificación por usuario para ese link y devuelve cuántas borró.
- *
- * Se queda con la **más vieja** por `(created_at, id)` —el mismo desempate
- * keyset que usa la auditoría de P7— para que dos limpiezas concurrentes
- * conserven la misma fila. Solo toca filas con ese link exacto, que es una que
- * escribió el sistema hace un instante: no borra nada que una persona haya
- * escrito.
- */
-async function limpiarDuplicados(db: Db, estudioId: string, link: string): Promise<number> {
-  const filas = await db
-    .select({
-      id: notificaciones.id,
-      usuarioId: notificaciones.usuarioId,
-      createdAt: notificaciones.createdAt,
-    })
-    .from(notificaciones)
-    .innerJoin(usuarios, eq(usuarios.id, notificaciones.usuarioId))
-    .where(and(eq(usuarios.estudioId, estudioId), eq(notificaciones.link, link)))
-    .orderBy(asc(notificaciones.createdAt), asc(notificaciones.id));
-
-  const vistos = new Set<string>();
-  const sobrantes: string[] = [];
-  for (const fila of filas) {
-    if (vistos.has(fila.usuarioId)) sobrantes.push(fila.id);
-    else vistos.add(fila.usuarioId);
-  }
-  if (sobrantes.length === 0) return 0;
-
-  const borradas = await db
-    .delete(notificaciones)
-    .where(inArray(notificaciones.id, sobrantes))
-    .returning({ id: notificaciones.id });
-  return borradas.length;
 }
 
 // ---------------------------------------------------------------------------

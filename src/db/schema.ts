@@ -647,7 +647,18 @@ export const checklistsEstudio = pgTable(
   (t) => [unique('checklists_estudio_estudio_rubro_item_uq').on(t.estudioId, t.rubro, t.itemId)],
 );
 
-/** Campana del workspace. `link` es la ruta interna a la que lleva, si lleva a alguna. */
+/**
+ * Campana del workspace. `link` es la ruta interna a la que lleva, si lleva a
+ * alguna.
+ *
+ * `clave_dedup` es la marca de "de esto ya avisé": el productor que no quiere
+ * repetirse la manda y el UNIQUE `(usuario_id, clave_dedup)` lo garantiza sin
+ * carreras (`ON CONFLICT DO NOTHING`, ver `crearNotificacion`). Va en su propia
+ * columna y **no** sobre `link` porque el link no es único por evento: tres
+ * proveedores cotizando la misma compulsa llevan al mismo lugar y son tres
+ * avisos distintos. En `null` —el caso normal— no participa del UNIQUE, así que
+ * un productor que no deduplica se comporta como siempre.
+ */
 export const notificaciones = pgTable(
   'notificaciones',
   {
@@ -658,10 +669,14 @@ export const notificaciones = pgTable(
     titulo: text('titulo').notNull(),
     cuerpo: text('cuerpo').notNull(),
     link: text('link'),
+    claveDedup: text('clave_dedup'),
     leida: boolean('leida').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('notificaciones_usuario_idx').on(t.usuarioId)],
+  (t) => [
+    index('notificaciones_usuario_idx').on(t.usuarioId),
+    unique('notificaciones_usuario_dedup_uq').on(t.usuarioId, t.claveDedup),
+  ],
 );
 
 // --- Tipos de fila ---------------------------------------------------------
