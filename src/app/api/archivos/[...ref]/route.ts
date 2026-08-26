@@ -16,12 +16,20 @@
  *
  * Cualquier fallo de cualquiera de los dos es un 404: no se le confirma a nadie
  * que un archivo existe si no le corresponde verlo.
+ *
+ * ## Los recortes de compulsa (P8)
+ *
+ * Un recorte (RF-703) no tiene fila propia: se genera al lanzar la compulsa y su
+ * ref viaja dentro del cuerpo del mensaje. El paso 2 para esas refs es que la
+ * **compulsa** que nombra la ruta sea de esta obra — misma pertenencia, otro
+ * objeto. Lo que garantiza que el nombre del archivo no sea una ruta arbitraria
+ * es el patrón cerrado de `parsearRefArchivo`, no una consulta.
  */
 import { and, eq } from 'drizzle-orm';
 
-import { documentos, laminas } from '@/db/schema';
+import { compulsas, documentos, laminas } from '@/db/schema';
 import { ErrorHttp, errorJson, requireObraApi, responder } from '@/lib/pipeline/http';
-import { MIME_PDF, parsearRefArchivo } from '@/lib/pipeline/refs';
+import { MIME_PDF, esRefRecorte, parsearRefArchivo } from '@/lib/pipeline/refs';
 import { getStorage } from '@/lib/storage/index';
 
 type Params = { params: Promise<{ ref: string[] }> };
@@ -41,17 +49,25 @@ export async function GET(_request: Request, { params }: Params): Promise<Respon
     // ya cubre el caso, pero el chequeo explícito deja la invariante escrita.
     if (partes.estudioId !== sesion.estudio.id) throw new ErrorHttp(404, NO_EXISTE);
 
-    const [documento] = await db
-      .select({ id: documentos.id })
-      .from(documentos)
-      .where(and(eq(documentos.obraId, obra.id), eq(documentos.archivoRef, ref)));
+    if (esRefRecorte(partes)) {
+      const [compulsa] = await db
+        .select({ id: compulsas.id })
+        .from(compulsas)
+        .where(and(eq(compulsas.id, partes.compulsaId), eq(compulsas.obraId, obra.id)));
+      if (!compulsa) throw new ErrorHttp(404, NO_EXISTE);
+    } else {
+      const [documento] = await db
+        .select({ id: documentos.id })
+        .from(documentos)
+        .where(and(eq(documentos.obraId, obra.id), eq(documentos.archivoRef, ref)));
 
-    if (!documento) {
-      const [lamina] = await db
-        .select({ id: laminas.id })
-        .from(laminas)
-        .where(and(eq(laminas.obraId, obra.id), eq(laminas.archivoRef, ref)));
-      if (!lamina) throw new ErrorHttp(404, NO_EXISTE);
+      if (!documento) {
+        const [lamina] = await db
+          .select({ id: laminas.id })
+          .from(laminas)
+          .where(and(eq(laminas.obraId, obra.id), eq(laminas.archivoRef, ref)));
+        if (!lamina) throw new ErrorHttp(404, NO_EXISTE);
+      }
     }
 
     let bytes: Uint8Array;

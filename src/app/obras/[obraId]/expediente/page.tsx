@@ -4,19 +4,32 @@
  * Server Component: acá se resuelve la pertenencia y se lee la base; la parte
  * interactiva (upload, selects, reproceso) vive en `ui.tsx`.
  */
-import { asc, eq } from 'drizzle-orm';
+import { asc, desc, eq } from 'drizzle-orm';
 import type { Metadata } from 'next';
 
 import { getDb } from '@/db/client';
-import { documentos, laminas } from '@/db/schema';
+import { documentos, laminas, recomputos } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
+import type { DiffDeRevision, MotivoRecomputo } from '@/lib/pipeline/procesar';
+import { leerResumen } from '@/lib/pipeline/resumen';
 
+import { CambiosDeRevision, type RevisionVista } from './cambios-ui';
+import { PanelQa } from './qa-ui';
+import { ResumenEjecutivo } from './resumen-ui';
 import { Expediente, type DocumentoVista, type LaminaVista } from './ui';
 
 const FECHA = new Intl.DateTimeFormat('es-AR', {
   day: '2-digit',
   month: '2-digit',
   year: 'numeric',
+});
+
+const FECHA_Y_HORA = new Intl.DateTimeFormat('es-AR', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
 });
 
 export const metadata: Metadata = { title: 'Expediente' };
@@ -31,7 +44,7 @@ export default async function ExpedientePage({
   const obra = await requireObra(obraId);
   const db = await getDb();
 
-  const [docs, lams] = await Promise.all([
+  const [docs, lams, ultimoRecomputo] = await Promise.all([
     db
       .select()
       .from(documentos)
@@ -42,6 +55,14 @@ export default async function ExpedientePage({
       .from(laminas)
       .where(eq(laminas.obraId, obra.id))
       .orderBy(asc(laminas.numeroPagina)),
+    // "Qué cambió" (RF-308): la corrida más nueva, que es la que alguien acaba
+    // de provocar subiendo una revisión.
+    db
+      .select()
+      .from(recomputos)
+      .where(eq(recomputos.obraId, obra.id))
+      .orderBy(desc(recomputos.at))
+      .limit(1),
   ]);
 
   const porDocumento = new Map<string, LaminaVista[]>();
@@ -72,6 +93,17 @@ export default async function ExpedientePage({
     laminas: porDocumento.get(documento.id) ?? [],
   }));
 
+  const [fila] = ultimoRecomputo;
+  // El `diff_json` va primero y los campos de la fila después: la columna es
+  // `jsonb` y lo que manda sobre el motivo y la fecha es la fila, no el JSON.
+  const revision: RevisionVista | null = fila
+    ? {
+        ...(fila.diffJson as unknown as DiffDeRevision),
+        motivo: fila.motivo as MotivoRecomputo,
+        cuando: FECHA_Y_HORA.format(fila.at),
+      }
+    : null;
+
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
@@ -81,6 +113,15 @@ export default async function ExpedientePage({
           verificable esperan que se la indiques: sin escala no se computa nada.
         </p>
       </div>
+
+      <ResumenEjecutivo obraId={obra.id} resumen={leerResumen(obra)} />
+
+      <PanelQa
+        obraId={obra.id}
+        laminasConTexto={lams.filter((lamina) => lamina.textoExtraido !== null).length}
+      />
+
+      <CambiosDeRevision revision={revision} />
 
       <Expediente obraId={obra.id} documentos={vistas} />
     </section>

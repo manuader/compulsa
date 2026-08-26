@@ -8,7 +8,7 @@
  */
 import { randomBytes } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { getDb, type Db } from '@/db/client';
 import { estudios, sesiones, usuarios, type Estudio, type Usuario } from '@/db/schema';
@@ -76,13 +76,26 @@ export async function crearSesion(
   return { token, expiraAt };
 }
 
+/**
+ * La sesión que hay detrás del token, o `null`.
+ *
+ * **Un usuario dado de baja no tiene sesión** (RF-1201). El filtro por
+ * `usuarios.activo` va en el `where` y no en un chequeo posterior por una razón
+ * concreta: la cookie ya emitida vive 30 días, así que sin esto desactivar a
+ * alguien no le sacaría nada — seguiría leyendo el estudio entero hasta que la
+ * cookie venciera sola. La baja tiene que valer desde el request siguiente.
+ *
+ * La fila de `sesiones` **no se borra**: reactivar al usuario le devuelve la
+ * sesión si todavía no venció, que es la conducta que uno espera de una baja
+ * temporal (y de una baja por error).
+ */
 export async function leerSesion(db: Db, token: string): Promise<SesionActiva | null> {
   const [fila] = await db
     .select({ usuario: usuarios, estudio: estudios, expiraAt: sesiones.expiraAt })
     .from(sesiones)
     .innerJoin(usuarios, eq(sesiones.usuarioId, usuarios.id))
     .innerJoin(estudios, eq(usuarios.estudioId, estudios.id))
-    .where(eq(sesiones.token, token));
+    .where(and(eq(sesiones.token, token), eq(usuarios.activo, true)));
 
   if (!fila || fila.expiraAt.getTime() <= Date.now()) return null;
   return { usuario: fila.usuario, estudio: fila.estudio };
@@ -116,7 +129,21 @@ export async function registrarEstudioCore(db: Db, datos: DatosAlta): Promise<Al
   return { sesion: creado, token };
 }
 
-/** `null` si el mail no existe o la contraseña no coincide — nunca se distingue cuál. */
+/**
+ * `null` si el mail no existe, si la contraseña no coincide **o si el usuario
+ * está dado de baja** — nunca se distingue cuál de los tres.
+ *
+ * Dos cosas del orden de este cuerpo:
+ *
+ *  - **El chequeo de `activo` va DESPUÉS de verificar la contraseña.** Si fuera
+ *    antes, una cuenta desactivada respondería mucho más rápido que una activa
+ *    (se saltearía el scrypt), y ese tiempo de más es exactamente el que le
+ *    cuenta a un desconocido que la cuenta existe y está dada de baja.
+ *  - **No se crea sesión.** Sin esto, un usuario desactivado se vuelve a loguear
+ *    con su contraseña de siempre y `leerSesion` es lo único que lo frena; el
+ *    contrato de `roles.ts` dice que la baja le corta la entrada, no que le
+ *    corta la lectura de la sesión.
+ */
 export async function loginCore(db: Db, credenciales: Credenciales): Promise<AltaSesion | null> {
   const email = normalizarEmail(credenciales.email);
   const [fila] = await db
@@ -127,6 +154,7 @@ export async function loginCore(db: Db, credenciales: Credenciales): Promise<Alt
 
   if (!fila) return null;
   if (!(await verificarPassword(credenciales.password, fila.usuario.passwordHash))) return null;
+  if (!fila.usuario.activo) return null;
 
   const { token } = await crearSesion(db, fila.usuario.id);
   return { sesion: { usuario: fila.usuario, estudio: fila.estudio }, token };
@@ -137,6 +165,19 @@ export async function loginCore(db: Db, credenciales: Credenciales): Promise<Alt
 async function cookieStore() {
   const { cookies } = await import('next/headers');
   return cookies();
+}
+
+/**
+ * Deja la cookie de sesión para un token ya creado.
+ *
+ * Es público porque el alta por invitación (`@/lib/plataforma/usuarios`) crea la
+ * sesión con `crearSesion()` y necesita cerrar el círculo sin duplicar los
+ * flags de la cookie: `httpOnly`, `sameSite` y `secure` se definen **una sola
+ * vez**, acá. Una segunda copia en otro módulo es una que un día se va a
+ * quedar sin `httpOnly`.
+ */
+export async function guardarCookieSesion(token: string): Promise<void> {
+  return guardarCookie(token);
 }
 
 async function guardarCookie(token: string): Promise<void> {

@@ -57,9 +57,11 @@ const CONFIANZA_BAJA = 0.7;
 export interface FilaItemProps {
   obraId: string;
   item: ItemPlanilla;
+  /** `colaborador` o más (RF-1201). Con `lectura` la fila se mira y no se toca. */
+  puedeEditar: boolean;
 }
 
-export function FilaItem({ obraId, item }: FilaItemProps) {
+export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
   const [editando, setEditando] = useState(false);
   const [confirmandoAnulacion, setConfirmandoAnulacion] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -188,7 +190,7 @@ export function FilaItem({ obraId, item }: FilaItemProps) {
         </TableCell>
 
         <TableCell>
-          {item.anulado ? (
+          {item.anulado || !puedeEditar ? (
             <span className="text-xs text-neutral-400">—</span>
           ) : editando ? (
             <div className="flex items-center gap-1">

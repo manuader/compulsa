@@ -22,13 +22,14 @@
  *
  * `eliminarObra` es la única salida del sistema y es explícita: solo corre sobre
  * una obra **ya archivada** y purga el universo entero —documentos, láminas,
- * entidades, cómputo, consultas, archivos y la propia auditoría de la obra—.
+ * entidades, cómputo, consultas, compulsas con sus hilos, cotizaciones,
+ * negociaciones y adjudicaciones, archivos y la propia auditoría de la obra—.
  * La regla no se rompe: no quedan registros huérfanos que auditar, porque no
  * queda nada a lo que referirse. Lo único que sobrevive es una fila de
  * `auditoria` con `obra_id` en `null` que dice qué se llevó puesto y quién lo
  * pidió. Sin ella, una obra desaparecida no dejaría ni una línea.
  *
- * ## Las cuatro reglas del módulo
+ * ## Las cinco reglas del módulo
  *
  * 1. **Aislamiento primero (RNF-4).** Toda función arranca con
  *    `requireObraCore(db, estudioId, obraId)`: la obra es del estudio o no
@@ -43,19 +44,33 @@
  *    quedan **anulados** por el recompute, con `entidad_id` en `null`. Un ítem
  *    que el arquitecto editó a mano sobrevive: pierde el link, no la fila.
  * 4. **Toda mutación se audita** con actor `usuario` y diff (CLAUDE.md §4).
+ * 5. **Toda mutación pide rol** (RF-1201): editar, archivar y borrar un
+ *    documento son de colaborador para arriba; **eliminar una obra es del
+ *    titular**, porque es la única salida irreversible del sistema. El chequeo
+ *    va antes que el de aislamiento a propósito: a un usuario sin permiso hay
+ *    que decirle que no tiene permiso, no que la obra no existe.
  */
 import { and, count, desc, eq, inArray } from 'drizzle-orm';
 
 import type { Db } from '@/db/client';
 import {
+  adjudicaciones,
   auditoria,
+  compulsas,
   computoItems,
   computoRubros,
+  conciliacionItems,
+  contactosCompulsa,
+  cotizaciones,
+  deducciones,
   documentos,
   entidades,
   hallazgos,
   laminas,
+  mensajes,
+  negociaciones,
   obras,
+  recomputos,
   type EstadoObra,
   type Obra,
 } from '@/db/schema';
@@ -63,15 +78,28 @@ import { registrarAuditoria } from '@/lib/audit';
 import { esUuid, requireObraCore } from '@/lib/auth/guards';
 import { erroresPorCampo, zCambiosObra } from '@/lib/obras/schema';
 import { claveEscala } from '@/lib/pipeline/claves';
-import { desvincularItemsDeEntidades, recomputarObra } from '@/lib/pipeline/recomputar';
+import {
+  borrarDeduccionesDeEntidades,
+  desvincularItemsDeEntidades,
+  recomputarObra,
+} from '@/lib/pipeline/recomputar';
+import { requireAccion, type UsuarioConRol } from '@/lib/plataforma/roles';
 import type { StorageAdapter } from '@/lib/storage/index';
 
 // ---------------------------------------------------------------------------
 // Contratos
 // ---------------------------------------------------------------------------
 
-/** Quién hace el cambio. Los `*Action` lo sacan de la sesión, nunca del payload. */
-export interface ActorObra {
+/**
+ * Quién hace el cambio. Los `*Action` lo sacan de la sesión, nunca del payload.
+ *
+ * Lleva el **rol** y si está activo porque el enforcement de la matriz (RF-1201)
+ * vive acá adentro, no en la pantalla: estas funciones son endpoints potenciales
+ * si alguien las exporta mal, y un botón escondido no esconde nada. El core no
+ * puede leer el rol por su cuenta —recibe la base por parámetro y no sabe de
+ * sesiones—, así que se lo tienen que pasar.
+ */
+export interface ActorObra extends UsuarioConRol {
   usuarioId: string;
   email: string;
 }
@@ -96,6 +124,17 @@ export interface ConteosObra {
   computoRubros: number;
   hallazgos: number;
   auditoria: number;
+  /** Compulsas de la obra (todas sus versiones, RF-701). */
+  compulsas: number;
+  /** Proveedores contactados en esas compulsas. */
+  contactos: number;
+  /** Mensajes de esos hilos, en los dos sentidos. */
+  mensajes: number;
+  cotizaciones: number;
+  /** Rondas de negociación escritas (RF-1003). */
+  negociaciones: number;
+  /** Adjudicaciones con su orden de compra. */
+  adjudicaciones: number;
   /** Archivos que la obra tenía en el storage: los que se intentó borrar. */
   archivos: number;
   /**
@@ -226,6 +265,7 @@ export async function editarObra(
   cambios: unknown,
   actor: ActorObra,
 ): Promise<ResultadoEdicion> {
+  requireAccion(actor, 'editar_obra');
   const obra = await requireObraCore(db, estudioId, obraId);
 
   const parseo = zCambiosObra.safeParse(cambios);
@@ -270,6 +310,7 @@ async function cambiarEstado(
   estado: EstadoObra,
   actor: ActorObra,
 ): Promise<Obra> {
+  requireAccion(actor, 'archivar_obra');
   const obra = await requireObraCore(db, estudioId, obraId);
   if (obra.estado === estado) return obra; // idempotente y sin auditar (regla 2)
 
@@ -329,6 +370,17 @@ export function desarchivarObra(
  *    que `laminas`, `laminas` antes que `documentos`, y la obra al final. No se
  *    usa `desvincularItemsDeEntidades` acá porque los ítems se van igual: la
  *    desvinculación existe para cuando la fila sobrevive.
+ *
+ *    **Son dos cadenas, no una.** La del expediente (documentos → láminas →
+ *    entidades → cómputo) y la de compulsa (`compulsas` → contactos → mensajes y
+ *    cotizaciones → conciliación, negociaciones y adjudicaciones), que cuelga de
+ *    la obra por `compulsas.obra_id`. Ninguna FK del esquema es `ON DELETE
+ *    CASCADE`: si la segunda cadena no se borra a mano, el `delete(obras)` tira
+ *    `23503` **después** de que la primera ya commiteó, y como acá no hay
+ *    transacción eso deja la obra destripada pero presente y las compulsas
+ *    huérfanas. La cadena de compulsa va primero justamente por eso: es la que
+ *    puede fallar por un `WHERE` mal armado, y fallar antes de tocar nada es
+ *    barato.
  *  - **Primero la base, después los archivos.** Si el storage falla a mitad de
  *    camino quedan archivos huérfanos —basura, recuperable a mano—; al revés
  *    quedaría una obra visible con sus PDF ya borrados, que es peor.
@@ -357,6 +409,9 @@ export async function eliminarObra(
   obraId: string,
   actor: ActorObra,
 ): Promise<ConteosObra> {
+  // Eliminar una obra es una de las cinco acciones que la matriz le saca al
+  // colaborador: es la única salida irreversible del sistema.
+  requireAccion(actor, 'eliminar_obra');
   const obra = await requireObraCore(db, estudioId, obraId);
   if (obra.estado !== 'archivada') throw new ObraNoArchivadaError(obra.id);
 
@@ -371,6 +426,97 @@ export async function eliminarObra(
     .where(eq(laminas.obraId, obra.id));
   const refs = [...refsDocumentos.map((f) => f.ref), ...refsLaminas.map((f) => f.ref)];
 
+  // --- La cadena de compulsa (F1–F3) ---------------------------------------
+  // De arriba hacia abajo para juntar los ids, de abajo hacia arriba para
+  // borrarlos. Los ids se leen en tres pasos porque las tablas hoja
+  // (`negociaciones`, `conciliacion_items`) no tienen `obra_id`: se llega a
+  // ellas por la cotización, a la cotización por el contacto y al contacto por
+  // la compulsa. Con la lista vacía se saltea el delete: `inArray(col, [])` es
+  // un `WHERE false` que no rompe, pero mandar la query igual solo agrega ruido.
+  const idsCompulsas = (
+    await db.select({ id: compulsas.id }).from(compulsas).where(eq(compulsas.obraId, obra.id))
+  ).map((fila) => fila.id);
+
+  const idsContactos =
+    idsCompulsas.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: contactosCompulsa.id })
+            .from(contactosCompulsa)
+            .where(inArray(contactosCompulsa.compulsaId, idsCompulsas))
+        ).map((fila) => fila.id);
+
+  const idsCotizaciones =
+    idsContactos.length === 0
+      ? []
+      : (
+          await db
+            .select({ id: cotizaciones.id })
+            .from(cotizaciones)
+            .where(inArray(cotizaciones.contactoId, idsContactos))
+        ).map((fila) => fila.id);
+
+  let adjudicacionesBorradas = 0;
+  let negociacionesBorradas = 0;
+  let cotizacionesBorradas = 0;
+  let mensajesBorrados = 0;
+  let contactosBorrados = 0;
+  let compulsasBorradas = 0;
+
+  if (idsCotizaciones.length > 0) {
+    // `adjudicaciones` apunta a la compulsa **y** a la cotización: se va primero
+    // que las dos.
+    adjudicacionesBorradas = (
+      await db
+        .delete(adjudicaciones)
+        .where(inArray(adjudicaciones.cotizacionId, idsCotizaciones))
+        .returning({ id: adjudicaciones.id })
+    ).length;
+    negociacionesBorradas = (
+      await db
+        .delete(negociaciones)
+        .where(inArray(negociaciones.cotizacionId, idsCotizaciones))
+        .returning({ id: negociaciones.id })
+    ).length;
+    // La conciliación se va sin contarse, igual que las deducciones y los
+    // recomputos: es el detalle interno de una cotización que ya se cuenta.
+    await db
+      .delete(conciliacionItems)
+      .where(inArray(conciliacionItems.cotizacionId, idsCotizaciones));
+  }
+
+  if (idsContactos.length > 0) {
+    cotizacionesBorradas = (
+      await db
+        .delete(cotizaciones)
+        .where(inArray(cotizaciones.contactoId, idsContactos))
+        .returning({ id: cotizaciones.id })
+    ).length;
+    mensajesBorrados = (
+      await db
+        .delete(mensajes)
+        .where(inArray(mensajes.contactoId, idsContactos))
+        .returning({ id: mensajes.id })
+    ).length;
+  }
+
+  if (idsCompulsas.length > 0) {
+    contactosBorrados = (
+      await db
+        .delete(contactosCompulsa)
+        .where(inArray(contactosCompulsa.compulsaId, idsCompulsas))
+        .returning({ id: contactosCompulsa.id })
+    ).length;
+    compulsasBorradas = (
+      await db
+        .delete(compulsas)
+        .where(eq(compulsas.obraId, obra.id))
+        .returning({ id: compulsas.id })
+    ).length;
+  }
+
+  // --- La cadena del expediente (F0) ---------------------------------------
   const hallazgosBorrados = await db
     .delete(hallazgos)
     .where(eq(hallazgos.obraId, obra.id))
@@ -383,6 +529,9 @@ export async function eliminarObra(
     .delete(computoRubros)
     .where(eq(computoRubros.obraId, obra.id))
     .returning({ id: computoRubros.id });
+  // Las deducciones también apuntan a `entidades`: van antes que ellas, por la
+  // misma razón de FK que los ítems y los hallazgos.
+  await db.delete(deducciones).where(eq(deducciones.obraId, obra.id));
   const entidadesBorradas = await db
     .delete(entidades)
     .where(eq(entidades.obraId, obra.id))
@@ -395,6 +544,11 @@ export async function eliminarObra(
     .delete(documentos)
     .where(eq(documentos.obraId, obra.id))
     .returning({ id: documentos.id });
+  // `recomputos` (el "qué cambió" de cada revisión, RF-308) apunta a la obra con
+  // una FK NOT NULL: sin este delete, la purga falla al llegar a `obras`. Se va
+  // sin contarse, igual que las deducciones: es historia de la obra, no un
+  // recurso que el usuario esté por perder.
+  await db.delete(recomputos).where(eq(recomputos.obraId, obra.id));
   const auditoriaBorrada = await db
     .delete(auditoria)
     .where(eq(auditoria.obraId, obra.id))
@@ -409,6 +563,12 @@ export async function eliminarObra(
     computoRubros: rubrosBorrados.length,
     hallazgos: hallazgosBorrados.length,
     auditoria: auditoriaBorrada.length,
+    compulsas: compulsasBorradas,
+    contactos: contactosBorrados,
+    mensajes: mensajesBorrados,
+    cotizaciones: cotizacionesBorradas,
+    negociaciones: negociacionesBorradas,
+    adjudicaciones: adjudicacionesBorradas,
     archivos: refs.length,
   };
 
@@ -484,6 +644,7 @@ export async function eliminarDocumento(
   documentoId: string,
   actor: ActorObra,
 ): Promise<ConteosDocumento> {
+  requireAccion(actor, 'eliminar_documento');
   const obra = await requireObraCore(db, estudioId, obraId);
   if (!esUuid(documentoId)) throw new DocumentoNoEncontradoError(documentoId);
 
@@ -509,6 +670,9 @@ export async function eliminarDocumento(
 
     if (entidadIds.length > 0) {
       itemsDesvinculados = await desvincularItemsDeEntidades(db, obra.id, entidadIds);
+      // `deducciones.entidad_id` es FK NOT NULL: lo que se dedujo sobre estas
+      // entidades se va con ellas (queda en `auditoria`, no en la tabla).
+      await borrarDeduccionesDeEntidades(db, obra.id, entidadIds);
       entidadesBorradas = (
         await db.delete(entidades).where(inArray(entidades.id, entidadIds)).returning({
           id: entidades.id,

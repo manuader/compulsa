@@ -14,14 +14,58 @@
 /** Prefijo reservado al pipeline: `escala.<laminaId>`. */
 export const PREFIJO_ESCALA = 'escala.';
 
+/**
+ * Prefijo de las inconsistencias que levanta el motor de deducción (§11):
+ * `deduccion.continuidad.<nombre>.<campo>` y `deduccion.cotas.<sobre>`.
+ *
+ * **No** está protegido, y es a propósito: `recomputarObra` corre `deducir()` en
+ * la misma pasada que `computarObra()` y le pasa sus inconsistencias al mismo
+ * `sincronizarHallazgos`. Para el conciliador son claves emitidas como
+ * cualquier otra: si la contradicción sigue, la consulta se actualiza; si la
+ * documentación deja de contradecirse, la consulta se cierra sola. Protegerlas
+ * las dejaría abiertas para siempre.
+ *
+ * El prefijo se exporta igual porque la bandeja de deducciones necesita
+ * distinguirlas del resto de las consultas de obra.
+ */
+export const PREFIJO_DEDUCCION = 'deduccion.';
+
+/**
+ * Prefijo reservado a la doble pasada (RF-306): `verificacion.<claveItem>`.
+ *
+ * Protegido igual que el de escala, y por el mismo motivo: estas consultas las
+ * emite `verificarComputo()` comparando dos extracciones, no el motor. Si el
+ * recompute las conciliara, la primera corrida posterior a una verificación las
+ * cerraría "porque ya no salen" y el arquitecto perdería el aviso de que dos
+ * lecturas de la misma lámina no coinciden. Las abre y las cierra la
+ * verificación siguiente.
+ */
+export const PREFIJO_VERIFICACION = 'verificacion.';
+
 export function claveEscala(laminaId: string): string {
   return `${PREFIJO_ESCALA}${laminaId}`;
 }
 
+export function claveVerificacion(claveItem: string): string {
+  return `${PREFIJO_VERIFICACION}${claveItem}`;
+}
+
 /**
- * `true` si la clave es de las que emite `computarObra()`. Solo estas las
- * concilia el recompute; las del pipeline las administra `procesarLamina`.
+ * `true` si la clave es de las que emite el recompute —`computarObra()` o el
+ * motor de deducción—. Solo estas las concilia; las del pipeline (el bloqueo por
+ * escala y la doble pasada) las administran `procesarLamina` y
+ * `verificarComputo`.
  */
 export function esClaveDelMotor(clave: string): boolean {
-  return !clave.startsWith(PREFIJO_ESCALA);
+  return !clave.startsWith(PREFIJO_ESCALA) && !clave.startsWith(PREFIJO_VERIFICACION);
+}
+
+/** `true` si la consulta la levantó la doble pasada. La pantalla las agrupa. */
+export function esClaveDeVerificacion(clave: string): boolean {
+  return clave.startsWith(PREFIJO_VERIFICACION);
+}
+
+/** `true` si la consulta la levantó el motor de deducción, no el de cómputo. */
+export function esClaveDeDeduccion(clave: string): boolean {
+  return clave.startsWith(PREFIJO_DEDUCCION);
 }

@@ -24,6 +24,11 @@ import { z } from 'zod';
 
 import { requireObra, requireUser } from '@/lib/auth/guards';
 import {
+  requireAccion,
+  RolInsuficienteError,
+  UsuarioInactivoError,
+} from '@/lib/plataforma/roles';
+import {
   descartarHallazgo,
   descartarLote,
   confirmarSupuesto,
@@ -52,24 +57,53 @@ async function revalidar(obraId: string): Promise<void> {
 const PAYLOAD_ILEGIBLE = 'No pude leer la obra de la consulta.';
 
 /**
+ * Resolver una consulta muta la obra: es de colaborador para arriba (RF-1201).
+ * `lectura` mira la bandeja pero no la toca. El chequeo va acá, en el envoltorio
+ * que resuelve la sesión, porque los núcleos del resolver reciben el actor
+ * explícito y no saben quién los llama.
+ */
+function mensajeDeRol(error: unknown): string | null {
+  if (error instanceof RolInsuficienteError || error instanceof UsuarioInactivoError) {
+    return error.message;
+  }
+  return null;
+}
+
+/**
  * Sesión válida + obra del estudio (RNF-4).
  *
  * El payload de una server action es texto que manda el cliente: el `obraId`
  * se valida antes de tocarlo y la obra que vale es la que devuelve
  * `requireObra`, no la que vino en el JSON.
  */
-async function contexto(entrada: unknown): Promise<(ActorBandeja & { obraId: string }) | null> {
+type Contexto = (ActorBandeja & { obraId: string }) | { error: string } | null;
+
+async function contexto(entrada: unknown): Promise<Contexto> {
   const parseo = z.object({ obraId: zUuid }).safeParse(entrada);
   if (!parseo.success) return null;
 
   const { usuario } = await requireUser();
+  try {
+    requireAccion(usuario, 'resolver_hallazgo');
+  } catch (error) {
+    const mensaje = mensajeDeRol(error);
+    if (mensaje) return { error: mensaje };
+    throw error;
+  }
+
   const obra = await requireObra(parseo.data.obraId);
   return { obraId: obra.id, usuarioId: usuario.id, email: usuario.email };
+}
+
+/** `true` si el contexto es un rechazo por rol y no un actor. */
+function esRechazo(ctx: Contexto): ctx is { error: string } {
+  return ctx !== null && 'error' in ctx;
 }
 
 export async function responderHallazgoAction(entrada: EntradaRespuesta): Promise<ResultadoAccion> {
   const ctx = await contexto(entrada);
   if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  if (esRechazo(ctx)) return { ok: false, error: ctx.error };
   const { obraId, ...actor } = ctx;
   const resultado = await responderHallazgo({ ...entrada, obraId }, actor);
   if (resultado.ok) await revalidar(obraId);
@@ -79,6 +113,7 @@ export async function responderHallazgoAction(entrada: EntradaRespuesta): Promis
 export async function marcarExistenteAction(entrada: EntradaHallazgo): Promise<ResultadoAccion> {
   const ctx = await contexto(entrada);
   if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  if (esRechazo(ctx)) return { ok: false, error: ctx.error };
   const { obraId, ...actor } = ctx;
   const resultado = await marcarExistente({ ...entrada, obraId }, actor);
   if (resultado.ok) await revalidar(obraId);
@@ -88,6 +123,7 @@ export async function marcarExistenteAction(entrada: EntradaHallazgo): Promise<R
 export async function confirmarSupuestoAction(entrada: EntradaHallazgo): Promise<ResultadoAccion> {
   const ctx = await contexto(entrada);
   if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  if (esRechazo(ctx)) return { ok: false, error: ctx.error };
   const { obraId, ...actor } = ctx;
   const resultado = await confirmarSupuesto({ ...entrada, obraId }, actor);
   if (resultado.ok) await revalidar(obraId);
@@ -97,6 +133,7 @@ export async function confirmarSupuestoAction(entrada: EntradaHallazgo): Promise
 export async function descartarHallazgoAction(entrada: EntradaHallazgo): Promise<ResultadoAccion> {
   const ctx = await contexto(entrada);
   if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  if (esRechazo(ctx)) return { ok: false, error: ctx.error };
   const { obraId, ...actor } = ctx;
   const resultado = await descartarHallazgo({ ...entrada, obraId }, actor);
   if (resultado.ok) await revalidar(obraId);
@@ -106,6 +143,7 @@ export async function descartarHallazgoAction(entrada: EntradaHallazgo): Promise
 export async function descartarLoteAction(entrada: EntradaLote): Promise<ResultadoLote> {
   const ctx = await contexto(entrada);
   if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  if (esRechazo(ctx)) return { ok: false, error: ctx.error };
   const { obraId, ...actor } = ctx;
   const resultado = await descartarLote({ ...entrada, obraId }, actor);
   if (resultado.ok) await revalidar(obraId);

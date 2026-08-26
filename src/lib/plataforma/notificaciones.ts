@@ -1,0 +1,210 @@
+/**
+ * Notificaciones in-app: la campanita del header.
+ *
+ * Una notificación es un aviso **por usuario** con título, cuerpo y —si lleva a
+ * algún lado— un link interno. No hay canal externo acá: mail y WhatsApp son
+ * adapters de outreach (P5) y no comparten nada con esto.
+ *
+ * ## Quién las crea
+ *
+ * `crearNotificacion` es la única entrada de escritura y la usan los productores,
+ * que van llegando por fase:
+ *
+ *  - **P7 (acá):** una invitación usada avisa a los titulares del estudio.
+ *  - **P6:** deducciones nuevas propuestas sobre una obra. P7 expone la función;
+ *    el disparo lo pone P6 en su motor.
+ *  - **P8/P9:** cotización conciliada y compulsa sin respuesta a los 7 días.
+ *
+ * ## Destinatarios
+ *
+ * O una lista explícita de usuarios, o "todo el estudio" (opcionalmente acotado
+ * por rol, que es como se le avisa solo a los titulares). En los dos casos
+ * **los usuarios inactivos quedan afuera**: una baja lógica no tiene que seguir
+ * juntando avisos que nadie va a leer.
+ */
+import { and, count, desc, eq, inArray } from 'drizzle-orm';
+
+import type { Db } from '@/db/client';
+import { notificaciones, usuarios, type Notificacion } from '@/db/schema';
+import type { RolUsuario } from '@/types/domain';
+
+/** Cuántas muestra el dropdown de la campanita. */
+export const NOTIFICACIONES_EN_CAMPANITA = 10;
+
+/** A dónde va el click cuando el link de la notificación no sirve. */
+export const DESTINO_POR_DEFECTO = '/estudio';
+
+/**
+ * La ruta interna a la que puede llevar el click, o `/estudio`.
+ *
+ * Abrir una notificación es un `<form>` que **escribe y después redirige**, así
+ * que el `link` viaja en el POST y llega del cliente: un destino sin validar es
+ * un open redirect con la sesión del usuario puesta.
+ *
+ * El chequeo que había —`empieza con "/" y no con "//"`— dejaba pasar
+ * `/\evil.com`: **los navegadores normalizan la barra invertida a barra**
+ * (WHATWG URL), así que `/\evil.com` se resuelve igual que `//evil.com`, o sea
+ * `https://evil.com`. Por eso acá no hay lista de prefijos malos sino una
+ * forma permitida y angosta:
+ *
+ *  - arranca con `/` y el segundo carácter no es `/` ni `\` (nada de
+ *    protocol-relative, ni de su versión con backslash);
+ *  - no contiene `\` en ninguna posición, que es lo único que cierra las
+ *    variantes que todavía no se inventaron;
+ *  - no contiene caracteres de control ni espacios en blanco, que algunos
+ *    parsers recortan antes de resolver (`/\tjavascript:` y familia).
+ *
+ * Un `javascript:` o un `https://` no pasan solos: no empiezan con `/`.
+ */
+export function destinoInterno(link: string | null | undefined): string {
+  if (typeof link !== 'string') return DESTINO_POR_DEFECTO;
+  if (link.length < 1 || link.length > 2_000) return DESTINO_POR_DEFECTO;
+  if (link[0] !== '/') return DESTINO_POR_DEFECTO;
+  if (link[1] === '/' || link[1] === '\\') return DESTINO_POR_DEFECTO;
+  if (link.includes('\\')) return DESTINO_POR_DEFECTO;
+  // eslint-disable-next-line no-control-regex -- justamente los de control.
+  if (/[\u0000-\u0020\u007f]/.test(link)) return DESTINO_POR_DEFECTO;
+  return link;
+}
+
+export interface DatosNotificacion {
+  titulo: string;
+  cuerpo: string;
+  /** Ruta interna a la que lleva el click ("/estudio/usuarios"). */
+  link?: string | null;
+  /**
+   * Marca de "de esto ya le avisé a esta persona". Con ella, escribir dos veces
+   * el mismo aviso deja **una** fila: el UNIQUE `(usuario_id, clave_dedup)` lo
+   * resuelve en la base con `ON CONFLICT DO NOTHING`, sin check-then-insert y
+   * sin carrera entre dos renders simultáneos.
+   *
+   * Sin ella —el caso normal— no hay dedup: tres proveedores que cotizan la
+   * misma compulsa son tres avisos, aunque los tres lleven al mismo link.
+   */
+  claveDedup?: string | null;
+}
+
+/** A quién avisarle: usuarios puntuales, o el estudio entero (por rol, si se acota). */
+export type Destinatarios = readonly string[] | { estudioId: string; roles?: readonly RolUsuario[] };
+
+/** Los ids activos a los que hay que escribirles. */
+async function resolverDestinatarios(db: Db, destino: Destinatarios): Promise<string[]> {
+  if (Array.isArray(destino)) {
+    if (destino.length === 0) return [];
+    const filas = await db
+      .select({ id: usuarios.id })
+      .from(usuarios)
+      .where(and(inArray(usuarios.id, destino as string[]), eq(usuarios.activo, true)));
+    return filas.map((fila) => fila.id);
+  }
+
+  const { estudioId, roles } = destino as { estudioId: string; roles?: readonly RolUsuario[] };
+  if (roles && roles.length === 0) return [];
+
+  const filas = await db
+    .select({ id: usuarios.id })
+    .from(usuarios)
+    .where(
+      and(
+        eq(usuarios.estudioId, estudioId),
+        eq(usuarios.activo, true),
+        ...(roles ? [inArray(usuarios.rol, roles as RolUsuario[])] : []),
+      ),
+    );
+  return filas.map((fila) => fila.id);
+}
+
+/**
+ * Escribe una notificación por destinatario y devuelve cuántas escribió **de
+ * verdad**: con `claveDedup`, las que ya estaban no se cuentan.
+ *
+ * No lanza si no hay a quién avisarle: cero destinatarios es un resultado
+ * posible (un estudio de una sola persona al que se le avisa "a los demás"), no
+ * un error del que llama.
+ */
+export async function crearNotificacion(
+  db: Db,
+  destino: Destinatarios,
+  datos: DatosNotificacion,
+): Promise<number> {
+  const ids = await resolverDestinatarios(db, destino);
+  if (ids.length === 0) return 0;
+
+  const escritas = await db
+    .insert(notificaciones)
+    .values(
+      ids.map((usuarioId) => ({
+        usuarioId,
+        titulo: datos.titulo,
+        cuerpo: datos.cuerpo,
+        link: datos.link ?? null,
+        claveDedup: datos.claveDedup ?? null,
+      })),
+    )
+    // El UNIQUE `(usuario_id, clave_dedup)` es el que decide, no una consulta
+    // previa: dos renders simultáneos escriben los dos y gana uno solo. Sin
+    // `claveDedup` la clave es `null` y en Postgres los NULL nunca chocan, así
+    // que esto no cambia nada para los productores que no deduplican.
+    .onConflictDoNothing({
+      target: [notificaciones.usuarioId, notificaciones.claveDedup],
+    })
+    .returning({ id: notificaciones.id });
+
+  return escritas.length;
+}
+
+/** Las últimas del usuario, de la más nueva a la más vieja. */
+export function listarNotificaciones(
+  db: Db,
+  usuarioId: string,
+  limite: number = NOTIFICACIONES_EN_CAMPANITA,
+): Promise<Notificacion[]> {
+  return db
+    .select()
+    .from(notificaciones)
+    .where(eq(notificaciones.usuarioId, usuarioId))
+    .orderBy(desc(notificaciones.createdAt))
+    .limit(limite);
+}
+
+export async function contarNoLeidas(db: Db, usuarioId: string): Promise<number> {
+  const [fila] = await db
+    .select({ total: count() })
+    .from(notificaciones)
+    .where(and(eq(notificaciones.usuarioId, usuarioId), eq(notificaciones.leida, false)));
+  return fila?.total ?? 0;
+}
+
+/**
+ * Marca una como leída. El `usuarioId` va en el `where`, no solo el id de la
+ * notificación: sin eso, cualquiera podría marcar la notificación de otro
+ * mandando un id que no es suyo. Devuelve si tocó algo.
+ */
+export async function marcarLeida(
+  db: Db,
+  usuarioId: string,
+  notificacionId: string,
+): Promise<boolean> {
+  const tocadas = await db
+    .update(notificaciones)
+    .set({ leida: true })
+    .where(
+      and(
+        eq(notificaciones.id, notificacionId),
+        eq(notificaciones.usuarioId, usuarioId),
+        eq(notificaciones.leida, false),
+      ),
+    )
+    .returning({ id: notificaciones.id });
+  return tocadas.length > 0;
+}
+
+/** Marca todas las del usuario y devuelve cuántas estaban sin leer. */
+export async function marcarTodasLeidas(db: Db, usuarioId: string): Promise<number> {
+  const tocadas = await db
+    .update(notificaciones)
+    .set({ leida: true })
+    .where(and(eq(notificaciones.usuarioId, usuarioId), eq(notificaciones.leida, false)))
+    .returning({ id: notificaciones.id });
+  return tocadas.length;
+}

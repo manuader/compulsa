@@ -30,12 +30,15 @@ import { z } from 'zod';
 import { getDb, type Db } from '@/db/client';
 import {
   auditoria,
+  computoItems,
   documentos,
   entidades,
   hallazgos,
   laminas,
   obras,
+  recomputos,
   usuarios,
+  type ComputoItem,
   type Documento,
   type Entidad,
   type Lamina,
@@ -50,12 +53,23 @@ import { igualJson } from '@/lib/pipeline/json';
 import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
   ACTOR_PIPELINE,
+  borrarDeduccionesDeEntidades,
+  comoItemComputo,
   desvincularItemsDeEntidades,
+  diferenciasDeItem,
   recomputarObra,
 } from '@/lib/pipeline/recomputar';
+import { persistirResumen } from '@/lib/pipeline/resumen';
 import { getStorage, type StorageAdapter } from '@/lib/storage/index';
 import { DISCIPLINAS, TIPOS_LAMINA } from '@/types/domain';
-import type { BBox, EntidadDetectada, LaminaInput, RotuloDetectado } from '@/types/domain';
+import type {
+  BBox,
+  EntidadDetectada,
+  LaminaInput,
+  RotuloDetectado,
+  RubroId,
+  Unidad,
+} from '@/types/domain';
 
 /** 60 MB: un legajo de plantas grande entra; un video, no. */
 export const TAMANO_MAXIMO_BYTES = 60 * 1024 * 1024;
@@ -129,7 +143,18 @@ export interface DepsPipeline {
    * opción de configuración: existe para poder ejercitar el camino de "la
    * lámina se analizó bien y el recompute falló" sin romper la base a mano.
    */
-  recomputar?: (obraId: string, deps: { db: Db }) => Promise<unknown>;
+  recomputar?: (obraId: string, deps: { db: Db; resumen?: boolean }) => Promise<unknown>;
+  /**
+   * Si el resumen ejecutivo (RF-205) se rehace al terminar de analizar la
+   * lámina. Default `true`: analizar una lámina suelta —el arquitecto confirmó
+   * la escala, la API reprocesa— cambia el estado de la obra y la pantalla del
+   * expediente tiene que reflejarlo.
+   *
+   * `procesarDocumento` lo apaga durante su loop y rehace el resumen **una sola
+   * vez** al final, con todas las láminas analizadas: N resúmenes a medio hacer
+   * serían ruido en `auditoria` y en la pantalla.
+   */
+  resumen?: boolean;
 }
 
 interface Entorno {
@@ -137,6 +162,7 @@ interface Entorno {
   storage: StorageAdapter;
   provider: AnalysisProvider;
   recomputar: NonNullable<DepsPipeline['recomputar']>;
+  resumen: boolean;
 }
 
 async function resolver(deps: DepsPipeline): Promise<Entorno> {
@@ -145,6 +171,7 @@ async function resolver(deps: DepsPipeline): Promise<Entorno> {
     storage: deps.storage ?? getStorage(),
     provider: deps.provider ?? getAnalysisProvider(),
     recomputar: deps.recomputar ?? recomputarObra,
+    resumen: deps.resumen ?? true,
   };
 }
 
@@ -249,6 +276,146 @@ export async function subirDocumento(
 }
 
 // ---------------------------------------------------------------------------
+// Diff de revisiones (RF-308)
+// ---------------------------------------------------------------------------
+
+/** Por qué se recalculó la obra: la subida de una revisión, o un reproceso. */
+export type MotivoRecomputo = 'reproceso' | 'revision_nueva';
+
+export type EstadoCambio = 'agregado' | 'modificado' | 'anulado';
+
+/** Un ítem de la planilla que quedó distinto después de procesar el documento. */
+export interface CambioDeRevision {
+  claveItem: string;
+  rubro: RubroId;
+  descripcion: string;
+  unidad: Unidad;
+  estado: EstadoCambio;
+  cantCompraAntes: number | null;
+  cantCompraDespues: number | null;
+  /** El diff campo a campo, el mismo que el recompute deja en `auditoria`. */
+  campos: Record<string, unknown>;
+}
+
+/** Lo que se guarda en `recomputos.diff_json`. */
+export interface DiffDeRevision {
+  documentoId: string;
+  documentoNombre: string;
+  version: number;
+  cambios: CambioDeRevision[];
+  [clave: string]: unknown;
+}
+
+/** Los ítems **activos** de la obra por clave: lo que la planilla muestra hoy. */
+async function fotoDeItems(db: Db, obraId: string): Promise<Map<string, ComputoItem>> {
+  const filas = await db
+    .select()
+    .from(computoItems)
+    .where(and(eq(computoItems.obraId, obraId), eq(computoItems.estado, 'activo')));
+  return new Map(filas.map((fila) => [fila.claveItem, fila]));
+}
+
+/**
+ * Qué cambió en la planilla entre dos fotos, ordenado por clave.
+ *
+ * La comparación campo a campo es la **misma** que usa el recompute para
+ * auditar (`diferenciasDeItem`): si algún día cambia qué se considera un cambio,
+ * cambia en un solo lugar y las dos pantallas siguen diciendo lo mismo.
+ */
+export function diffDeRevision(
+  antes: ReadonlyMap<string, ComputoItem>,
+  despues: ReadonlyMap<string, ComputoItem>,
+): CambioDeRevision[] {
+  const claves = [...new Set([...antes.keys(), ...despues.keys()])].sort((a, b) =>
+    a.localeCompare(b, 'es-AR'),
+  );
+
+  const cambios: CambioDeRevision[] = [];
+  for (const claveItem of claves) {
+    const previo = antes.get(claveItem);
+    const actual = despues.get(claveItem);
+
+    if (previo && actual) {
+      const campos = diferenciasDeItem(previo, comoItemComputo(actual));
+      if (campos === null) continue;
+      cambios.push({
+        claveItem,
+        rubro: actual.rubro,
+        descripcion: actual.descripcion,
+        unidad: actual.unidad,
+        estado: 'modificado',
+        cantCompraAntes: previo.cantCompra,
+        cantCompraDespues: actual.cantCompra,
+        campos,
+      });
+      continue;
+    }
+
+    if (actual) {
+      cambios.push({
+        claveItem,
+        rubro: actual.rubro,
+        descripcion: actual.descripcion,
+        unidad: actual.unidad,
+        estado: 'agregado',
+        cantCompraAntes: null,
+        cantCompraDespues: actual.cantCompra,
+        campos: {},
+      });
+      continue;
+    }
+
+    if (previo) {
+      cambios.push({
+        claveItem,
+        rubro: previo.rubro,
+        descripcion: previo.descripcion,
+        unidad: previo.unidad,
+        estado: 'anulado',
+        cantCompraAntes: previo.cantCompra,
+        cantCompraDespues: null,
+        campos: {},
+      });
+    }
+  }
+
+  return cambios;
+}
+
+/**
+ * Deja en `recomputos` lo que este documento le hizo a la planilla.
+ *
+ * Es la memoria de "qué cambió" que la pantalla del expediente muestra después
+ * de subir una revisión (RF-308): la auditoría guarda el detalle ítem por ítem
+ * —una fila por cada uno—, y esto guarda **la corrida entera**, que es lo que se
+ * puede leer de un vistazo. Sin cambios no escribe: una revisión que no movió un
+ * número no tiene nada que contar.
+ */
+async function registrarRecomputo(
+  db: Db,
+  documento: Documento,
+  motivo: MotivoRecomputo,
+  antes: ReadonlyMap<string, ComputoItem>,
+): Promise<void> {
+  const cambios = diffDeRevision(antes, await fotoDeItems(db, documento.obraId));
+  if (cambios.length === 0) return;
+
+  const diff: DiffDeRevision = {
+    documentoId: documento.id,
+    documentoNombre: documento.nombreArchivo,
+    version: documento.version,
+    cambios,
+  };
+
+  await db.insert(recomputos).values({ obraId: documento.obraId, diffJson: diff, motivo });
+  await auditarAgente(documento.obraId, 'recomputo_registrado', `documentos:${documento.id}`, {
+    motivo,
+    cambios: cambios.length,
+    claves: cambios.map((cambio) => cambio.claveItem),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Documento → láminas
 // ---------------------------------------------------------------------------
 
@@ -275,6 +442,13 @@ export async function procesarDocumento(
 
   const existentes = await db.select().from(laminas).where(eq(laminas.documentoId, documentoId));
   const porPagina = new Map(existentes.map((lamina) => [lamina.numeroPagina, lamina]));
+
+  // La foto de la planilla ANTES de tocar nada: es la mitad izquierda del "qué
+  // cambió" (RF-308). Un documento que se procesa por primera vez y que trae una
+  // versión mayor a la 1 es una revisión nueva; todo lo demás es un reproceso.
+  const antes = await fotoDeItems(db, obra.id);
+  const motivo: MotivoRecomputo =
+    documento.version > 1 && existentes.length === 0 ? 'revision_nueva' : 'reproceso';
 
   const aProcesar: string[] = [];
 
@@ -309,7 +483,37 @@ export async function procesarDocumento(
   }
 
   for (const laminaId of aProcesar) {
-    await procesarLamina(laminaId, entorno);
+    // `resumen: false`: el resumen se publica una sola vez, más abajo.
+    await procesarLamina(laminaId, { ...entorno, resumen: false });
+  }
+
+  // RF-308: qué le hizo este documento a la planilla, para la pantalla "Qué
+  // cambió". Va antes del resumen porque el resumen es la foto final y esto es
+  // el movimiento.
+  await registrarRecomputo(db, documento, motivo, antes);
+
+  // RF-205: el resumen ejecutivo se rehace recién acá, con todas las láminas del
+  // documento analizadas y el cómputo ya sincronizado. Hacerlo por lámina sería
+  // publicar N resúmenes a medio hacer.
+  await resumirTolerante(db, obra.id);
+}
+
+/**
+ * Rehace el resumen sin arrastrar al documento si falla.
+ *
+ * Mismo criterio que `recomputarTolerante`: el análisis ya está guardado y el
+ * resumen es una vista derivada; que no se pueda regenerar es algo para mirar
+ * (queda en `auditoria`), no un motivo para marcar el documento como roto. La
+ * reparación es volver a correrlo: `persistirResumen` es idempotente.
+ */
+async function resumirTolerante(db: Db, obraId: string): Promise<void> {
+  try {
+    await persistirResumen(db, obraId);
+  } catch (error) {
+    await auditarAgente(obraId, 'resumen_fallido', `obras:${obraId}`, {
+      errorDetalle: detalleDeError(error),
+      motivo: 'El análisis terminó bien; el resumen ejecutivo quedó sin actualizar.',
+    });
   }
 }
 
@@ -351,8 +555,15 @@ export function tieneBBoxUtil(bbox: BBox | undefined): bbox is BBox {
   return ancho > 0 && alto > 0;
 }
 
+/**
+ * Clave de identidad de una entidad dentro de una lámina, solo para agrupar en
+ * memoria. El separador es `::` y no un byte NUL: un NUL en el fuente le da a
+ * `git diff` un archivo binario y lo esconde de `grep`. No hay ambigüedad
+ * posible porque `tipo` sale de un enum cerrado y ninguno de sus valores lleva
+ * `:`, así que el primer `::` siempre parte donde corresponde.
+ */
 function claveDeEntidad(tipo: string, nombre: string): string {
-  return `${tipo}\u0000${nombre}`;
+  return `${tipo}::${nombre}`;
 }
 
 /**
@@ -421,6 +632,9 @@ async function sincronizarEntidades(
   const sobrantes = previas.filter((previa) => !conservadas.has(previa.id)).map((e) => e.id);
   if (sobrantes.length > 0) {
     await desvincularItemsDeEntidades(db, lamina.obraId, sobrantes);
+    // `deducciones.entidad_id` es una FK NOT NULL: lo que se dijo de una entidad
+    // que ya no está no se puede quedar apuntando a la nada (queda auditado).
+    await borrarDeduccionesDeEntidades(db, lamina.obraId, sobrantes);
     await db.delete(entidades).where(inArray(entidades.id, sobrantes));
   }
 
@@ -483,13 +697,23 @@ async function cerrarHallazgoEscala(db: Db, lamina: Lamina): Promise<void> {
   });
 }
 
-/** Cuándo arrancó el análisis que dejó la lámina en `procesando`, si lo sabemos. */
-async function inicioDelProcesamiento(db: Db, laminaId: string): Promise<Date | null> {
+/**
+ * Cuándo arrancó el análisis que dejó la lámina en `procesando`, si lo sabemos.
+ *
+ * El dato vive en `laminas.procesando_desde`, que la propia reclamación sella.
+ * El fallback a `auditoria` es para las filas que quedaron tomadas **antes** de
+ * que existiera la columna: para ellas el sello es `null` y el único reloj sigue
+ * siendo el registro de auditoría del arranque. Sin ese fallback, una lámina
+ * colgada desde antes de la migración no se retomaría nunca.
+ */
+async function inicioDelProcesamiento(db: Db, lamina: Lamina): Promise<Date | null> {
+  if (lamina.procesandoDesde !== null) return lamina.procesandoDesde;
+
   const [ultimo] = await db
     .select({ at: auditoria.at })
     .from(auditoria)
     .where(
-      and(eq(auditoria.targetRef, `laminas:${laminaId}`), eq(auditoria.accion, ACCION_PROCESANDO)),
+      and(eq(auditoria.targetRef, `laminas:${lamina.id}`), eq(auditoria.accion, ACCION_PROCESANDO)),
     )
     .orderBy(desc(auditoria.at))
     .limit(1);
@@ -507,17 +731,18 @@ async function inicioDelProcesamiento(db: Db, laminaId: string): Promise<Date | 
  * duplicadas y cantidades duplicadas en la planilla, en silencio.
  *
  * Si el estado quedó colgado de un proceso muerto, pasado `TTL_PROCESANDO_MS`
- * la corrida siguiente lo retoma (el arranque queda fechado en `auditoria`, que
- * es el único reloj que tenemos: `laminas` no tiene `updated_at`, y esa columna
- * es de la Tarea 2). Dos procesos podrían decidir el rescate a la vez, pero
- * hace falta que los dos lleguen dentro del mismo milisegundo *y* quince
- * minutos después del cuelgue; el caso frecuente —dos clicks seguidos— lo cubre
- * el guard de arriba.
+ * la corrida siguiente lo retoma. El arranque queda fechado en la propia fila
+ * (`procesando_desde`), que es el reloj del rescate: se sella acá y se limpia
+ * cuando el análisis termina, así que un `procesando_desde` no nulo significa
+ * exactamente "alguien la tiene tomada". Dos procesos podrían decidir el rescate
+ * a la vez, pero hace falta que los dos lleguen dentro del mismo milisegundo *y*
+ * quince minutos después del cuelgue; el caso frecuente —dos clicks seguidos— lo
+ * cubre el guard de arriba.
  */
 async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> {
   const [tomada] = await db
     .update(laminas)
-    .set({ estadoAnalisis: 'procesando', errorDetalle: null })
+    .set({ estadoAnalisis: 'procesando', errorDetalle: null, procesandoDesde: new Date() })
     .where(and(eq(laminas.id, laminaId), ne(laminas.estadoAnalisis, 'procesando')))
     .returning();
 
@@ -532,7 +757,7 @@ async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> 
   const [existente] = await db.select().from(laminas).where(eq(laminas.id, laminaId));
   if (!existente) throw new LaminaInexistenteError(laminaId);
 
-  const desde = await inicioDelProcesamiento(db, laminaId);
+  const desde = await inicioDelProcesamiento(db, existente);
   if (desde === null || Date.now() - desde.getTime() <= TTL_PROCESANDO_MS) {
     await auditarAgente(existente.obraId, 'lamina_procesamiento_omitido', `laminas:${laminaId}`, {
       motivo: 'Ya hay un análisis en curso para esta lámina.',
@@ -543,7 +768,7 @@ async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> 
 
   const [retomada] = await db
     .update(laminas)
-    .set({ estadoAnalisis: 'procesando', errorDetalle: null })
+    .set({ estadoAnalisis: 'procesando', errorDetalle: null, procesandoDesde: new Date() })
     .where(eq(laminas.id, laminaId))
     .returning();
   await auditarAgente(retomada.obraId, ACCION_PROCESANDO, `laminas:${laminaId}`, {
@@ -567,7 +792,10 @@ async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> 
  */
 async function recomputarTolerante(entorno: Entorno, lamina: Lamina): Promise<boolean> {
   try {
-    await entorno.recomputar(lamina.obraId, { db: entorno.db });
+    // El recompute rehace el resumen, salvo cuando quien manda es
+    // `procesarDocumento`, que lo apaga acá y lo rehace una sola vez al final
+    // (ver `DepsPipeline.resumen` y `resumirTolerante`).
+    await entorno.recomputar(lamina.obraId, { db: entorno.db, resumen: entorno.resumen });
     return true;
   } catch (error) {
     const errorDetalle = detalleDeError(error);
@@ -583,6 +811,17 @@ async function recomputarTolerante(entorno: Entorno, lamina: Lamina): Promise<bo
     return false;
   }
 }
+
+/**
+ * Suelta la lámina: va en TODA transición que la saca de `procesando`
+ * (`analizada`, `bloqueada_escala`, `error`).
+ *
+ * Sin esto, `procesando_desde` quedaría con la fecha del último análisis y el
+ * rescate por TTL leería el reloj de una corrida que ya terminó. La invariante
+ * que sostiene el rescate es justamente esta: `procesando_desde` no nulo ⇔
+ * alguien la tiene tomada.
+ */
+const SOLTAR = { procesandoDesde: null } as const;
 
 /** Corridas de `procesarLamina` en vuelo en este proceso, por lámina. */
 const enVuelo = new Map<string, Promise<void>>();
@@ -634,6 +873,12 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     };
 
     const campos = fusionarRotulo(lamina, await provider.leerRotulo(entrada));
+    // El texto del PDF se guarda en la lámina (RF-106): es lo que después lee el
+    // Q&A del expediente para contestar con citas. Se persiste en las dos
+    // salidas —analizada y bloqueada por escala— porque una lámina sin escala
+    // igual dice cosas: una planilla de carpinterías es texto puro y no se
+    // computa. Vacío ⇒ `null`, que es "no hay texto que citar" y no "no leí".
+    const textoExtraido = entrada.textoExtraido?.trim() ? entrada.textoExtraido : null;
 
     if (!campos.escalaConfiable) {
       // RF-201: sin escala verificada no se mide nada. Si la lámina traía
@@ -641,7 +886,13 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
       const { eliminadas } = await sincronizarEntidades(db, lamina, []);
       await db
         .update(laminas)
-        .set({ ...campos, estadoAnalisis: 'bloqueada_escala', errorDetalle: null })
+        .set({
+          ...campos,
+          ...SOLTAR,
+          textoExtraido,
+          estadoAnalisis: 'bloqueada_escala',
+          errorDetalle: null,
+        })
         .where(eq(laminas.id, laminaId));
       await upsertHallazgoEscala(db, lamina);
       const recomputado = eliminadas === 0 || (await recomputarTolerante(entorno, lamina));
@@ -672,7 +923,7 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     const resumen = await sincronizarEntidades(db, lamina, validas);
     await db
       .update(laminas)
-      .set({ ...campos, estadoAnalisis: 'analizada', errorDetalle: null })
+      .set({ ...campos, ...SOLTAR, textoExtraido, estadoAnalisis: 'analizada', errorDetalle: null })
       .where(eq(laminas.id, laminaId));
     await cerrarHallazgoEscala(db, lamina);
     const recomputado = await recomputarTolerante(entorno, lamina);
@@ -690,7 +941,7 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     const errorDetalle = detalleDeError(error);
     await db
       .update(laminas)
-      .set({ estadoAnalisis: 'error', errorDetalle })
+      .set({ ...SOLTAR, estadoAnalisis: 'error', errorDetalle })
       .where(eq(laminas.id, laminaId));
     await auditarAgente(lamina.obraId, 'lamina_error', `laminas:${laminaId}`, { errorDetalle });
   }

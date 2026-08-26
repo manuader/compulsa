@@ -3,9 +3,12 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 
 import { Button } from '@/components/ui/button';
-import { getSession } from '@/lib/auth/session';
+import { getDb } from '@/db/client';
+import { getSession, type SesionActiva } from '@/lib/auth/session';
+import { contarNoLeidas, listarNotificaciones } from '@/lib/plataforma/notificaciones';
 
 import { salirAction } from './(auth)/actions';
+import { Campanita, type NotificacionEnCampana } from './estudio/ui';
 import './globals.css';
 
 /**
@@ -19,10 +22,48 @@ export const metadata: Metadata = {
   description: 'Análisis documental, cómputo y compulsa de obra para estudios de arquitectura.',
 };
 
+/** Fecha corta para la campanita: el día alcanza para ubicar un aviso. */
+const FECHA_CORTA = new Intl.DateTimeFormat('es-AR', {
+  day: '2-digit',
+  month: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+
+/**
+ * Lo que la campanita muestra: el contador de no leídas y las últimas diez.
+ *
+ * Va en el layout porque la campanita vive en el header de todas las pantallas.
+ * Son dos queries por request sobre índices propios (`notificaciones_usuario_idx`)
+ * y solo para sesiones abiertas: sin sesión no se consulta nada.
+ */
+async function avisosDelUsuario(sesion: SesionActiva | null) {
+  if (!sesion) return { noLeidas: 0, items: [] as NotificacionEnCampana[] };
+
+  const db = await getDb();
+  const [noLeidas, ultimas] = await Promise.all([
+    contarNoLeidas(db, sesion.usuario.id),
+    listarNotificaciones(db, sesion.usuario.id),
+  ]);
+
+  return {
+    noLeidas,
+    items: ultimas.map((aviso) => ({
+      id: aviso.id,
+      titulo: aviso.titulo,
+      cuerpo: aviso.cuerpo,
+      link: aviso.link,
+      leida: aviso.leida,
+      at: FECHA_CORTA.format(aviso.createdAt),
+    })),
+  };
+}
+
 export default async function RootLayout({ children }: { children: ReactNode }) {
   // El layout envuelve también a `/login` y `/register`: sin sesión no es un
   // error, es el estado normal de esas pantallas.
   const sesion = await getSession();
+  const avisos = await avisosDelUsuario(sesion);
 
   return (
     <html lang="es-AR">
@@ -44,7 +85,14 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
                   <Link href="/obras" className="hover:text-neutral-900">
                     Obras
                   </Link>
+                  <Link href="/proveedores" className="hover:text-neutral-900">
+                    Proveedores
+                  </Link>
+                  <Link href="/estudio" className="hover:text-neutral-900">
+                    Estudio
+                  </Link>
                   <div className="ml-auto flex items-center gap-3">
+                    <Campanita noLeidas={avisos.noLeidas} items={avisos.items} />
                     <span className="hidden text-neutral-500 sm:inline">
                       {sesion.estudio.nombre} · {sesion.usuario.email}
                     </span>

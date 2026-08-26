@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { getDb } from '@/db/client';
 import { esUuid, requireObra, requireUser } from '@/lib/auth/guards';
 import { DocumentoNoEncontradoError, eliminarDocumento } from '@/lib/obras/gestion';
+import { RolInsuficienteError, UsuarioInactivoError } from '@/lib/plataforma/roles';
 import { getStorage } from '@/lib/storage/index';
 
 /** Todo serializable: es lo que vuelve del server a un componente cliente. */
@@ -42,10 +43,15 @@ export async function eliminarDocumentoAction(entrada: unknown): Promise<Resulta
       estudio.id,
       obra.id,
       parseo.data.documentoId,
-      { usuarioId: usuario.id, email: usuario.email },
+      { usuarioId: usuario.id, email: usuario.email, rol: usuario.rol, activo: usuario.activo },
     );
   } catch (error) {
     if (error instanceof DocumentoNoEncontradoError) return { ok: false, error: error.message };
+    // El rol lo exige el core (`requireAccion`): acá se traduce a un mensaje de
+    // pantalla, que es lo único que el usuario puede hacer con él.
+    if (error instanceof RolInsuficienteError || error instanceof UsuarioInactivoError) {
+      return { ok: false, error: error.message };
+    }
     throw error;
   }
 

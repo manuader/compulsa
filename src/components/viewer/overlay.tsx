@@ -33,13 +33,31 @@ export interface MarcaHallazgo {
   bbox: BBox;
 }
 
+/**
+ * Una deducción propuesta, dibujada sobre el bbox de la entidad que
+ * **completaría** —no sobre la que aporta el dato—: lo que el arquitecto tiene
+ * que mirar es el elemento que hoy está sin acotar.
+ */
+export interface MarcaDeduccion {
+  id: string;
+  /** "ancho", "altura" — el campo en castellano. */
+  campo: string;
+  /** "1,50 m" — el valor ya escrito para leer. */
+  valor: string;
+  /** "Planilla ↔ plano". */
+  regla: string;
+  bbox: BBox;
+}
+
 export interface OverlayProps {
   entidades: readonly MarcaEntidad[];
   hallazgos: readonly MarcaHallazgo[];
+  deducciones: readonly MarcaDeduccion[];
   /** Bbox del target de `?highlight=…`: rect rojo grueso + scroll hasta él. */
   destacados: readonly BBox[];
   verEntidades: boolean;
   verHallazgos: boolean;
+  verDeducciones: boolean;
 }
 
 /** Un color por tipo de entidad: el mismo que usa la referencia del visor. */
@@ -50,6 +68,9 @@ export const COLOR_ENTIDAD: Record<TipoEntidad, string> = {
   abertura: '#059669',
   artefacto: '#db2777',
   terminacion: '#0891b2',
+  // Las cotas son la referencia dimensional, no una cosa construida: gris cálido
+  // para que se lean como anotación y no compitan con muros y aberturas.
+  cota: '#a16207',
   otro: '#525252',
 };
 
@@ -60,10 +81,22 @@ export const ETIQUETA_TIPO_ENTIDAD: Record<TipoEntidad, string> = {
   abertura: 'Abertura',
   artefacto: 'Artefacto',
   terminacion: 'Terminación',
+  cota: 'Cota',
   otro: 'Otro',
 };
 
 const ROJO_DESTACADO = '#dc2626';
+
+/**
+ * Violeta de la capa de deducciones. El trazo va **punteado** y sin relleno: lo
+ * cortado dice "esto todavía no está escrito en el plano".
+ *
+ * Es el mismo violeta que el de `tabique`, que es lo que hay en la paleta; lo
+ * que separa las dos marcas es el trazo (el de entidad es continuo y con
+ * relleno) y, sobre todo, que son capas distintas y se prenden por separado.
+ * Cada rect lleva además su tooltip con campo, valor y regla.
+ */
+export const VIOLETA_DEDUCCION = '#7c3aed';
 
 function porcentaje(valor: number): string {
   return `${(valor * 100).toFixed(3)}%`;
@@ -72,9 +105,11 @@ function porcentaje(valor: number): string {
 export function Overlay({
   entidades,
   hallazgos,
+  deducciones,
   destacados,
   verEntidades,
   verHallazgos,
+  verDeducciones,
 }: OverlayProps) {
   const anclaRef = useRef<HTMLDivElement>(null);
 
@@ -135,6 +170,25 @@ export function Overlay({
                 vectorEffect="non-scaling-stroke"
               >
                 <title>{hallazgo.descripcion}</title>
+              </rect>
+            ))
+          : null}
+
+        {verDeducciones
+          ? deducciones.map((deduccion, indice) => (
+              <rect
+                key={`${deduccion.id}-${indice}`}
+                x={deduccion.bbox[0]}
+                y={deduccion.bbox[1]}
+                width={deduccion.bbox[2]}
+                height={deduccion.bbox[3]}
+                fill="none"
+                stroke={VIOLETA_DEDUCCION}
+                strokeWidth={2}
+                strokeDasharray="3 3"
+                vectorEffect="non-scaling-stroke"
+              >
+                <title>{`${deduccion.campo} = ${deduccion.valor} (${deduccion.regla})`}</title>
               </rect>
             ))
           : null}

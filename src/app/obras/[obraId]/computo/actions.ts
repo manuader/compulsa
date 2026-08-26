@@ -24,20 +24,27 @@
 import { and, eq, like } from 'drizzle-orm';
 import { z } from 'zod';
 
-import { getDb } from '@/db/client';
+import { getDb, type Db } from '@/db/client';
 import { computoItems, computoRubros, hallazgos } from '@/db/schema';
 import { registrarAuditoria } from '@/lib/audit';
-import { requireObra, requireUser } from '@/lib/auth/guards';
-import {
-  ceilAPresentacion,
-  describirLatas,
-  describirPresentacion,
-  latasParaLitros,
-} from '@/lib/computo/presentacion';
-import { ETIQUETA_UNIDAD, formatearNumero, redondear2 } from '@/lib/computo/unidades';
+import { requireObra, requireObraCore, requireUser } from '@/lib/auth/guards';
+import { redondear2 } from '@/lib/computo/unidades';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
+import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
+import {
+  requireAccion,
+  RolInsuficienteError,
+  UsuarioInactivoError,
+  type AccionConRol,
+} from '@/lib/plataforma/roles';
 import { PLANTILLAS } from '@/lib/rubros/index';
-import { RUBROS, UNIDADES, type Unidad } from '@/types/domain';
+import {
+  numeroEsAr,
+  recomputarCompra,
+  type CompraCalculada,
+  type EntradaCompra,
+} from '@/lib/rubros/overrides';
+import { RUBROS, UNIDADES, type RolUsuario, type RubroId } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Resultado que ven las pantallas
@@ -50,28 +57,20 @@ export type ResultadoAccion = { ok: true } | { ok: false; error: string };
 const SIN_PRESENTACION = 'sin presentación';
 
 // ---------------------------------------------------------------------------
-// Núcleo puro: números en es-AR
+// Núcleos puros (viven en `@/lib/rubros/overrides`)
+//
+// El recálculo de la compra es EXACTAMENTE el mismo que aplica el override de
+// desperdicio configurado por el estudio (`plantillasConConfig`): si la edición
+// inline de la planilla y la configuración del estudio no dieran el mismo
+// número para la misma neta y el mismo porcentaje, uno de los dos estaría
+// mintiendo. Por eso la lógica vive en un módulo puro y acá quedan solo los
+// envoltorios `async` que el archivo `'use server'` exige.
 // ---------------------------------------------------------------------------
 
-/**
- * Lee un número escrito por una persona en Argentina: coma decimal y punto de
- * miles (`1.234,5`), o punto decimal si es lo único que hay (`30.5`). Devuelve
- * `null` si no hay número — el server nunca adivina un valor.
- */
-function numeroEsAr(texto: string): number | null {
-  const limpio = texto.replace(/[\s\u00a0]/g, '');
-  if (limpio === '') return null;
-
-  // Con coma presente, los puntos son separadores de miles; sin coma, un punto
-  // solo es el separador decimal.
-  const normalizado = limpio.includes(',')
-    ? limpio.replace(/\./g, '').replace(',', '.')
-    : limpio;
-
-  if (!/^[+-]?\d*\.?\d+$/.test(normalizado)) return null;
-  const valor = Number(normalizado);
-  return Number.isFinite(valor) ? valor : null;
-}
+/** La entrada del recálculo, tal como la define el núcleo. */
+export type EntradaRecalculo = EntradaCompra;
+/** Su salida. */
+export type CompraRecalculada = CompraCalculada;
 
 /**
  * Núcleo puro: cantidad válida (≥ 0, 2 decimales) o `null`.
@@ -83,105 +82,6 @@ export async function parsearCantidad(texto: string): Promise<number | null> {
   return redondear2(valor);
 }
 
-// ---------------------------------------------------------------------------
-// Núcleo puro: recálculo de la cantidad de compra
-// ---------------------------------------------------------------------------
-
-export interface EntradaRecalculo {
-  unidad: Unidad;
-  /** Cantidad neta ya editada. */
-  cantNeta: number;
-  /** Desperdicio ya editado, en porcentaje. */
-  desperdicioPct: number;
-  /** La presentación con la que se emitió el ítem ("11 placas de 2,88 m²"). */
-  presentacion: string;
-  /** La compra vigente: de ella sale cuánto trae cada bulto. */
-  cantCompraActual: number;
-}
-
-export interface CompraRecalculada {
-  cantCompra: number;
-  presentacion: string;
-}
-
-/**
- * Cómo se compra el ítem, deducido de su propia presentación. Las plantillas
- * (`src/lib/rubros/*`) escriben esos textos con `describirPresentacion()`,
- * `describirLatas()` y el formato de granel de `presentacion.ts`: acá se hace el
- * camino inverso para no duplicar los números de las plantillas en la UI.
- */
-type ModoCompra =
-  | { tipo: 'bulto'; singular: string; plural: string; detalle: string; contenido: number }
-  | { tipo: 'granel'; multiplo: number }
-  | { tipo: 'latas' }
-  | { tipo: 'global' }
-  | { tipo: 'medida' }
-  /** No reconocí la presentación: se aplica desperdicio y se deja el texto como está. */
-  | { tipo: 'desconocido' };
-
-/** "11 placas de 2,88 m²" → unidades, nombre del bulto y detalle. */
-const BULTO_RE = /^([\d.,]+)\s+(\p{L}+)\s+de\s+(.+)$/u;
-/** "4,5 m³ a granel (múltiplos de 0,5 m³)". */
-const GRANEL_RE = /múltiplos de\s+([\d.,]+)/u;
-/** "1 lata 20 L + 2 latas 1 L". */
-const LATAS_RE = /\blatas?\b/u;
-/** "2,88 m²" → contenido y etiqueta de unidad del bulto. */
-const DETALLE_RE = /^([\d.,]+)\s*(\S+)$/u;
-
-function inferirModoCompra(entrada: EntradaRecalculo): ModoCompra {
-  const texto = entrada.presentacion.trim();
-  if (texto === 'global') return { tipo: 'global' };
-  if (texto === 'a medida') return { tipo: 'medida' };
-  if (entrada.unidad === 'l' && (LATAS_RE.test(texto) || texto === 'sin compra')) {
-    return { tipo: 'latas' };
-  }
-
-  const granel = GRANEL_RE.exec(texto);
-  if (granel) {
-    const multiplo = numeroEsAr(granel[1]!);
-    if (multiplo !== null && multiplo > 0) return { tipo: 'granel', multiplo };
-    return { tipo: 'desconocido' };
-  }
-
-  const bulto = BULTO_RE.exec(texto);
-  if (!bulto) return { tipo: 'desconocido' };
-
-  const unidades = numeroEsAr(bulto[1]!);
-  const nombre = bulto[2]!;
-  const detalle = bulto[3]!;
-  const contenido = contenidoDelBulto(unidades, detalle, entrada);
-  if (contenido === null) return { tipo: 'desconocido' };
-
-  // El plural es regular en todos los bultos del corralón (placa/placas,
-  // caja/cajas, pallet/pallets): con la forma que ya está escrita alcanza.
-  const singular = unidades === 1 ? nombre : nombre.replace(/s$/u, '');
-  const plural = unidades === 1 ? `${nombre}s` : nombre;
-  return { tipo: 'bulto', singular, plural, detalle, contenido };
-}
-
-/**
- * Cuánto trae el bulto. La fuente de verdad es la compra vigente dividida por
- * los bultos que se compraron: el detalle es texto comercial y puede no ser el
- * contenido (una tira de montante son 2,60 m pero el ítem se compra por unidad).
- * Recién si no hay compra vigente se mira el detalle, y solo cuando su unidad
- * coincide con la del ítem.
- */
-function contenidoDelBulto(
-  unidades: number | null,
-  detalle: string,
-  entrada: EntradaRecalculo,
-): number | null {
-  if (unidades !== null && unidades > 0 && entrada.cantCompraActual > 0) {
-    const contenido = redondear2(entrada.cantCompraActual / unidades);
-    if (contenido > 0) return contenido;
-  }
-
-  const partes = DETALLE_RE.exec(detalle.trim());
-  if (!partes || partes[2] !== ETIQUETA_UNIDAD[entrada.unidad]) return null;
-  const contenido = numeroEsAr(partes[1]!);
-  return contenido !== null && contenido > 0 ? contenido : null;
-}
-
 /**
  * Núcleo puro: cantidad de compra y presentación después de una edición.
  *
@@ -191,42 +91,7 @@ function contenidoDelBulto(
  * antes que inventar un bulto, se muestra el número honesto.
  */
 export async function recalcularCompra(entrada: EntradaRecalculo): Promise<CompraRecalculada> {
-  const cantNeta = redondear2(Math.max(0, entrada.cantNeta));
-  const conDesperdicio = redondear2(cantNeta * (1 + entrada.desperdicioPct / 100));
-  const modo = inferirModoCompra(entrada);
-
-  switch (modo.tipo) {
-    case 'bulto': {
-      const { unidades, cantCompra } = ceilAPresentacion(conDesperdicio, modo.contenido);
-      return {
-        cantCompra,
-        presentacion: describirPresentacion(unidades, {
-          singular: modo.singular,
-          plural: modo.plural,
-          contenido: modo.contenido,
-          detalle: modo.detalle,
-        }),
-      };
-    }
-    case 'granel': {
-      const { cantCompra } = ceilAPresentacion(conDesperdicio, modo.multiplo);
-      const etiqueta = ETIQUETA_UNIDAD[entrada.unidad];
-      return {
-        cantCompra,
-        presentacion: `${formatearNumero(cantCompra)} ${etiqueta} a granel (múltiplos de ${formatearNumero(modo.multiplo)} ${etiqueta})`,
-      };
-    }
-    case 'latas': {
-      const { latas, litrosTotales } = latasParaLitros(conDesperdicio);
-      return { cantCompra: litrosTotales, presentacion: describirLatas(latas) };
-    }
-    case 'global':
-      return { cantCompra: conDesperdicio, presentacion: 'global' };
-    case 'medida':
-      return { cantCompra: conDesperdicio, presentacion: 'a medida' };
-    case 'desconocido':
-      return { cantCompra: conDesperdicio, presentacion: entrada.presentacion };
-  }
+  return recomputarCompra(entrada);
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +158,27 @@ function primerError(error: z.ZodError, porDefecto: string): string {
   return error.issues[0]?.message ?? porDefecto;
 }
 
+/**
+ * Aplica la matriz de roles (RF-1201) y traduce el rechazo a un `ResultadoAccion`.
+ *
+ * Editar el cómputo es de colaborador para arriba; **aprobar un rubro es del
+ * titular**, porque es una de las cinco acciones que la matriz le saca al
+ * colaborador (y porque sin cómputo aprobado no arranca ninguna compulsa).
+ * El chequeo va en el server: que el botón esté deshabilitado en la pantalla no
+ * es una verificación, estos exports son endpoints HTTP.
+ */
+function chequearRol(usuario: { rol: RolUsuario; activo: boolean }, accion: AccionConRol): ResultadoAccion {
+  try {
+    requireAccion(usuario, accion);
+    return { ok: true };
+  } catch (error) {
+    if (error instanceof RolInsuficienteError || error instanceof UsuarioInactivoError) {
+      return { ok: false, error: error.message };
+    }
+    throw error;
+  }
+}
+
 /** La planilla es una pantalla del server: tras mutar hay que revalidarla. */
 async function revalidarPlanilla(obraId: string): Promise<void> {
   const { revalidatePath } = await import('next/cache');
@@ -316,6 +202,8 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
   const { obraId, itemId, descripcion, cantNeta, desperdicioPct } = parseo.data;
 
   const { usuario } = await requireUser();
+  const permiso = chequearRol(usuario, 'editar_computo');
+  if (!permiso.ok) return permiso;
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -400,6 +288,8 @@ export async function anularItemAction(entrada: unknown): Promise<ResultadoAccio
   const { obraId, itemId } = parseo.data;
 
   const { usuario } = await requireUser();
+  const permiso = chequearRol(usuario, 'editar_computo');
+  if (!permiso.ok) return permiso;
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -465,6 +355,8 @@ export async function crearItemManualAction(entrada: unknown): Promise<Resultado
   }
 
   const { usuario } = await requireUser();
+  const permiso = chequearRol(usuario, 'editar_computo');
+  if (!permiso.ok) return permiso;
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -524,10 +416,20 @@ export async function crearItemManualAction(entrada: unknown): Promise<Resultado
 }
 
 /**
- * Aprueba el cómputo de un rubro (RF-404). El gate se verifica **en el server**:
- * que el botón esté habilitado en la pantalla no alcanza — mientras quede un
- * hallazgo bloqueante abierto del rubro, la aprobación se rechaza con el número
- * de consultas pendientes.
+ * Aprueba el cómputo de un rubro (RF-404).
+ *
+ * Tres cosas pasan acá, en este orden:
+ *
+ * 1. **Rol de titular** (RF-1201): aprobar un rubro es una de las cinco
+ *    acciones que la matriz le saca al colaborador. Sin cómputo aprobado no
+ *    arranca ninguna compulsa, así que la firma es del titular.
+ * 2. **El checklist del estudio decide qué frena** (RF-405): un ítem que el
+ *    estudio desactivó, o que marcó como no bloqueante, deja de contar para el
+ *    gate. Los hallazgos siguen en la bandeja: lo que cambia es si frenan.
+ *    Las familias que no son de checklist —`escala`, que administra el
+ *    pipeline, y los `sanity.*`— pasan intactas.
+ * 3. **El gate se verifica en el server**: que el botón esté habilitado en la
+ *    pantalla no alcanza, este export es un endpoint HTTP.
  */
 export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAccion> {
   const parseo = zAprobacion.safeParse(entrada);
@@ -536,20 +438,69 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
   }
   const { obraId, rubro } = parseo.data;
 
-  const { usuario } = await requireUser();
+  const { usuario, estudio } = await requireUser();
+  const permiso = chequearRol(usuario, 'aprobar_rubro');
+  if (!permiso.ok) return permiso;
   const obra = await requireObra(obraId);
   const db = await getDb();
+
+  const resultado = await aprobarRubroCore(
+    db,
+    { usuarioId: usuario.id, email: usuario.email, estudioId: estudio.id },
+    obra.id,
+    rubro,
+  );
+  if (!resultado.ok) return resultado;
+
+  await revalidarPlanilla(obra.id);
+  return { ok: true };
+}
+
+/**
+ * El núcleo de la aprobación: gate + escritura + auditoría, sin sesión y sin
+ * revalidación de rutas.
+ *
+ * Vive separado del action para que lo pueda usar quien no tiene cookies —hoy
+ * `scripts/seed.ts`, que necesita un rubro aprobado para lanzar la compulsa de
+ * demo—. **El chequeo de rol NO está acá** sino en el llamador: el action lo
+ * hace con la sesión, y el seed corre como el titular que crea. Cualquier
+ * llamador nuevo tiene que hacer lo mismo (la matriz de roles de P7 es la
+ * fuente: `aprobar_rubro` es de titular).
+ *
+ * ## El aislamiento SÍ está acá, y no es una duda de estilo
+ *
+ * Este archivo es `'use server'`: **todo export es un endpoint HTTP** con el
+ * payload que el cliente quiera. Sin el `requireObraCore` de abajo, un
+ * `obraId` de otro estudio aprobaba el rubro de esa obra —y aprobar un rubro es
+ * la llave de `lanzarCompulsa`—, porque `actor.estudioId` solo se usaba para
+ * leer el checklist y ninguna de las tres queries tenía al estudio en el
+ * `where`. El guard va **adentro** del núcleo y no en el action por eso mismo:
+ * el action es uno de los llamadores, no el único.
+ *
+ * Lanza `ObraNoEncontradaError` (no devuelve `{ ok: false }`): una obra que no
+ * es de este estudio no existe, y un id ajeno y un id inventado dan el mismo
+ * error — no se filtra existencia (RNF-4).
+ */
+export async function aprobarRubroCore(
+  db: Db,
+  actor: { usuarioId: string; email: string; estudioId: string },
+  obraId: string,
+  rubro: RubroId,
+): Promise<ResultadoAccion> {
+  await requireObraCore(db, actor.estudioId, obraId);
 
   const abiertos = await db
     .select({
       rubro: hallazgos.rubro,
       bloqueante: hallazgos.bloqueante,
       estado: hallazgos.estado,
+      checklistItem: hallazgos.checklistItem,
     })
     .from(hallazgos)
-    .where(eq(hallazgos.obraId, obra.id));
+    .where(eq(hallazgos.obraId, obraId));
 
-  const gate = puedeAprobarRubro(rubro, abiertos);
+  const checklist = await checklistEfectivo(db, actor.estudioId, rubro);
+  const gate = puedeAprobarRubro(rubro, ajustarHallazgosAlChecklist(abiertos, checklist));
   if (!gate.ok) {
     const una = gate.bloqueantes === 1;
     const consultas = una
@@ -565,31 +516,31 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
   const [previo] = await db
     .select({ estado: computoRubros.estado })
     .from(computoRubros)
-    .where(and(eq(computoRubros.obraId, obra.id), eq(computoRubros.rubro, rubro)));
+    .where(and(eq(computoRubros.obraId, obraId), eq(computoRubros.rubro, rubro)));
+  if (previo?.estado === 'aprobado') return { ok: true }; // idempotente: ni escribe ni audita
 
   await db
     .insert(computoRubros)
     .values({
-      obraId: obra.id,
+      obraId,
       rubro,
       estado: 'aprobado',
-      aprobadoPor: usuario.id,
+      aprobadoPor: actor.usuarioId,
       aprobadoAt: new Date(),
     })
     .onConflictDoUpdate({
       target: [computoRubros.obraId, computoRubros.rubro],
-      set: { estado: 'aprobado', aprobadoPor: usuario.id, aprobadoAt: new Date() },
+      set: { estado: 'aprobado', aprobadoPor: actor.usuarioId, aprobadoAt: new Date() },
     });
 
   await registrarAuditoria({
-    obraId: obra.id,
+    obraId,
     actorTipo: 'usuario',
-    actorNombre: usuario.email,
+    actorNombre: actor.email,
     accion: 'rubro_aprobado',
     targetRef: `computo_rubros:${rubro}`,
     diff: { estado: { antes: previo?.estado ?? 'borrador', despues: 'aprobado' } },
   });
 
-  await revalidarPlanilla(obra.id);
   return { ok: true };
 }

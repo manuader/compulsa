@@ -2,11 +2,12 @@
  * Visor de una lámina.
  *
  * Contrato de highlight (API pública interna, `src/app/CLAUDE.md` §4): la
- * planilla y la bandeja linkean a
+ * planilla, la bandeja de consultas y la de deducciones linkean a
  * `/obras/[obraId]/laminas/[laminaId]?highlight=<id>` y el visor resalta los
  * bbox de las **fuentes** de ese target. El id puede ser de una entidad, de un
- * ítem de cómputo o de un hallazgo: los tres llevan `Fuente[]` y los tres se
- * resuelven acá. No renombres el parámetro sin buscar sus usos.
+ * ítem de cómputo, de un hallazgo o de una deducción: los cuatro llevan
+ * `Fuente[]` y los cuatro se resuelven acá. No renombres el parámetro sin
+ * buscar sus usos.
  */
 import { and, eq } from 'drizzle-orm';
 import type { Metadata } from 'next';
@@ -16,11 +17,14 @@ import { cache } from 'react';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import type { MarcaEntidad, MarcaHallazgo } from '@/components/viewer/overlay';
+import type { MarcaDeduccion, MarcaEntidad, MarcaHallazgo } from '@/components/viewer/overlay';
 import { VisorLamina } from '@/components/viewer/visor-lamina';
 import { getDb, type Db } from '@/db/client';
-import { computoItems, entidades, hallazgos, laminas } from '@/db/schema';
+import { computoItems, deducciones, entidades, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
+import { TITULO_REGLA } from '@/lib/deduccion/memoria';
+import { describirValor, etiquetaCampo } from '@/lib/deduccion/motor';
+import { valorDeDeduccion } from '@/lib/deduccion/persistencia';
 import type { BBox, EstadoAnalisis, Fuente } from '@/types/domain';
 
 /** Misma forma que valida `requireObraCore`: un id mal formado es un 404, no un 500. */
@@ -103,6 +107,23 @@ async function resolverDestacado(
     .where(and(eq(hallazgos.id, highlight), eq(hallazgos.obraId, obraId)));
   if (hallazgo) return { nombre: hallazgo.nombre, fuentes: hallazgo.fuentes };
 
+  const [deduccion] = await db
+    .select({
+      campo: deducciones.campo,
+      valorJson: deducciones.valorJson,
+      fuentes: deducciones.fuentesJson,
+    })
+    .from(deducciones)
+    .where(and(eq(deducciones.id, highlight), eq(deducciones.obraId, obraId)));
+  if (deduccion) {
+    const valor = valorDeDeduccion(deduccion);
+    const nombre =
+      valor === null
+        ? `deducción de ${etiquetaCampo(deduccion.campo)}`
+        : `${etiquetaCampo(deduccion.campo)} deducido: ${describirValor(deduccion.campo, valor)}`;
+    return { nombre, fuentes: deduccion.fuentes };
+  }
+
   return null;
 }
 
@@ -163,7 +184,7 @@ export default async function LaminaPage({
   const db = await getDb();
   const highlight = primerParametro(query.highlight);
 
-  const [filasEntidades, filasHallazgos, destacado] = await Promise.all([
+  const [filasEntidades, filasHallazgos, filasDeducciones, destacado] = await Promise.all([
     db
       .select({
         id: entidades.id,
@@ -183,6 +204,25 @@ export default async function LaminaPage({
       })
       .from(hallazgos)
       .where(eq(hallazgos.obraId, obra.id)),
+    // La marca va sobre la entidad que la deducción COMPLETARÍA, que es la que
+    // hoy está sin acotar: por eso el join es contra `entidades.laminaId`.
+    db
+      .select({
+        id: deducciones.id,
+        campo: deducciones.campo,
+        regla: deducciones.regla,
+        valorJson: deducciones.valorJson,
+        fuentesEntidad: entidades.fuentesJson,
+      })
+      .from(deducciones)
+      .innerJoin(entidades, eq(deducciones.entidadId, entidades.id))
+      .where(
+        and(
+          eq(deducciones.obraId, obra.id),
+          eq(deducciones.estado, 'propuesta'),
+          eq(entidades.laminaId, lamina.id),
+        ),
+      ),
     highlight ? resolverDestacado(db, obra.id, highlight) : Promise.resolve(null),
   ]);
 
@@ -209,6 +249,17 @@ export default async function LaminaPage({
         bbox: fuente.bbox,
       })),
     );
+
+  const marcasDeducciones: MarcaDeduccion[] = filasDeducciones.flatMap((fila) => {
+    const valor = valorDeDeduccion(fila);
+    return deEstaLamina(fila.fuentesEntidad).map((fuente) => ({
+      id: fila.id,
+      campo: etiquetaCampo(fila.campo),
+      valor: valor === null ? '—' : describirValor(fila.campo, valor),
+      regla: TITULO_REGLA[fila.regla],
+      bbox: fuente.bbox,
+    }));
+  });
 
   const fuentesDestacadas = destacado ? deEstaLamina(destacado.fuentes) : [];
   const destacados: BBox[] = fuentesDestacadas.map((fuente) => fuente.bbox);
@@ -293,6 +344,7 @@ export default async function LaminaPage({
         archivoUrl={archivoUrl}
         entidades={marcasEntidades}
         hallazgos={marcasHallazgos}
+        deducciones={marcasDeducciones}
         destacados={destacados}
       />
     </div>

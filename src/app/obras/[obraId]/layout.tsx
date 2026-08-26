@@ -1,9 +1,12 @@
+import { and, count, eq } from 'drizzle-orm';
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { getDb } from '@/db/client';
+import { deducciones } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
 import { HEADER_PATHNAME } from '@/middleware';
 import type { TipoObra } from '@/types/domain';
@@ -21,15 +24,26 @@ const TONO_TIPO: Record<TipoObra, BadgeTone> = {
 };
 
 /**
- * Las cuatro pantallas de la obra (PRD §8). Expediente, Cómputo y Bandeja las
- * construyen las tareas 6, 7 y 8: las solapas ya apuntan a su ruta definitiva,
- * sin páginas de relleno de por medio.
+ * Las pantallas de la obra (PRD §8). Las solapas apuntan siempre a su ruta
+ * definitiva, sin páginas de relleno de por medio.
+ *
+ * «Deducciones» es la única que lleva contador: las otras son lugares a los que
+ * se va, y esta es una **cola de trabajo** —lo que el motor propuso y espera una
+ * decisión—. Sin el número, nadie entra a mirar si hay algo.
+ *
+ * El orden es el del trabajo: primero se mide (expediente, cómputo, bandeja,
+ * deducciones), después se pide precio (compulsas, conversaciones) y al final se
+ * compara y se adjudica.
  */
 const SOLAPAS = [
   { etiqueta: 'Tablero', segmento: '' },
   { etiqueta: 'Expediente', segmento: '/expediente' },
   { etiqueta: 'Cómputo', segmento: '/computo' },
   { etiqueta: 'Bandeja', segmento: '/bandeja' },
+  { etiqueta: 'Deducciones', segmento: '/deducciones' },
+  { etiqueta: 'Compulsas', segmento: '/compulsas' },
+  { etiqueta: 'Conversaciones', segmento: '/conversaciones' },
+  { etiqueta: 'Comparativa', segmento: '/comparativa' },
 ] as const;
 
 function esSolapaActiva(pathname: string, href: string, base: string): boolean {
@@ -71,6 +85,13 @@ export default async function ObraLayout({
   // Lo pone el middleware. Si faltara, ninguna solapa queda marcada — degrada.
   const pathname = (await headers()).get(HEADER_PATHNAME) ?? '';
 
+  const db = await getDb();
+  const [propuestas] = await db
+    .select({ total: count() })
+    .from(deducciones)
+    .where(and(eq(deducciones.obraId, obra.id), eq(deducciones.estado, 'propuesta')));
+  const pendientes = propuestas?.total ?? 0;
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3">
@@ -108,6 +129,13 @@ export default async function ObraLayout({
                   ].join(' ')}
                 >
                   {etiqueta}
+                  {/* El contador solo aparece si hay algo que decidir: un «0»
+                      permanente al lado de la solapa deja de leerse a la semana. */}
+                  {segmento === '/deducciones' && pendientes > 0 ? (
+                    <Badge tone="info" className="ml-2">
+                      {pendientes}
+                    </Badge>
+                  ) : null}
                 </Link>
               </li>
             );

@@ -18,9 +18,33 @@ import {
   subirDocumento,
 } from '@/lib/pipeline/procesar';
 import { getStorage } from '@/lib/storage/index';
+import {
+  requireAccion,
+  RolInsuficienteError,
+  UsuarioInactivoError,
+  type AccionConRol,
+} from '@/lib/plataforma/roles';
+import type { RolUsuario } from '@/types/domain';
 
 /** El análisis corre dentro del request: un legajo grande tarda. */
 export const maxDuration = 300;
+
+/**
+ * Rol mínimo para este endpoint (RF-1201), traducido a 403.
+ *
+ * El chequeo no puede vivir en `requireObraApi`/`requireLaminaApi`: los `GET`
+ * de este mismo módulo son lectura y `lectura` tiene que poder hacerlos.
+ */
+function requireRolApi(sesion: { usuario: { rol: RolUsuario; activo: boolean } }, accion: AccionConRol): void {
+  try {
+    requireAccion(sesion.usuario, accion);
+  } catch (error) {
+    if (error instanceof RolInsuficienteError || error instanceof UsuarioInactivoError) {
+      throw new ErrorHttp(403, error.message);
+    }
+    throw error;
+  }
+}
 
 type Params = { params: Promise<{ obraId: string }> };
 
@@ -55,6 +79,7 @@ export async function POST(request: Request, { params }: Params): Promise<Respon
   return responder(async () => {
     const { obraId } = await params;
     const { db, sesion, obra } = await requireObraApi(obraId);
+    requireRolApi(sesion, 'subir_documento');
 
     const formulario = await request.formData().catch(() => null);
     const archivo = formulario?.get('archivo');

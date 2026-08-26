@@ -82,6 +82,10 @@ export interface PlanillaRubroProps {
   items: readonly ItemPlanilla[];
   /** Consultas bloqueantes abiertas del rubro (0 ⇒ el gate da). */
   bloqueantes: number;
+  /** `colaborador` o más: agregar, editar y anular ítems (RF-1201). */
+  puedeEditar: boolean;
+  /** Solo el `titular` aprueba un rubro (RF-1201). */
+  puedeAprobar: boolean;
 }
 
 export function PlanillaRubro({
@@ -92,6 +96,8 @@ export function PlanillaRubro({
   desperdicioDefaultPct,
   items,
   bloqueantes,
+  puedeEditar,
+  puedeAprobar,
 }: PlanillaRubroProps) {
   const [dialogoAlta, setDialogoAlta] = useState(false);
   const [dialogoAprobacion, setDialogoAprobacion] = useState(false);
@@ -154,18 +160,31 @@ export function PlanillaRubro({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => setDialogoAlta(true)}>
-            Agregar ítem
-          </Button>
-          <span title={yaAprobado ? 'El rubro ya está aprobado.' : motivoGate}>
-            <Button
-              size="sm"
-              disabled={!gateOk || yaAprobado || pendiente}
-              onClick={() => setDialogoAprobacion(true)}
-            >
-              {yaAprobado ? 'Rubro aprobado' : 'Aprobar rubro'}
+          {puedeEditar ? (
+            <Button variant="secondary" size="sm" onClick={() => setDialogoAlta(true)}>
+              Agregar ítem
             </Button>
-          </span>
+          ) : null}
+          {/* Aprobar es del titular (RF-1201). Esconderlo es cortesía —quien lo
+              exige es `aprobarRubroAction` con `requireAccion`—, pero ofrecerle
+              a un colaborador un botón que el server le va a rechazar es
+              mentirle: la única razón por la que estaba era que esta grilla no
+              sabía el rol. */}
+          {puedeAprobar ? (
+            <span title={yaAprobado ? 'El rubro ya está aprobado.' : motivoGate}>
+              <Button
+                size="sm"
+                disabled={!gateOk || yaAprobado || pendiente}
+                onClick={() => setDialogoAprobacion(true)}
+              >
+                {yaAprobado ? 'Rubro aprobado' : 'Aprobar rubro'}
+              </Button>
+            </span>
+          ) : (
+            <Badge tone={TONO_ESTADO_RUBRO[estadoRubro]}>
+              {yaAprobado ? 'Rubro aprobado' : 'Lo aprueba un titular'}
+            </Badge>
+          )}
           {/* Descarga: es un `<a>` de verdad, vestido de botón con las mismas
               clases que `Button` (§8: reusar la primitiva, no copiarle los
               estilos). */}
@@ -213,7 +232,7 @@ export function PlanillaRubro({
 
           <TableBody>
             {items.map((item) => (
-              <FilaItem key={item.id} obraId={obraId} item={item} />
+              <FilaItem key={item.id} obraId={obraId} item={item} puedeEditar={puedeEditar} />
             ))}
 
             {totales.map((total) => (
@@ -231,85 +250,96 @@ export function PlanillaRubro({
         </Table>
       )}
 
-      <Dialog
-        open={dialogoAlta}
-        onClose={() => setDialogoAlta(false)}
-        title={`Agregar ítem a ${nombreRubro.toLowerCase()}`}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setDialogoAlta(false)} disabled={pendiente}>
-              Cancelar
-            </Button>
-            <Button onClick={crearItem} disabled={pendiente}>
-              {pendiente ? 'Agregando…' : 'Agregar'}
-            </Button>
-          </>
-        }
-      >
-        <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-600">
-            Un ítem cargado a mano no tiene fuente en los planos: queda marcado como tuyo y el
-            recómputo no lo pisa.
-          </p>
-          <Input
-            label="Descripción"
-            placeholder="Zócalo de madera 7 cm"
-            value={descripcion}
-            onChange={(evento) => setDescripcion(evento.target.value)}
-            disabled={pendiente}
-          />
-          <Select
-            label="Unidad"
-            value={unidad}
-            onChange={(evento) => setUnidad(evento.target.value as Unidad)}
-            disabled={pendiente}
-          >
-            {UNIDADES.map((valor) => (
-              <option key={valor} value={valor}>
-                {ETIQUETA_UNIDAD[valor]} — {NOMBRE_UNIDAD[valor]}
-              </option>
-            ))}
-          </Select>
-          <Input
-            label="Cantidad neta"
-            inputMode="decimal"
-            placeholder="30,5"
-            value={cantNeta}
-            onChange={(evento) => setCantNeta(evento.target.value)}
-            disabled={pendiente}
-          />
-          <Input
-            label="Desperdicio (%)"
-            inputMode="decimal"
-            value={desperdicioPct}
-            onChange={(evento) => setDesperdicioPct(evento.target.value)}
-            disabled={pendiente}
-          />
-          {errorAlta ? <p className="text-sm text-red-700">{errorAlta}</p> : null}
-        </div>
-      </Dialog>
+      {puedeEditar ? (
+        <Dialog
+          open={dialogoAlta}
+          onClose={() => setDialogoAlta(false)}
+          title={`Agregar ítem a ${nombreRubro.toLowerCase()}`}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setDialogoAlta(false)} disabled={pendiente}>
+                Cancelar
+              </Button>
+              <Button onClick={crearItem} disabled={pendiente}>
+                {pendiente ? 'Agregando…' : 'Agregar'}
+              </Button>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-neutral-600">
+              Un ítem cargado a mano no tiene fuente en los planos: queda marcado como tuyo y el
+              recómputo no lo pisa.
+            </p>
+            <Input
+              label="Descripción"
+              placeholder="Zócalo de madera 7 cm"
+              value={descripcion}
+              onChange={(evento) => setDescripcion(evento.target.value)}
+              disabled={pendiente}
+            />
+            <Select
+              label="Unidad"
+              value={unidad}
+              onChange={(evento) => setUnidad(evento.target.value as Unidad)}
+              disabled={pendiente}
+            >
+              {UNIDADES.map((valor) => (
+                <option key={valor} value={valor}>
+                  {ETIQUETA_UNIDAD[valor]} — {NOMBRE_UNIDAD[valor]}
+                </option>
+              ))}
+            </Select>
+            <Input
+              label="Cantidad neta"
+              inputMode="decimal"
+              placeholder="30,5"
+              value={cantNeta}
+              onChange={(evento) => setCantNeta(evento.target.value)}
+              disabled={pendiente}
+            />
+            <Input
+              label="Desperdicio (%)"
+              inputMode="decimal"
+              value={desperdicioPct}
+              onChange={(evento) => setDesperdicioPct(evento.target.value)}
+              disabled={pendiente}
+            />
+            {errorAlta ? <p className="text-sm text-red-700">{errorAlta}</p> : null}
+          </div>
+        </Dialog>
+      ) : null}
 
-      <Dialog
-        open={dialogoAprobacion}
-        onClose={() => setDialogoAprobacion(false)}
-        title={`Aprobar ${nombreRubro.toLowerCase()}`}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setDialogoAprobacion(false)} disabled={pendiente}>
-              Cancelar
-            </Button>
-            <Button onClick={aprobar} disabled={pendiente}>
-              {pendiente ? 'Aprobando…' : 'Aprobar rubro'}
-            </Button>
-          </>
-        }
-      >
-        <p className="text-sm text-neutral-700">
-          Vas a dar por bueno el cómputo de {nombreRubro.toLowerCase()}: queda registrado con tu
-          usuario y la fecha. Podés seguir editando ítems después, pero la aprobación es lo que
-          habilita pedir cotizaciones.
-        </p>
-      </Dialog>
+      {/* Ni el diálogo de alta ni el de aprobación se montan para quien no
+          puede: sin botón que los abra serían DOM muerto que igual se serializa
+          en cada render. */}
+      {puedeAprobar ? (
+        <Dialog
+          open={dialogoAprobacion}
+          onClose={() => setDialogoAprobacion(false)}
+          title={`Aprobar ${nombreRubro.toLowerCase()}`}
+          footer={
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => setDialogoAprobacion(false)}
+                disabled={pendiente}
+              >
+                Cancelar
+              </Button>
+              <Button onClick={aprobar} disabled={pendiente}>
+                {pendiente ? 'Aprobando…' : 'Aprobar rubro'}
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm text-neutral-700">
+            Vas a dar por bueno el cómputo de {nombreRubro.toLowerCase()}: queda registrado con tu
+            usuario y la fecha. Podés seguir editando ítems después, pero la aprobación es lo que
+            habilita pedir cotizaciones.
+          </p>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

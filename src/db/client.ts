@@ -9,6 +9,7 @@
  * de Next no abre clientes duplicados y las migraciones corren exactamente una
  * vez por proceso, aunque `getDb()` se llame en paralelo desde varias requests.
  */
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
@@ -25,6 +26,25 @@ declare global {
   var __compulsaDb: Promise<Db> | undefined;
 }
 
+/**
+ * `data/pglite/`, creada si no está.
+ *
+ * PGlite hace un `mkdirSync` **no recursivo** sobre el directorio que se le
+ * pasa: con `data/` ausente —un clon recién bajado, o el «borrá `data/` y volvé
+ * a sembrar» del README— revienta con `ENOENT` antes de la primera migración, y
+ * lo que se ve en pantalla es `Failed query: CREATE SCHEMA IF NOT EXISTS
+ * "drizzle"`, que no menciona ningún directorio. Un `mkdir -p` de una línea de
+ * nuestro lado sale más barato que el rato que se pierde leyendo ese error.
+ *
+ * `raiz` es un parámetro para poder testearlo contra un temporal; en producción
+ * siempre es `process.cwd()`, como el resto del módulo.
+ */
+export function carpetaPglite(raiz: string = process.cwd()): string {
+  const dir = path.join(raiz, 'data', 'pglite');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** Carpeta de migraciones generada por `npm run db:generate`. */
 function carpetaMigraciones(): string {
   // Tanto `next` como `vitest` y los scripts de `tsx` corren desde la raíz del
@@ -32,6 +52,28 @@ function carpetaMigraciones(): string {
   return path.join(process.cwd(), 'drizzle');
 }
 
+/**
+ * `max: 1` es **load-bearing**, no una configuración conservadora.
+ *
+ * Con una sola conexión los statements de todo el proceso quedan serializados,
+ * y hay tres lugares del dominio que hoy dependen de eso porque hacen
+ * read-modify-write sin `SELECT … FOR UPDATE`:
+ *
+ *  - **El índice de precios** (`acumularMuestra` en `flujo.ts`): lee
+ *    `price_index.muestras_json`, le suma la muestra y reescribe la fila. Dos
+ *    cotizaciones registradas a la vez sobre la misma `(clave, zona, mes)` se
+ *    pisarían la serie y perderían una muestra.
+ *  - **El último titular** (`usuarios.ts`): el `UPDATE` condicional es exacto
+ *    con los statements serializados; el TODO de ahí explica por qué no se usó
+ *    `db.transaction` + `FOR UPDATE` (PGlite tiene una sola conexión y el lock
+ *    no protegería nada) y qué hay que hacer al pasar a un pool.
+ *  - **La adjudicación** (`adjudicar.ts`): esa sí está cubierta por el UNIQUE
+ *    `adjudicaciones_compulsa_uq`, que serializa en la base y no depende del
+ *    pool. Queda acá para que se vea cuál es el patrón que sí sobrevive.
+ *
+ * Subir `max` sin cerrar los dos primeros con transacciones y `FOR UPDATE`
+ * cambia el comportamiento del producto, no su throughput.
+ */
 async function crearDbPostgres(url: string): Promise<Db> {
   const [{ drizzle }, { migrate }, postgres] = await Promise.all([
     import('drizzle-orm/postgres-js'),
@@ -49,10 +91,7 @@ async function crearDbPglite(): Promise<Db> {
     import('drizzle-orm/pglite'),
     import('drizzle-orm/pglite/migrator'),
   ]);
-  const cliente =
-    process.env.NODE_ENV === 'test'
-      ? new PGlite()
-      : new PGlite(path.join(process.cwd(), 'data', 'pglite'));
+  const cliente = process.env.NODE_ENV === 'test' ? new PGlite() : new PGlite(carpetaPglite());
   const db = drizzle(cliente, { schema });
   await migrate(db, { migrationsFolder: carpetaMigraciones() });
   return db as unknown as Db;
