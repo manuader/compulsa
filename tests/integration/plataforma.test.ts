@@ -22,8 +22,12 @@ import { setDbForTests, type Db } from '@/db/client';
 import {
   auditoria,
   checklistsEstudio,
+  computoItems,
+  documentos,
+  entidades,
   estudios,
   invitaciones,
+  laminas,
   notificaciones,
   obras,
   sesiones,
@@ -51,6 +55,7 @@ import {
   marcarLeida,
   marcarTodasLeidas,
 } from '@/lib/plataforma/notificaciones';
+import { recomputarObra } from '@/lib/pipeline/recomputar';
 import { RolInsuficienteError, UsuarioInactivoError } from '@/lib/plataforma/roles';
 import {
   aceptarInvitacionCore,
@@ -891,6 +896,114 @@ describe('el checklist manda sobre el gate de aprobación', () => {
     const sinItem = [{ rubro: 'seco' as const, bloqueante: true, estado: 'abierto' as const }];
 
     expect(ajustarHallazgosAlChecklist(sinItem, efectivo)[0].bloqueante).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La configuración llega al cómputo (TODO de P7 cerrado en P11)
+// ---------------------------------------------------------------------------
+
+/**
+ * El desperdicio configurable no servía de nada mientras el recompute usara
+ * `PLANTILLAS` directo: el formulario guardaba un número y ningún ítem se movía.
+ *
+ * El tabique del pin es **5,02 × 2,50 m a dos caras = 25,10 m² netos**, elegido
+ * a propósito: con 26 m² (el del fixture de la obra demo) el 12 % y el 15 % dan
+ * la misma compra —el bulto de 2,88 m² se come la diferencia— y un pin que no se
+ * mueve no protege nada.
+ *
+ *   12 % (plantilla) → 28,11 m² → 28,11 / 2,88 = 9,76 ⇒ 10 placas = 28,80 m²
+ *   15 % (config)    → 28,87 m² → 28,87 / 2,88 = 10,02 ⇒ 11 placas = 31,68 m²
+ */
+describe('la configuración del estudio llega al recompute', () => {
+  let obraId: string;
+
+  async function placas(): Promise<{ desperdicioPct: number; cantCompra: number } | undefined> {
+    const [fila] = await db
+      .select({ desperdicioPct: computoItems.desperdicioPct, cantCompra: computoItems.cantCompra })
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.claveItem, 'seco.placas')));
+    return fila;
+  }
+
+  beforeEach(async () => {
+    const [obra] = await db
+      .insert(obras)
+      .values({ estudioId, nombre: 'Casa Config', zona: 'CABA', tipo: 'nueva' })
+      .returning();
+    obraId = obra.id;
+
+    const [documento] = await db
+      .insert(documentos)
+      .values({
+        obraId,
+        nombreArchivo: 'planta.pdf',
+        tipo: 'plano',
+        archivoRef: 'config/planta.pdf',
+        mime: 'application/pdf',
+        hash: 'sha256-config',
+        subidoPor: titular.usuarioId,
+      })
+      .returning();
+    const [lamina] = await db
+      .insert(laminas)
+      .values({
+        documentoId: documento.id,
+        obraId,
+        numeroPagina: 1,
+        archivoRef: 'config/planta-p1.pdf',
+        tipo: 'planta',
+        estadoAnalisis: 'analizada',
+        escala: '1:100',
+        escalaConfiable: true,
+      })
+      .returning();
+
+    await db.insert(entidades).values({
+      obraId,
+      laminaId: lamina.id,
+      tipo: 'tabique',
+      nombre: 'T1',
+      atributosJson: { tipo: 'durlock', largoM: 5.02, alturaM: 2.5, caras: 2 },
+      estadoReforma: 'na',
+      fuentesJson: [{ laminaId: lamina.id, bbox: [0.1, 0.2, 0.02, 0.4], detalle: 'T1' }],
+      confianza: 0.9,
+    });
+  });
+
+  it('sin config, el desperdicio es el de la plantilla: 12 % ⇒ 10 placas', async () => {
+    await recomputarObra(obraId, { db });
+
+    expect(await placas()).toEqual({ desperdicioPct: 12, cantCompra: 28.8 });
+  });
+
+  it('con el override del estudio en 15 %, el mismo tabique compra 11 placas', async () => {
+    expect((await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } })).ok).toBe(true);
+    await recomputarObra(obraId, { db });
+
+    expect(await placas()).toEqual({ desperdicioPct: 15, cantCompra: 31.68 });
+  });
+
+  it('cambiar la config y recomputar mueve un ítem que ya estaba escrito', async () => {
+    await recomputarObra(obraId, { db });
+    expect((await placas())?.cantCompra).toBe(28.8);
+
+    await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } });
+    const resumen = await recomputarObra(obraId, { db });
+
+    expect(resumen.itemsActualizados).toBeGreaterThan(0);
+    expect(await placas()).toEqual({ desperdicioPct: 15, cantCompra: 31.68 });
+  });
+
+  it('el override por rubro no toca a los ítems que no se desperdician', async () => {
+    await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } });
+    await recomputarObra(obraId, { db });
+
+    const [tornillos] = await db
+      .select({ desperdicioPct: computoItems.desperdicioPct })
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.claveItem, 'seco.tornillos')));
+    expect(tornillos.desperdicioPct).toBe(0);
   });
 });
 

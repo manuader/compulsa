@@ -187,6 +187,7 @@ function deduplicarPorClave(hallazgos: readonly HallazgoDetectado[]): HallazgoDe
 function correrPlantillas(
   entidades: readonly EntidadPersistida[],
   tipoObra: TipoObra,
+  plantillas: Record<RubroId, PlantillaRubro>,
   rubros: readonly RubroId[],
   laminas: readonly LaminaDeComputo[],
 ): ResultadoComputo {
@@ -195,7 +196,7 @@ function correrPlantillas(
 
   for (const rubro of RUBROS) {
     if (!rubros.includes(rubro)) continue;
-    const resultado = computarRubro(entidades, PLANTILLAS[rubro], tipoObra, laminas);
+    const resultado = computarRubro(entidades, plantillas[rubro], tipoObra, laminas);
     items.push(...resultado.items);
     hallazgos.push(...resultado.hallazgos);
   }
@@ -225,12 +226,47 @@ export function computarObra(
   camposDeducidos: CamposDeducidos = SIN_DEDUCCIONES,
   laminas: readonly LaminaDeComputo[] = SIN_LAMINAS,
 ): ResultadoComputo {
-  const resultado = correrPlantillas(entidades, tipoObra, rubros, laminas);
+  return computarObraConPlantillas(entidades, tipoObra, PLANTILLAS, {
+    rubros,
+    camposDeducidos,
+    laminas,
+  });
+}
+
+export interface OpcionesComputo {
+  rubros?: readonly RubroId[];
+  camposDeducidos?: CamposDeducidos;
+  laminas?: readonly LaminaDeComputo[];
+}
+
+/**
+ * Lo mismo que `computarObra`, pero con **otras plantillas**.
+ *
+ * Existe para que el pipeline pueda computar con la configuración del estudio
+ * aplicada (`plantillasConConfig(config)` de `src/lib/rubros/overrides.ts`): el
+ * desperdicio de cada rubro es configurable por PRD (P2) y el motor no tiene por
+ * qué enterarse de que existe una tabla `estudios` — recibe las plantillas ya
+ * armadas y las corre.
+ *
+ * `computarObra` es el caso por defecto de esta función, con `PLANTILLAS`.
+ */
+export function computarObraConPlantillas(
+  entidades: readonly EntidadPersistida[],
+  tipoObra: TipoObra,
+  plantillas: Record<RubroId, PlantillaRubro>,
+  opciones: OpcionesComputo = {},
+): ResultadoComputo {
+  const rubros = opciones.rubros ?? RUBROS;
+  const camposDeducidos = opciones.camposDeducidos ?? SIN_DEDUCCIONES;
+  const laminas = opciones.laminas ?? SIN_LAMINAS;
+
+  const resultado = correrPlantillas(entidades, tipoObra, plantillas, rubros, laminas);
   if (camposDeducidos.size === 0) return resultado;
 
   const control = correrPlantillas(
     sinCamposDeducidos(entidades, camposDeducidos),
     tipoObra,
+    plantillas,
     rubros,
     laminas,
   );

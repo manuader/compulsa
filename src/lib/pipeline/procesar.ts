@@ -143,7 +143,18 @@ export interface DepsPipeline {
    * opción de configuración: existe para poder ejercitar el camino de "la
    * lámina se analizó bien y el recompute falló" sin romper la base a mano.
    */
-  recomputar?: (obraId: string, deps: { db: Db }) => Promise<unknown>;
+  recomputar?: (obraId: string, deps: { db: Db; resumen?: boolean }) => Promise<unknown>;
+  /**
+   * Si el resumen ejecutivo (RF-205) se rehace al terminar de analizar la
+   * lámina. Default `true`: analizar una lámina suelta —el arquitecto confirmó
+   * la escala, la API reprocesa— cambia el estado de la obra y la pantalla del
+   * expediente tiene que reflejarlo.
+   *
+   * `procesarDocumento` lo apaga durante su loop y rehace el resumen **una sola
+   * vez** al final, con todas las láminas analizadas: N resúmenes a medio hacer
+   * serían ruido en `auditoria` y en la pantalla.
+   */
+  resumen?: boolean;
 }
 
 interface Entorno {
@@ -151,6 +162,7 @@ interface Entorno {
   storage: StorageAdapter;
   provider: AnalysisProvider;
   recomputar: NonNullable<DepsPipeline['recomputar']>;
+  resumen: boolean;
 }
 
 async function resolver(deps: DepsPipeline): Promise<Entorno> {
@@ -159,6 +171,7 @@ async function resolver(deps: DepsPipeline): Promise<Entorno> {
     storage: deps.storage ?? getStorage(),
     provider: deps.provider ?? getAnalysisProvider(),
     recomputar: deps.recomputar ?? recomputarObra,
+    resumen: deps.resumen ?? true,
   };
 }
 
@@ -470,7 +483,8 @@ export async function procesarDocumento(
   }
 
   for (const laminaId of aProcesar) {
-    await procesarLamina(laminaId, entorno);
+    // `resumen: false`: el resumen se publica una sola vez, más abajo.
+    await procesarLamina(laminaId, { ...entorno, resumen: false });
   }
 
   // RF-308: qué le hizo este documento a la planilla, para la pantalla "Qué
@@ -778,7 +792,10 @@ async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> 
  */
 async function recomputarTolerante(entorno: Entorno, lamina: Lamina): Promise<boolean> {
   try {
-    await entorno.recomputar(lamina.obraId, { db: entorno.db });
+    // El recompute rehace el resumen, salvo cuando quien manda es
+    // `procesarDocumento`, que lo apaga acá y lo rehace una sola vez al final
+    // (ver `DepsPipeline.resumen` y `resumirTolerante`).
+    await entorno.recomputar(lamina.obraId, { db: entorno.db, resumen: entorno.resumen });
     return true;
   } catch (error) {
     const errorDetalle = detalleDeError(error);
