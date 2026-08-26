@@ -76,6 +76,15 @@ function DatosDeLaObra({ obra }: { obra: ObraConfig }) {
               devuelve `requireObra()` (RNF-4). */}
           <input type="hidden" name="obraId" value={obra.id} />
 
+          {estado.mensaje ? (
+            <p
+              role="alert"
+              className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+            >
+              {estado.mensaje}
+            </p>
+          ) : null}
+
           {estado.guardado ? (
             <p
               role="status"

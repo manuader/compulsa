@@ -48,9 +48,15 @@ export interface EstadoNuevaObra {
   valores?: Record<string, string>;
 }
 
-/** Igual, más el aviso de que se guardó: el formulario de edición no navega. */
+/**
+ * Igual, más los dos avisos que el formulario de edición necesita y el de alta
+ * no: el de edición no navega al terminar, así que tiene que decir en la misma
+ * pantalla que guardó (`guardado`) o que algo falló fuera de un campo concreto
+ * (`mensaje`).
+ */
 export interface EstadoEdicionObra extends EstadoNuevaObra {
   guardado?: string;
+  mensaje?: string;
 }
 
 const zNuevaObra = zDatosObra;
@@ -183,7 +189,7 @@ export async function editarObraAction(
   };
 
   const ctx = await contexto({ obraId: texto(formData, 'obraId') });
-  if (!ctx) return { errores: { nombre: PAYLOAD_ILEGIBLE }, valores };
+  if (!ctx) return { mensaje: PAYLOAD_ILEGIBLE, valores };
 
   const resultado = await editarObra(
     await getDb(),
