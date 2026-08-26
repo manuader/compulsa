@@ -256,24 +256,37 @@ describe('generarXlsx', () => {
 });
 
 describe('nombreArchivoXlsx', () => {
-  it('arma computo-<slug>-<yyyy-mm-dd>.xlsx sin acentos', () => {
-    expect(nombreArchivoXlsx('Casa Pérez', FECHA)).toBe('computo-casa-perez-2026-08-25.xlsx');
+  it('arma computo-<slug>-consolidado-<yyyy-mm-dd>.xlsx sin acentos', () => {
+    expect(nombreArchivoXlsx('Casa Pérez', FECHA)).toBe(
+      'computo-casa-perez-consolidado-2026-08-25.xlsx',
+    );
+  });
+
+  it('dice el rubro en el nombre cuando se baja uno solo', () => {
+    // Dos archivos de la misma obra en la carpeta de Descargas tienen que poder
+    // distinguirse sin abrirlos: el rubro va en el nombre, no solo adentro.
+    expect(nombreArchivoXlsx('Casa Pérez', FECHA, 'pintura')).toBe(
+      'computo-casa-perez-pintura-2026-08-25.xlsx',
+    );
+    expect(nombreArchivoXlsx('Casa Pérez', FECHA, 'todos')).toBe(
+      'computo-casa-perez-consolidado-2026-08-25.xlsx',
+    );
   });
 
   it('colapsa separadores y no deja guiones colgando', () => {
     expect(nombreArchivoXlsx('  Ampliación // Dpto 3º "B"  ', FECHA)).toBe(
-      'computo-ampliacion-dpto-3-b-2026-08-25.xlsx',
+      'computo-ampliacion-dpto-3-b-consolidado-2026-08-25.xlsx',
     );
   });
 
   it('usa el día de Buenos Aires, no el UTC', () => {
     // 00:30 UTC del 26 son las 21:30 del 25 en Buenos Aires (UTC-3).
     expect(nombreArchivoXlsx('Obra', new Date('2026-08-26T00:30:00.000Z'))).toBe(
-      'computo-obra-2026-08-25.xlsx',
+      'computo-obra-consolidado-2026-08-25.xlsx',
     );
   });
 
   it('sobrevive a un nombre que queda vacío al normalizarlo', () => {
-    expect(nombreArchivoXlsx('◆◆◆', FECHA)).toBe('computo-obra-2026-08-25.xlsx');
+    expect(nombreArchivoXlsx('◆◆◆', FECHA)).toBe('computo-obra-consolidado-2026-08-25.xlsx');
   });
 });

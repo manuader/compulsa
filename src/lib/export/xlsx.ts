@@ -210,11 +210,24 @@ export function slugObra(nombre: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/** `computo-casa-perez-2026-08-25.xlsx`. */
-export function nombreArchivoXlsx(nombreObra: string, fecha: Date): string {
+/**
+ * `computo-casa-perez-consolidado-2026-08-25.xlsx`, o
+ * `computo-casa-perez-pintura-2026-08-25.xlsx` cuando se baja un rubro solo.
+ *
+ * El alcance va en el nombre porque el archivo se baja a una carpeta donde ya
+ * hay otros: sin el rubro, cinco descargas de la misma obra y el mismo día se
+ * llamarían igual y el navegador las numeraría `(1)`, `(2)`… — nadie sabría
+ * cuál es la de pintura sin abrirlas.
+ */
+export function nombreArchivoXlsx(
+  nombreObra: string,
+  fecha: Date,
+  rubro: RubroId | 'todos' = 'todos',
+): string {
   // Un nombre que se queda sin caracteres usables igual necesita archivo.
   const slug = slugObra(nombreObra) || 'obra';
-  return `computo-${slug}-${fechaIso(fecha)}.xlsx`;
+  const alcance = rubro === 'todos' ? 'consolidado' : rubro;
+  return `computo-${slug}-${alcance}-${fechaIso(fecha)}.xlsx`;
 }
 
 // --- Armado del libro ------------------------------------------------------
