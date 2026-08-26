@@ -7,15 +7,15 @@
  * `getDb()`, arman los textos y los estados, y bajan acá **solo datos
  * serializables**. Nada de esto vuelve a consultar la base.
  *
- * Tres islas:
+ * Dos islas:
  *
- *  1. `BotonCopiar` — el canal es manual: el sistema escribe y la persona
- *     manda. Copiar el texto es la acción principal de estas pantallas, no un
- *     accesorio.
- *  2. `FormularioNuevaCompulsa` — el wizard de armado, en una sola página.
- *  3. `PanelContacto` — el timeline de un proveedor con todo lo que se puede
+ *  1. `FormularioNuevaCompulsa` — el wizard de armado, en una sola página.
+ *  2. `PanelContacto` — el timeline de un proveedor con todo lo que se puede
  *     hacer sobre él: marcar enviado, registrar la respuesta con preview,
  *     proponer la negociación, cargar el total que faltaba.
+ *
+ * El botón de copiar —que en un canal manual es la acción principal de estas
+ * pantallas— es una primitiva compartida: `@/components/ui/boton-copiar`.
  */
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -31,6 +31,7 @@ import {
   type PreviewPresupuesto,
 } from '@/app/obras/[obraId]/compulsas/actions';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { BotonCopiar } from '@/components/ui/boton-copiar';
 import { Button, estilosBoton } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
@@ -124,50 +125,6 @@ export interface ContactoVista {
   banderas: BanderaVista[];
   /** Días de silencio, si pasaron 7 o más. */
   sinRespuestaDias: number | null;
-}
-
-// ---------------------------------------------------------------------------
-// Copiar
-// ---------------------------------------------------------------------------
-
-/**
- * Copia el texto al portapapeles. Si el navegador no deja (contexto inseguro,
- * permiso denegado), lo dice en vez de fingir que copió: el usuario tiene que
- * saber que le toca seleccionar a mano.
- */
-export function BotonCopiar({
-  texto,
-  etiqueta = 'Copiar',
-  size = 'sm',
-}: {
-  texto: string;
-  etiqueta?: string;
-  size?: 'sm' | 'md';
-}) {
-  const [estado, setEstado] = useState<'listo' | 'copiado' | 'error'>('listo');
-
-  async function copiar(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(texto);
-      setEstado('copiado');
-      setTimeout(() => setEstado('listo'), 2000);
-    } catch {
-      setEstado('error');
-    }
-  }
-
-  return (
-    <span className="inline-flex items-center gap-2">
-      <Button size={size} variant="secondary" onClick={() => void copiar()}>
-        {estado === 'copiado' ? '✓ Copiado' : etiqueta}
-      </Button>
-      {estado === 'error' ? (
-        <span className="text-xs text-red-700">
-          El navegador no dejó copiar: seleccioná el texto y copialo a mano.
-        </span>
-      ) : null}
-    </span>
-  );
 }
 
 // ---------------------------------------------------------------------------

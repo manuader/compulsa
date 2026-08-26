@@ -18,6 +18,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { BotonCopiar } from '@/components/ui/boton-copiar';
 import { Card, CardContent } from '@/components/ui/card';
 import { getDb } from '@/db/client';
 import { cotizaciones } from '@/db/schema';
@@ -29,7 +30,6 @@ import { contactosDe } from '@/lib/proveedores/gestion';
 import { PLANTILLAS } from '@/lib/rubros/index';
 import type { EstadoContacto } from '@/types/domain';
 
-import { BotonCopiar } from '../../compulsas/ui';
 import { AccionesEstado, FormularioEntrante } from '../ui';
 
 export const metadata: Metadata = { title: 'Conversación' };

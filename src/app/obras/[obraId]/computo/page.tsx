@@ -248,6 +248,8 @@ export default async function ComputoPage({
         desperdicioDefaultPct={PLANTILLAS[rubro].desperdicioDefaultPct}
         items={items}
         bloqueantes={gate.bloqueantes}
+        puedeEditar={esRolSuficiente(usuario, 'colaborador')}
+        puedeAprobar={esRolSuficiente(usuario, 'titular')}
       />
     </div>
   );

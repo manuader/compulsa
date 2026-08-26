@@ -26,6 +26,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { BotonCopiar } from '@/components/ui/boton-copiar';
 import { estilosBoton } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -51,7 +52,7 @@ import { PLANTILLAS } from '@/lib/rubros/index';
 import type { EstadoCompulsa, EstadoContacto } from '@/types/domain';
 
 import { detectarSinRespuestaCore, notificarSinRespuestaCore } from '../actions';
-import { BotonCopiar, PanelContacto, type ContactoVista, type CotizacionVista } from '../ui';
+import { PanelContacto, type ContactoVista, type CotizacionVista } from '../ui';
 
 export const metadata: Metadata = { title: 'Compulsa' };
 

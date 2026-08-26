@@ -222,6 +222,20 @@ export function formatearImporte(n: number): string {
   return decimal === undefined ? conMiles : `${conMiles},${decimal}`;
 }
 
+/**
+ * El importe con su símbolo adelante: `-$ 79.840`, no `$ -79.840`.
+ *
+ * El único monto del producto que puede ser negativo es el ahorro (RF-1104):
+ * adjudicar por encima de la mediana da negativo y el tablero lo muestra tal
+ * cual en vez de esconderlo en un cero. Pegar el símbolo y el número sin más
+ * dejaba el menos en el medio, que en es-AR no se escribe así.
+ */
+export function formatearMonto(moneda: string, n: number): string {
+  const simbolo = moneda === 'ARS' ? '$' : moneda;
+  const signo = redondear2(n) < 0 ? '-' : '';
+  return `${signo}${simbolo} ${formatearImporte(Math.abs(n))}`;
+}
+
 const MS_POR_DIA = 24 * 60 * 60 * 1000;
 
 /** A menos de esto, la oferta se muestra en ámbar: hay que cerrar o repedir. */
@@ -330,7 +344,7 @@ function indiceDe(
   mesActual: string,
 ): FilaIndice | null {
   if (zona === null) return null;
-  const filas = porClave.get(`${claveItem} ${zona}`);
+  const filas = porClave.get(`${claveItem}::${zona}`);
   if (!filas) return null;
 
   let elegida: FilaIndice | null = null;
@@ -373,12 +387,12 @@ export function armarComparativa(
       extrasPorCotizacion.set(fila.cotizacionId, lista);
       continue;
     }
-    porCotizacionYClave.set(`${fila.cotizacionId} ${fila.claveItem}`, fila);
+    porCotizacionYClave.set(`${fila.cotizacionId}::${fila.claveItem}`, fila);
   }
 
   const indicePorClave = new Map<string, FilaIndice[]>();
   for (const fila of indice) {
-    const clave = `${fila.claveItem} ${fila.zona}`;
+    const clave = `${fila.claveItem}::${fila.zona}`;
     const lista = indicePorClave.get(clave) ?? [];
     lista.push(fila);
     indicePorClave.set(clave, lista);
@@ -393,7 +407,7 @@ export function armarComparativa(
     claveItem: item.claveItem,
     item,
     celdas: cotizaciones.map((cotizacion) => {
-      const conciliacion = porCotizacionYClave.get(`${cotizacion.id} ${item.claveItem}`);
+      const conciliacion = porCotizacionYClave.get(`${cotizacion.id}::${item.claveItem}`);
       const match: MatchCelda = conciliacion?.match ?? 'sin_conciliar';
       const linea =
         conciliacion && conciliacion.lineaIdx !== null

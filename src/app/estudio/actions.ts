@@ -22,6 +22,7 @@ import { z } from 'zod';
 
 import { getDb } from '@/db/client';
 import { esUuid, requireUser } from '@/lib/auth/guards';
+import { recomputarObrasDelEstudio } from '@/lib/pipeline/recomputar';
 import { guardarItemChecklist, ItemChecklistDesconocidoError } from '@/lib/plataforma/checklists';
 import { guardarConfig } from '@/lib/plataforma/config-estudio';
 import { marcarLeida, marcarTodasLeidas } from '@/lib/plataforma/notificaciones';
@@ -83,6 +84,7 @@ function texto(formData: FormData, campo: string): string {
   const valor = formData.get(campo);
   return typeof valor === 'string' ? valor : '';
 }
+
 
 // ---------------------------------------------------------------------------
 // Invitaciones y usuarios
@@ -220,15 +222,33 @@ export async function guardarConfigAction(
   }
 
   try {
-    const resultado = await guardarConfig(await getDb(), await actor(), payload);
+    const db = await getDb();
+    const quien = await actor();
+    const resultado = await guardarConfig(db, quien, payload);
     if (!resultado.ok) return { errores: resultado.errores, error: Object.values(resultado.errores)[0] };
 
-    await revalidar('/estudio/configuracion');
+    if (Object.keys(resultado.cambios).length === 0) {
+      await revalidar('/estudio/configuracion');
+      return { mensaje: 'No había nada que cambiar.' };
+    }
+
+    // El desperdicio cambia números ya escritos en las planillas; las otras
+    // secciones (condiciones, mandato, pesos, MEP) las lee cada pantalla al
+    // renderizar y no tocan el cómputo.
+    const recomputadas =
+      resultado.cambios.desperdiciosPct === undefined
+        ? 0
+        : await recomputarObrasDelEstudio(quien.estudioId, { db });
+
+    // `/obras` porque el recompute movió cantidades de compra que se ven en el
+    // tablero de cada obra. Las pantallas de adentro leen la cookie de sesión y
+    // ya se renderizan dinámicas, así que esto es cinturón sobre tirantes.
+    await revalidar('/estudio/configuracion', '/obras');
     return {
       mensaje:
-        Object.keys(resultado.cambios).length === 0
-          ? 'No había nada que cambiar.'
-          : 'Listo, guardamos la configuración.',
+        recomputadas === 0
+          ? 'Listo, guardamos la configuración.'
+          : `Listo: guardamos la configuración y recalculamos ${recomputadas === 1 ? 'la obra activa' : `las ${recomputadas} obras activas`}.`,
     };
   } catch (error) {
     const mensaje = mensajeConocido(error);

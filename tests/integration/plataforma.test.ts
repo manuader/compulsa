@@ -57,7 +57,7 @@ import {
   marcarLeida,
   marcarTodasLeidas,
 } from '@/lib/plataforma/notificaciones';
-import { recomputarObra } from '@/lib/pipeline/recomputar';
+import { recomputarObra, recomputarObrasDelEstudio } from '@/lib/pipeline/recomputar';
 import { RolInsuficienteError, UsuarioInactivoError } from '@/lib/plataforma/roles';
 import {
   aceptarInvitacionCore,
@@ -1078,6 +1078,46 @@ describe('la configuración del estudio llega al recompute', () => {
       .from(computoItems)
       .where(and(eq(computoItems.obraId, obraId), eq(computoItems.claveItem, 'seco.tornillos')));
     expect(tornillos.desperdicioPct).toBe(0);
+  });
+
+  /**
+   * Lo que cierra el círculo: guardar el desperdicio tiene que mover las
+   * planillas que **ya están escritas**, no solo las que se recomputen después
+   * por otro motivo. `guardarConfigAction` llama a esto mismo.
+   */
+  describe('recomputarObrasDelEstudio', () => {
+    it('recomputa la obra activa y le deja el desperdicio nuevo', async () => {
+      await recomputarObra(obraId, { db });
+      expect(await placas()).toEqual({ desperdicioPct: 12, cantCompra: 28.8 });
+
+      await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } });
+      expect(await recomputarObrasDelEstudio(estudioId, { db })).toBe(1);
+
+      expect(await placas()).toEqual({ desperdicioPct: 15, cantCompra: 31.68 });
+    });
+
+    it('saltea las archivadas: no se listan ni se exportan', async () => {
+      await recomputarObra(obraId, { db });
+      await db.update(obras).set({ estado: 'archivada' }).where(eq(obras.id, obraId));
+
+      await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } });
+      expect(await recomputarObrasDelEstudio(estudioId, { db })).toBe(0);
+
+      expect(await placas()).toEqual({ desperdicioPct: 12, cantCompra: 28.8 });
+    });
+
+    it('no toca las obras de otro estudio', async () => {
+      await recomputarObra(obraId, { db });
+
+      const [ajeno] = await db
+        .insert(estudios)
+        .values({ nombre: 'Estudio Ajeno' })
+        .returning();
+      await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } });
+
+      expect(await recomputarObrasDelEstudio(ajeno.id, { db })).toBe(0);
+      expect(await placas()).toEqual({ desperdicioPct: 12, cantCompra: 28.8 });
+    });
   });
 });
 

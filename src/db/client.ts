@@ -9,6 +9,7 @@
  * de Next no abre clientes duplicados y las migraciones corren exactamente una
  * vez por proceso, aunque `getDb()` se llame en paralelo desde varias requests.
  */
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
@@ -23,6 +24,25 @@ export type Db = PgDatabase<PgQueryResultHKT, Esquema>;
 declare global {
   // eslint-disable-next-line no-var
   var __compulsaDb: Promise<Db> | undefined;
+}
+
+/**
+ * `data/pglite/`, creada si no está.
+ *
+ * PGlite hace un `mkdirSync` **no recursivo** sobre el directorio que se le
+ * pasa: con `data/` ausente —un clon recién bajado, o el «borrá `data/` y volvé
+ * a sembrar» del README— revienta con `ENOENT` antes de la primera migración, y
+ * lo que se ve en pantalla es `Failed query: CREATE SCHEMA IF NOT EXISTS
+ * "drizzle"`, que no menciona ningún directorio. Un `mkdir -p` de una línea de
+ * nuestro lado sale más barato que el rato que se pierde leyendo ese error.
+ *
+ * `raiz` es un parámetro para poder testearlo contra un temporal; en producción
+ * siempre es `process.cwd()`, como el resto del módulo.
+ */
+export function carpetaPglite(raiz: string = process.cwd()): string {
+  const dir = path.join(raiz, 'data', 'pglite');
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 /** Carpeta de migraciones generada por `npm run db:generate`. */
@@ -49,10 +69,7 @@ async function crearDbPglite(): Promise<Db> {
     import('drizzle-orm/pglite'),
     import('drizzle-orm/pglite/migrator'),
   ]);
-  const cliente =
-    process.env.NODE_ENV === 'test'
-      ? new PGlite()
-      : new PGlite(path.join(process.cwd(), 'data', 'pglite'));
+  const cliente = process.env.NODE_ENV === 'test' ? new PGlite() : new PGlite(carpetaPglite());
   const db = drizzle(cliente, { schema });
   await migrate(db, { migrationsFolder: carpetaMigraciones() });
   return db as unknown as Db;

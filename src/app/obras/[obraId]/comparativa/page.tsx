@@ -23,6 +23,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { BotonCopiar } from '@/components/ui/boton-copiar';
 import { Card, CardContent } from '@/components/ui/card';
 import { getDb } from '@/db/client';
 import { requireObra, requireUser } from '@/lib/auth/guards';
@@ -41,7 +42,7 @@ import { esRolSuficiente } from '@/lib/plataforma/roles';
 import { PLANTILLAS } from '@/lib/rubros';
 import type { EstadoCompulsa } from '@/types/domain';
 
-import { BotonAdjudicar, BotonCopiar } from './ui';
+import { BotonAdjudicar } from './ui';
 
 export const metadata: Metadata = { title: 'Comparativa' };
 
@@ -365,7 +366,12 @@ export default async function ComparativaPage({
                               itemsExcluidos: columna.itemsExcluidos,
                               totalComparable: montoDe(columna.totalComparable, columna.moneda),
                               difiereDelDeclarado: columna.difiereDelDeclarado,
-                              puntaje: puesto?.puntaje ?? null,
+                              // Ya formateado en es-AR, como el resto de los
+                              // números que bajan al diálogo: el cliente no
+                              // vuelve a tocar un `toString()` de JS, que
+                              // escribiría «0.6179» con punto.
+                              puntaje:
+                                puesto === undefined ? null : formatearNumero(puesto.puntaje, 4),
                               posicion: puesto?.posicion ?? null,
                               validez: ETIQUETA_VALIDEZ[columna.validez],
                               otrosContactos: comparativa.columnas.length - 1,

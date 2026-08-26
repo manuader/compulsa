@@ -23,7 +23,11 @@ import {
   RolInsuficienteError,
   type ActorCompulsa,
 } from '@/lib/compulsa/flujo';
-import { ContactoNoEncontradoError, requireContactoCore } from '@/lib/outreach/threads';
+import {
+  ContactoNoEncontradoError,
+  EstadoContactoInvalidoError,
+  requireContactoCore,
+} from '@/lib/outreach/threads';
 import type { EstadoContacto } from '@/types/domain';
 
 export type ResultadoAccionConversacion = { ok: true } | { ok: false; error: string };
@@ -75,13 +79,6 @@ async function revalidar(obraId: string, contactoId: string, compulsaId: string)
 // ---------------------------------------------------------------------------
 // Núcleo: el estado del contacto, a mano
 // ---------------------------------------------------------------------------
-
-export class EstadoContactoInvalidoError extends Error {
-  constructor(mensaje: string) {
-    super(mensaje);
-    this.name = 'EstadoContactoInvalidoError';
-  }
-}
 
 /**
  * Cambia el estado del contacto a mano.

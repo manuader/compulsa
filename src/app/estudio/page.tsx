@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { getDb } from '@/db/client';
 import { requireUser } from '@/lib/auth/guards';
 import { ahorroDelEstudio, type AhorroDelEstudio } from '@/lib/compulsa/adjudicar';
-import { formatearImporte } from '@/lib/compulsa/comparativa';
+import { formatearMonto } from '@/lib/compulsa/comparativa';
 import { listarNotificaciones } from '@/lib/plataforma/notificaciones';
 import { esRolSuficiente, ETIQUETA_ROL } from '@/lib/plataforma/roles';
 
@@ -169,7 +169,7 @@ function AhorroAcumulado({ ahorro }: { ahorro: AhorroDelEstudio }) {
                     {entrada.moneda}
                   </dt>
                   <dd className="text-2xl font-semibold tabular-nums text-neutral-900">
-                    {`${entrada.moneda === 'ARS' ? '$' : entrada.moneda} ${formatearImporte(entrada.ahorro)}`}
+                    {formatearMonto(entrada.moneda, entrada.ahorro)}
                   </dd>
                   <dd className="text-xs text-neutral-500">
                     {plural(entrada.adjudicadas, 'compulsa adjudicada', 'compulsas adjudicadas')}
