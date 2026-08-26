@@ -25,7 +25,11 @@ import { esUuid, requireUser } from '@/lib/auth/guards';
 import { recomputarObrasDelEstudio } from '@/lib/pipeline/recomputar';
 import { guardarItemChecklist, ItemChecklistDesconocidoError } from '@/lib/plataforma/checklists';
 import { guardarConfig } from '@/lib/plataforma/config-estudio';
-import { marcarLeida, marcarTodasLeidas } from '@/lib/plataforma/notificaciones';
+import {
+  destinoInterno,
+  marcarLeida,
+  marcarTodasLeidas,
+} from '@/lib/plataforma/notificaciones';
 import { RolInsuficienteError, UsuarioInactivoError } from '@/lib/plataforma/roles';
 import {
   cambiarActivoUsuario,
@@ -305,9 +309,12 @@ export async function abrirNotificacionAction(formData: FormData): Promise<never
   await revalidar('/estudio');
 
   const { redirect } = await import('next/navigation');
-  // Solo rutas internas: un `link` que venga con `//otro.host` o `javascript:`
-  // no es un destino de esta app.
-  return redirect(destino.startsWith('/') && !destino.startsWith('//') ? destino : '/estudio');
+  // El `link` viaja en el POST del formulario, o sea que llega del cliente:
+  // `destinoInterno` decide si es una ruta de esta app o si se va a `/estudio`.
+  // La regla y por qué es tan angosta están en `notificaciones.ts` — el resumen
+  // es que «empieza con / y no con //» dejaba pasar `/\evil.com`, que el
+  // navegador normaliza a `//evil.com`.
+  return redirect(destinoInterno(destino));
 }
 
 export async function marcarTodasLeidasAction(): Promise<ResultadoEstudio> {

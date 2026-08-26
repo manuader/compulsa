@@ -31,6 +31,42 @@ import type { RolUsuario } from '@/types/domain';
 /** Cuántas muestra el dropdown de la campanita. */
 export const NOTIFICACIONES_EN_CAMPANITA = 10;
 
+/** A dónde va el click cuando el link de la notificación no sirve. */
+export const DESTINO_POR_DEFECTO = '/estudio';
+
+/**
+ * La ruta interna a la que puede llevar el click, o `/estudio`.
+ *
+ * Abrir una notificación es un `<form>` que **escribe y después redirige**, así
+ * que el `link` viaja en el POST y llega del cliente: un destino sin validar es
+ * un open redirect con la sesión del usuario puesta.
+ *
+ * El chequeo que había —`empieza con "/" y no con "//"`— dejaba pasar
+ * `/\evil.com`: **los navegadores normalizan la barra invertida a barra**
+ * (WHATWG URL), así que `/\evil.com` se resuelve igual que `//evil.com`, o sea
+ * `https://evil.com`. Por eso acá no hay lista de prefijos malos sino una
+ * forma permitida y angosta:
+ *
+ *  - arranca con `/` y el segundo carácter no es `/` ni `\` (nada de
+ *    protocol-relative, ni de su versión con backslash);
+ *  - no contiene `\` en ninguna posición, que es lo único que cierra las
+ *    variantes que todavía no se inventaron;
+ *  - no contiene caracteres de control ni espacios en blanco, que algunos
+ *    parsers recortan antes de resolver (`/\tjavascript:` y familia).
+ *
+ * Un `javascript:` o un `https://` no pasan solos: no empiezan con `/`.
+ */
+export function destinoInterno(link: string | null | undefined): string {
+  if (typeof link !== 'string') return DESTINO_POR_DEFECTO;
+  if (link.length < 1 || link.length > 2_000) return DESTINO_POR_DEFECTO;
+  if (link[0] !== '/') return DESTINO_POR_DEFECTO;
+  if (link[1] === '/' || link[1] === '\\') return DESTINO_POR_DEFECTO;
+  if (link.includes('\\')) return DESTINO_POR_DEFECTO;
+  // eslint-disable-next-line no-control-regex -- justamente los de control.
+  if (/[\u0000-\u0020\u007f]/.test(link)) return DESTINO_POR_DEFECTO;
+  return link;
+}
+
 export interface DatosNotificacion {
   titulo: string;
   cuerpo: string;
