@@ -54,6 +54,7 @@ import {
   desvincularItemsDeEntidades,
   recomputarObra,
 } from '@/lib/pipeline/recomputar';
+import { persistirResumen } from '@/lib/pipeline/resumen';
 import { getStorage, type StorageAdapter } from '@/lib/storage/index';
 import { DISCIPLINAS, TIPOS_LAMINA } from '@/types/domain';
 import type { BBox, EntidadDetectada, LaminaInput, RotuloDetectado } from '@/types/domain';
@@ -311,6 +312,30 @@ export async function procesarDocumento(
 
   for (const laminaId of aProcesar) {
     await procesarLamina(laminaId, entorno);
+  }
+
+  // RF-205: el resumen ejecutivo se rehace recién acá, con todas las láminas del
+  // documento analizadas y el cómputo ya sincronizado. Hacerlo por lámina sería
+  // publicar N resúmenes a medio hacer.
+  await resumirTolerante(db, obra.id);
+}
+
+/**
+ * Rehace el resumen sin arrastrar al documento si falla.
+ *
+ * Mismo criterio que `recomputarTolerante`: el análisis ya está guardado y el
+ * resumen es una vista derivada; que no se pueda regenerar es algo para mirar
+ * (queda en `auditoria`), no un motivo para marcar el documento como roto. La
+ * reparación es volver a correrlo: `persistirResumen` es idempotente.
+ */
+async function resumirTolerante(db: Db, obraId: string): Promise<void> {
+  try {
+    await persistirResumen(db, obraId);
+  } catch (error) {
+    await auditarAgente(obraId, 'resumen_fallido', `obras:${obraId}`, {
+      errorDetalle: detalleDeError(error),
+      motivo: 'El análisis terminó bien; el resumen ejecutivo quedó sin actualizar.',
+    });
   }
 }
 
