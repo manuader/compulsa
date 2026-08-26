@@ -1,0 +1,92 @@
+{
+  "lineas": [
+    {
+      "descripcion": "Placa de roca de yeso 12,5 mm (1,20 x 2,40)",
+      "unidad": "m2",
+      "cantidad": 31.68,
+      "precioUnitario": 8500,
+      "precioTotal": 269280,
+      "claveItemSugerida": null,
+      "notas": null
+    },
+    {
+      "descripcion": "Solera para tabique de ladrillo",
+      "unidad": "ml",
+      "cantidad": 10.4,
+      "precioUnitario": 6500,
+      "precioTotal": 67600,
+      "claveItemSugerida": null,
+      "notas": "Es la que tenemos en stock"
+    },
+    {
+      "descripcion": "Montante 70 mm para tabique de durlock, cada 0,40 m",
+      "unidad": "u",
+      "cantidad": 14,
+      "precioUnitario": 4200,
+      "precioTotal": 58800,
+      "claveItemSugerida": null,
+      "notas": null
+    },
+    {
+      "descripcion": "Tornillos T2 para placa de roca de yeso",
+      "unidad": "un.",
+      "cantidad": 500,
+      "precioUnitario": 60,
+      "precioTotal": 30000,
+      "claveItemSugerida": null,
+      "notas": null
+    },
+    {
+      "descripcion": "Masilla lista para juntas",
+      "unidad": "kg",
+      "cantidad": 30,
+      "precioUnitario": 4000,
+      "precioTotal": 120000,
+      "claveItemSugerida": null,
+      "notas": null
+    },
+    {
+      "descripcion": "Cinta de papel para juntas",
+      "unidad": "ml",
+      "cantidad": 90,
+      "precioUnitario": 500,
+      "precioTotal": 45000,
+      "claveItemSugerida": null,
+      "notas": null
+    },
+    {
+      "descripcion": "Perfil omega para cielorraso",
+      "unidad": "ml",
+      "cantidad": 26,
+      "precioUnitario": 3800,
+      "precioTotal": 98800,
+      "claveItemSugerida": null,
+      "notas": null
+    },
+    {
+      "descripcion": "Banda acústica autoadhesiva 70 mm",
+      "unidad": "ml",
+      "cantidad": 20,
+      "precioUnitario": 1500,
+      "precioTotal": 30000,
+      "claveItemSugerida": null,
+      "notas": null
+    },
+    {
+      "descripcion": "Lana de vidrio 50 mm para tabique",
+      "unidad": "m2",
+      "cantidad": 26,
+      "precioUnitario": 9000,
+      "precioTotal": 234000,
+      "claveItemSugerida": null,
+      "notas": null
+    }
+  ],
+  "metadatos": {
+    "total": 953480,
+    "incluyeIva": false,
+    "validezDias": 10,
+    "plazoDias": 15,
+    "formaPago": "50% anticipo y 50% contra entrega"
+  }
+}
