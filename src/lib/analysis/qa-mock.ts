@@ -182,7 +182,7 @@ function palabrasDe(texto: string): string[] {
 }
 
 /** Las palabras de la pregunta que vale la pena buscar (reglas 1 y 2). */
-export function terminosDeBusqueda(pregunta: string): string[] {
+function terminosDeBusqueda(pregunta: string): string[] {
   const vistos = new Set<string>();
   const terminos: string[] = [];
   for (const palabra of palabrasDe(pregunta)) {

@@ -551,13 +551,3 @@ export async function verificarComputo(
 
   return resultado;
 }
-
-/** Las consultas abiertas que dejó la última verificación. Las lee la pantalla. */
-export async function consultasDeVerificacion(db: Db, obraId: string): Promise<Hallazgo[]> {
-  const filas = await db
-    .select()
-    .from(hallazgos)
-    .where(and(eq(hallazgos.obraId, obraId), eq(hallazgos.estado, 'abierto')))
-    .orderBy(hallazgos.clave);
-  return filas.filter((fila) => fila.clave.startsWith(PREFIJO_VERIFICACION));
-}

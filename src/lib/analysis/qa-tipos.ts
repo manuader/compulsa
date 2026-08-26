@@ -91,11 +91,6 @@ export function respuestaVacia(): RespuestaQa {
   return { respuesta: SIN_RESPUESTA, citas: [] };
 }
 
-/** `true` si la respuesta es la de "no está en el expediente". */
-export function esSinRespuesta(respuesta: RespuestaQa): boolean {
-  return respuesta.citas.length === 0;
-}
-
 // ---------------------------------------------------------------------------
 // Normalización
 // ---------------------------------------------------------------------------
