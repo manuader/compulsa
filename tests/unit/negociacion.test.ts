@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { FRASES_PALANCA, type EntradaContraoferta, proponerContraoferta } from '@/lib/negociacion/motor';
-import type { Mandato } from '@/types/domain';
+import { CONDICIONES_RFQ_DEFAULT, type CondicionesRfq, type Mandato } from '@/types/domain';
+
+function condiciones(over: Partial<CondicionesRfq> = {}): CondicionesRfq {
+  return { ...CONDICIONES_RFQ_DEFAULT, ...over };
+}
 
 function mandato(over: Partial<Mandato> = {}): Mandato {
   return { objetivoMejoraPct: 5, palancas: ['volumen', 'plazo_pago'], maxRondas: 2, ...over };
@@ -16,6 +20,8 @@ function entrada(over: Partial<EntradaContraoferta> = {}): EntradaContraoferta {
     mandato: mandato(),
     proveedorNombre: 'Corralón San Martín',
     rubroNombre: 'Aberturas',
+    estudioNombre: 'Estudio Norte',
+    condiciones: condiciones({ separarManoObraMateriales: true }),
     ...over,
   };
 }
@@ -100,11 +106,17 @@ describe('proponerContraoferta — el texto', () => {
     return r.texto;
   }
 
-  it('se identifica como asistente del estudio y nombra proveedor y rubro (PRD §13)', () => {
+  it('se identifica con el NOMBRE del estudio y nombra proveedor y rubro (PRD §13)', () => {
     const texto = textoDe();
-    expect(texto).toContain('asistente del estudio');
+    // «el asistente del estudio» no le dice nada al proveedor: la contraoferta
+    // le llega por el mismo canal que el pedido, firmada igual que aquel.
+    expect(texto).toContain('asistente de Estudio Norte');
     expect(texto).toContain('Corralón San Martín');
     expect(texto).toContain('Aberturas');
+  });
+
+  it('sin nombre de estudio no se arma el texto: es un dato que falta, no uno degradado', () => {
+    expect(() => textoDe({ estudioNombre: '   ' })).toThrow(/nombre del estudio/);
   });
 
   it('usa SOLO las palancas del mandato', () => {
@@ -126,7 +138,7 @@ describe('proponerContraoferta — el texto', () => {
   it('sin palancas el pedido sale igual, pero sin ofrecer nada a cambio', () => {
     const texto = textoDe({ mandato: mandato({ palancas: [] }) });
     for (const frase of Object.values(FRASES_PALANCA)) expect(texto).not.toContain(frase);
-    expect(texto).toContain('asistente del estudio');
+    expect(texto).toContain('asistente de Estudio Norte');
   });
 
   it('dice el número cotizado y el objetivo, en formato es-AR', () => {
@@ -145,5 +157,19 @@ describe('proponerContraoferta — el texto', () => {
     const texto = textoDe();
     expect(texto).toContain('especificaciones');
     expect(texto).toContain('IVA discriminado');
+  });
+
+  it('solo repite lo de separar mano de obra si el pedido lo pidió así', () => {
+    // El IVA discriminado es del §13 y va siempre; separar mano de obra,
+    // materiales y flete depende de cómo se lanzó la compulsa, y prometerlo
+    // sobre un pedido que no lo pidió es cambiarle las condiciones al
+    // proveedor en el mensaje de la contraoferta.
+    expect(textoDe()).toContain('mano de obra, materiales y flete por separado');
+
+    const sinSeparar = textoDe({
+      condiciones: condiciones({ separarManoObraMateriales: false }),
+    });
+    expect(sinSeparar).toContain('IVA discriminado');
+    expect(sinSeparar).not.toContain('mano de obra');
   });
 });

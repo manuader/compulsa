@@ -19,7 +19,7 @@
  * Módulo puro: sin I/O, sin DB, sin red.
  */
 import { redondear2 } from '@/lib/computo/unidades';
-import type { Mandato } from '@/types/domain';
+import type { CondicionesRfq, Mandato } from '@/types/domain';
 
 type Palanca = Mandato['palancas'][number];
 
@@ -49,6 +49,20 @@ export interface EntradaContraoferta {
   mandato: Mandato;
   proveedorNombre: string;
   rubroNombre: string;
+  /**
+   * Quién escribe. El mensaje llega por WhatsApp o mail firmado por una persona
+   * que dice «soy el asistente del estudio»: sin el nombre, el proveedor no
+   * sabe de qué estudio le hablan. Es la misma identificación del §13 que exige
+   * `generarTextoRfq`, y por el mismo motivo es obligatoria.
+   */
+  estudioNombre: string;
+  /**
+   * Las condiciones con las que se pidió el precio. El texto **repite** las que
+   * no cambian, y no puede prometer una que el pedido no tenía: decir «con mano
+   * de obra, materiales y flete separados» sobre un pedido que no los separó es
+   * cambiarle las condiciones al proveedor en el mensaje de la contraoferta.
+   */
+  condiciones: CondicionesRfq;
 }
 
 /** Por qué el motor no contraoferta. */
@@ -74,20 +88,28 @@ function exigirMontoPositivo(n: number, que: string): void {
 }
 
 function armarTexto(entrada: EntradaContraoferta, objetivoTotal: number): string {
-  const { proveedorNombre, rubroNombre, totalCotizado, mandato } = entrada;
+  const { proveedorNombre, rubroNombre, totalCotizado, mandato, condiciones } = entrada;
+  const estudio = entrada.estudioNombre.trim();
   // Sin `Set` ni orden propio: se respeta el orden del mandato y se filtran
   // palancas desconocidas, para que el texto no pueda ofrecer nada de más.
   const frases = mandato.palancas.filter((p) => p in FRASES_PALANCA).map((p) => `- ${FRASES_PALANCA[p]}`);
 
   const bloques = [
-    `Hola, ${proveedorNombre}. Soy el asistente del estudio y estoy siguiendo la compulsa de ${rubroNombre}.`,
+    `Hola, ${proveedorNombre}. Soy el asistente de ${estudio} y estoy siguiendo la compulsa de ${rubroNombre}.`,
     `Tu cotización quedó en ${formatearMonto(totalCotizado)}. Para poder adjudicarte necesitamos llegar a ${formatearMonto(objetivoTotal)}.`,
   ];
   if (frases.length > 0) {
     bloques.push(['De nuestro lado podemos acompañarte con esto:', ...frases].join('\n'));
   }
+  // Las condiciones que se repiten son las del pedido, no una lista fija: el
+  // IVA discriminado sí es del §13 y no es opcional, pero lo de separar mano de
+  // obra, materiales y flete depende de cómo se lanzó la compulsa.
+  const comoSePidio = condiciones.separarManoObraMateriales
+    ? 'con IVA discriminado y con mano de obra, materiales y flete por separado'
+    : 'con IVA discriminado';
   bloques.push(
-    'Las especificaciones y los ítems del pedido no cambian: es el mismo listado que te pasamos, con IVA discriminado y con mano de obra, materiales y flete separados. Si querés proponer un cambio de especificación, decímelo y lo consulto con el estudio antes de avanzar.',
+    `Las especificaciones y los ítems del pedido no cambian: es el mismo listado que te pasamos, ${comoSePidio}. ` +
+      'Si querés proponer un cambio de especificación, decímelo y lo consulto con el estudio antes de avanzar.',
     '¿Lo podés revisar y confirmarme? Si no llegás a ese número, contame hasta dónde podés y lo llevo al estudio.',
   );
   return bloques.join('\n\n');
@@ -106,6 +128,12 @@ export function proponerContraoferta(entrada: EntradaContraoferta): ResultadoCon
   exigirMontoPositivo(mejorTotalComparable, 'El mejor total comparable');
   if (!Number.isInteger(ronda) || ronda < 1) {
     throw new Error(`La ronda de negociación tiene que ser un entero desde 1: ${String(ronda)}.`);
+  }
+  // Igual que en `generarTextoRfq`: un mensaje sin el nombre del estudio no
+  // cumple la identificación del §13, y eso es un error de programa —falta un
+  // dato que el llamador tiene— y no un texto que salga degradado.
+  if (entrada.estudioNombre.trim() === '') {
+    throw new Error('La contraoferta tiene que ir firmada por el estudio: falta el nombre del estudio.');
   }
   // Más estricto que `zMandato` (que acepta hasta 100): con 100 el objetivo da
   // 0 y el texto le pediría al proveedor que regale el rubro. Preferimos que

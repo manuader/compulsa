@@ -1279,6 +1279,11 @@ export async function proponerNegociacion(
     .where(eq(negociaciones.cotizacionId, cotizacion.id));
   const ronda = Number(rondasPrevias?.cuantas ?? 0) + 1;
 
+  // El nombre del estudio firma el mensaje, igual que en el pedido original
+  // (§13): el proveedor recibe la contraoferta por el mismo canal y tiene que
+  // saber de qué estudio le hablan.
+  const [estudio] = await db.select().from(estudios).where(eq(estudios.id, actor.estudioId));
+
   const decision = proponerContraoferta({
     totalCotizado: cotizacion.total,
     mejorTotalComparable,
@@ -1287,6 +1292,10 @@ export async function proponerNegociacion(
     mandato,
     proveedorNombre: contexto.proveedor.nombre,
     rubroNombre: PLANTILLAS[contexto.compulsa.rubro].nombre,
+    estudioNombre: estudio?.nombre ?? '',
+    // Las del snapshot, no las de la config de hoy: lo que el mensaje repite
+    // tiene que ser lo que se pidió (RF-701).
+    condiciones: contexto.compulsa.condicionesJson,
   });
 
   if (!decision.procede) {
