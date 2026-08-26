@@ -251,7 +251,10 @@ export async function importarProveedoresAction(entrada: unknown): Promise<Resul
         nuevos: resumen.nuevos,
         actualizados: resumen.actualizados,
         sinCambios: resumen.sinCambios,
-        errores,
+        // Los del parser (formato) y los de la persistencia (topes del dominio)
+        // son la misma cosa para el usuario: líneas que no entraron. Van juntos
+        // y ordenados por línea, como los ve en el archivo.
+        errores: [...errores, ...resumen.errores].sort((a, b) => a.linea - b.linea),
       },
     };
   } catch (error) {

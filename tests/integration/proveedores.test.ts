@@ -453,8 +453,83 @@ describe('import desde CSV', () => {
 
   it('un import de cero filas no audita nada', async () => {
     const resumen = await persistirImport(db, estudioId, [], actor);
-    expect(resumen).toMatchObject({ nuevos: 0, actualizados: 0, sinCambios: 0 });
+    expect(resumen).toMatchObject({ nuevos: 0, actualizados: 0, sinCambios: 0, errores: [] });
     expect(await auditoriaDe('proveedores_importados')).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Filas que pasan el parser y rebotan contra el dominio.
+  //
+  // `importarCsv` valida el formato; los topes de largo son de
+  // `zDatosProveedor`. La invariante que estos dos tests protegen es que
+  // `nuevos + actualizados + sinCambios + errores.length` da SIEMPRE el total
+  // de filas: ninguna se pierde sin dejar rastro.
+  // -------------------------------------------------------------------------
+
+  it('una fila con el nombre fuera de tope no se persiste, pero sale como error con su línea', async () => {
+    const largo = 'C'.repeat(200);
+    const { filas, errores: erroresDeFormato } = importarCsv(
+      [
+        'nombre,rubros,zona,telefono,email',
+        `${largo},gruesa,San Isidro,,`,
+        'Aberturas Sur,aberturas,Quilmes,,',
+      ].join('\n'),
+    );
+    // El parser no tiene nada que objetar: el largo no es cosa suya.
+    expect(erroresDeFormato).toEqual([]);
+    expect(filas).toHaveLength(2);
+
+    const resumen = await persistirImport(db, estudioId, filas, actor);
+
+    expect(resumen.nuevos).toBe(1);
+    expect(resumen.errores).toEqual([
+      { linea: 2, motivo: 'El nombre no puede pasar de 160 caracteres.' },
+    ]);
+    expect(resumen.nuevos + resumen.actualizados + resumen.sinCambios + resumen.errores.length).toBe(
+      filas.length,
+    );
+
+    const lista = await listarProveedores(db, estudioId);
+    expect(lista.map((p) => p.nombre)).toEqual(['Aberturas Sur']);
+    expect(await auditoriaDe('proveedor_creado')).toHaveLength(1);
+
+    // El rechazo también queda en el rastro de la corrida.
+    const [resumida] = await auditoriaDe('proveedores_importados');
+    expect(resumida.diffJson).toMatchObject({ filas: 2, nuevos: 1, rechazados: 1 });
+  });
+
+  it('el merge tampoco escribe datos fuera de tope: el existente queda intacto', async () => {
+    const creado = await crearProveedor(
+      db,
+      estudioId,
+      { nombre: 'Corralón del Norte', rubros: ['seco'], zona: 'San Isidro', telefono: '11-1111' },
+      actor,
+    );
+    expect(creado.ok).toBe(true);
+
+    // Un mail larguísimo con forma de mail: pasa el parser, no pasa el schema.
+    const mailLargo = `${'v'.repeat(200)}@corralon.ar`;
+    const { filas, errores: erroresDeFormato } = importarCsv(
+      [
+        'nombre,rubros,zona,telefono,email',
+        `Corralón del Norte,gruesa,San Isidro,,${mailLargo}`,
+      ].join('\n'),
+    );
+    expect(erroresDeFormato).toEqual([]);
+
+    const resumen = await persistirImport(db, estudioId, filas, actor);
+
+    expect(resumen).toMatchObject({ nuevos: 0, actualizados: 0, sinCambios: 0 });
+    expect(resumen.errores).toHaveLength(1);
+    expect(resumen.errores[0].linea).toBe(2);
+    expect(resumen.errores[0].motivo).toContain('Corralón del Norte');
+    expect(resumen.errores[0].motivo).toContain('El mail no puede pasar de 160 caracteres.');
+
+    // Ni el mail entró ni el rubro nuevo se coló por la puerta de atrás.
+    const [sinTocar] = await listarProveedores(db, estudioId);
+    expect(sinTocar.rubros).toEqual(['seco']);
+    expect(sinTocar.contactosJson).toEqual({ telefono: '11-1111' });
+    expect(await auditoriaDe('proveedor_editado')).toHaveLength(0);
   });
 });
 

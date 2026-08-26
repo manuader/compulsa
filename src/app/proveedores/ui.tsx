@@ -642,6 +642,18 @@ export function ImportadorCsv() {
               .
             </p>
           ) : null}
+          {/* Las líneas que no entraron se listan con su número: el textarea ya
+              se vació, así que este es el único lugar donde el usuario puede ver
+              qué le falta arreglar antes de volver a pegarlas. */}
+          {resumen.errores.length > 0 ? (
+            <ul className="mt-2 flex flex-col gap-1 text-red-800">
+              {resumen.errores.map((problema) => (
+                <li key={problema.linea}>
+                  <span className="font-medium">Línea {problema.linea}:</span> {problema.motivo}
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <p className="mt-2">
             <Link href="/proveedores" className="font-medium underline">
               Ver la agenda
@@ -703,8 +715,8 @@ export function ImportadorCsv() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {filas.map((fila, indice) => (
-                  <TableRow key={`${fila.nombre}-${indice}`}>
+                {filas.map((fila) => (
+                  <TableRow key={fila.linea}>
                     <TableCell>{fila.nombre}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">

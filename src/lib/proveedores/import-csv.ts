@@ -31,8 +31,17 @@
  */
 import { RUBROS, type RubroId } from '@/types/domain';
 
-/** Una fila válida del CSV, lista para `persistirImport`. */
+/**
+ * Una fila válida del CSV, lista para `persistirImport`.
+ *
+ * Se lleva su `linea` puesta: `persistirImport` valida de nuevo con el schema
+ * del dominio (que sí capea largos) y necesita poder decir **qué línea del
+ * archivo** rechazó. Sin este campo, un error de persistencia solo podría
+ * nombrar un índice del array, que no es lo que el usuario tiene en pantalla.
+ */
 export interface FilaProveedor {
+  /** Número de línea **del archivo** de la que salió (cabecera = 1). */
+  linea: number;
   nombre: string;
   rubros: RubroId[];
   zona: string;
@@ -264,6 +273,7 @@ export function importarCsv(texto: string): ResultadoImport {
     const telefono = leer('telefono');
 
     filas.push({
+      linea: numero,
       nombre,
       rubros: rubros.rubros,
       zona,

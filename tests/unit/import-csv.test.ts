@@ -22,6 +22,9 @@ describe('cabecera y separador', () => {
     expect(errores).toEqual([]);
     expect(filas).toEqual([
       {
+        // La fila se lleva su línea puesta: `persistirImport` la necesita para
+        // decir cuál rechazó cuando rebota contra los topes del dominio.
+        linea: 2,
         nombre: 'Corralón del Norte',
         rubros: ['gruesa', 'seco'],
         zona: 'San Isidro',
@@ -56,6 +59,7 @@ describe('cabecera y separador', () => {
     expect(errores).toEqual([]);
     expect(filas).toEqual([
       {
+        linea: 2,
         nombre: 'Vidriería Central',
         rubros: ['aberturas', 'pintura'],
         zona: 'CABA',
@@ -83,7 +87,14 @@ describe('cabecera y separador', () => {
 
     expect(errores).toEqual([]);
     expect(filas).toEqual([
-      { nombre: 'Seco Express', rubros: ['seco'], zona: 'Tigre', telefono: null, email: null },
+      {
+        linea: 2,
+        nombre: 'Seco Express',
+        rubros: ['seco'],
+        zona: 'Tigre',
+        telefono: null,
+        email: null,
+      },
     ]);
   });
 
@@ -119,6 +130,9 @@ describe('validación por línea', () => {
     );
 
     expect(filas.map((f) => f.nombre)).toEqual(['Corralón del Norte', 'Aberturas Sur']);
+    // La línea que se lleva cada fila es la del archivo, no su posición en el
+    // array: la buena que sigue a una mala es la 4, no la 3.
+    expect(filas.map((f) => f.linea)).toEqual([2, 4]);
     expect(errores).toEqual([
       { linea: 3, motivo: 'Falta el nombre del proveedor.' },
     ]);

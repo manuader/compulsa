@@ -49,7 +49,11 @@ import { esUuid } from '@/lib/auth/guards';
 // campo. Vive en `obras/schema` porque ahí se necesitó primero; no tiene nada de
 // obra adentro. TODO(P7): mudarlo a un `src/lib/forms.ts` compartido.
 import { erroresPorCampo } from '@/lib/obras/schema';
-import { normalizarNombre, type FilaProveedor } from '@/lib/proveedores/import-csv';
+import {
+  normalizarNombre,
+  type ErrorImport,
+  type FilaProveedor,
+} from '@/lib/proveedores/import-csv';
 import { RUBROS, type RubroId } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
@@ -105,6 +109,14 @@ export interface ResumenImport {
   actualizados: number;
   /** Filas que ya estaban tal cual: ni escritura ni auditoría. */
   sinCambios: number;
+  /**
+   * Filas que pasaron el parser pero rebotaron contra el schema del dominio
+   * (topes de largo). Van con el número de línea del archivo.
+   *
+   * La cuenta cierra: `nuevos + actualizados + sinCambios + errores.length`
+   * es siempre el total de filas que entraron.
+   */
+  errores: ErrorImport[];
   proveedores: Proveedor[];
 }
 
@@ -255,6 +267,23 @@ function contactosDePayload(datos: Partial<Record<ClaveContacto, string | null |
     if (typeof valor === 'string' && valor.trim() !== '') contactos[clave] = valor.trim();
   }
   return contactos;
+}
+
+/**
+ * Cuántos errores del import entran en el diff de la auditoría. Más que esto no
+ * es un rastro, es un volcado (misma regla que las refs de `eliminarObra`).
+ */
+const MAX_ERRORES_AUDITADOS = 50;
+
+/**
+ * Los mensajes de validación de un formulario, en una sola línea legible.
+ *
+ * El import no tiene dónde poner un error por campo —su unidad es la línea del
+ * archivo—, así que los junta. Son los mismos textos en castellano que la
+ * pantalla de alta muestra debajo de cada input.
+ */
+function motivoDeCampos(errores: Record<string, string>): string {
+  return Object.values(errores).join(' ');
 }
 
 function igualesContactos(a: ContactosProveedor, b: ContactosProveedor): boolean {
@@ -566,6 +595,24 @@ export async function marcarOptOut(
  * Una fila que no cambia nada no escribe ni audita: por eso el resumen distingue
  * `actualizados` de `sinCambios`, que es lo que la pantalla necesita para no
  * mentir con un "2 actualizados" cuando no tocó nada.
+ *
+ * ## Ninguna fila desaparece en silencio
+ *
+ * `importarCsv` valida el **formato** (columnas, rubros que existen, mail con
+ * forma de mail) y no los **topes de largo**, que son del dominio y viven en
+ * `zDatosProveedor`. Así que una fila puede pasar el parser y rebotar acá: un
+ * nombre de 200 caracteres, una zona de 300, un teléfono interminable.
+ *
+ * Esas filas salen en `resumen.errores` con su número de línea y el motivo en
+ * castellano — **no** se saltean calladas. Es la misma promesa que hace el
+ * parser ("una línea mala no rompe el archivo") llevada hasta el final: si
+ * `nuevos + actualizados + sinCambios + errores.length` no diera el total de
+ * filas, el resumen de la pantalla estaría mintiendo.
+ *
+ * Los topes no se duplican en `import-csv.ts` a propósito: habría dos fuentes
+ * de verdad para el mismo límite y una se atrasaría. El schema del dominio es
+ * la única, y el import la consulta —para el alta **y para el merge**, que
+ * escribe rubros y contactos que también tienen que pasar por ella—.
  */
 export async function persistirImport(
   db: Db,
@@ -575,7 +622,13 @@ export async function persistirImport(
 ): Promise<ResumenImport> {
   requireRolCore(actor, 'colaborador');
 
-  const resumen: ResumenImport = { nuevos: 0, actualizados: 0, sinCambios: 0, proveedores: [] };
+  const resumen: ResumenImport = {
+    nuevos: 0,
+    actualizados: 0,
+    sinCambios: 0,
+    errores: [],
+    proveedores: [],
+  };
   if (filas.length === 0) return resumen;
 
   const agenda = await db.select().from(proveedores).where(eq(proveedores.estudioId, estudioId));
@@ -599,9 +652,13 @@ export async function persistirImport(
         actor,
         'agenda',
       );
-      // `importarCsv` ya validó lo mismo que el schema; si igual rebota, la fila
-      // se saltea sin romper el import entero (la misma regla que el parser).
-      if (!alta.ok) continue;
+      // El parser no capea largos; el schema del dominio sí. Una fila que rebota
+      // acá no rompe el import, pero tampoco desaparece: sale como error con su
+      // línea.
+      if (!alta.ok) {
+        resumen.errores.push({ linea: fila.linea, motivo: motivoDeCampos(alta.errores) });
+        continue;
+      }
 
       porNombre.set(clave, alta.proveedor);
       resumen.proveedores.push(alta.proveedor);
@@ -623,6 +680,26 @@ export async function persistirImport(
 
     if (!cambioRubros && !cambioContactos) {
       resumen.sinCambios += 1;
+      resumen.proveedores.push(existente);
+      continue;
+    }
+
+    // El merge escribe rubros y contactos, así que pasa por el MISMO schema que
+    // el alta: sin esto, un mail de 300 caracteres que el parser deja pasar
+    // entraría por la puerta de atrás solo porque el proveedor ya existía.
+    const validacion = zDatosProveedor.safeParse({
+      nombre: existente.nombre,
+      rubros,
+      zona: existente.zona,
+      ...contactos,
+    });
+    if (!validacion.success) {
+      resumen.errores.push({
+        linea: fila.linea,
+        motivo: `«${existente.nombre}» ya estaba en la agenda y no pude actualizarlo: ${motivoDeCampos(
+          erroresPorCampo(validacion.error),
+        )}`,
+      });
       resumen.proveedores.push(existente);
       continue;
     }
@@ -650,6 +727,11 @@ export async function persistirImport(
     nuevos: resumen.nuevos,
     actualizados: resumen.actualizados,
     sinCambios: resumen.sinCambios,
+    // Las filas rechazadas también quedan en el rastro: si alguien pregunta
+    // después por qué su proveedor no está, la respuesta está en la auditoría y
+    // no solo en una pantalla que ya se cerró.
+    rechazados: resumen.errores.length,
+    errores: resumen.errores.slice(0, MAX_ERRORES_AUDITADOS),
   });
 
   return resumen;
