@@ -29,11 +29,12 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { resetDb, setDbForTests, type Db } from '@/db/client';
-import { computoItems, estudios, obras, usuarios } from '@/db/schema';
+import { computoItems, deducciones, estudios, obras, usuarios } from '@/db/schema';
 import { crearProviderMock } from '@/lib/analysis/mock';
+import { validarDeduccion } from '@/lib/deduccion/persistencia';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import { crearStorageLocal } from '@/lib/storage/local';
-import { RUBROS, TIPOS_OBRA, type RubroId } from '@/types/domain';
+import { RUBROS, TIPOS_OBRA, type Origen, type RubroId } from '@/types/domain';
 
 import { createTestDb } from '../tests/helpers/test-db';
 
@@ -58,6 +59,18 @@ const zConfig = z.object({
   zona: z.string().trim().min(1).default('CABA'),
   /** Rutas relativas a la raíz del repo. */
   documentos: z.array(z.string().trim().min(1)).min(1),
+  /**
+   * Paso opcional entre el análisis y la comparación: **validar todas las
+   * deducciones que el motor propuso** (§11), como haría el arquitecto en la
+   * bandeja, y recomputar.
+   *
+   * Existe porque un caso que ejercita la deducción no se puede medir sin ese
+   * clic: mientras la propuesta está sin validar, el dato no está en la entidad
+   * y el ítem no sale. Se valida con el mismo núcleo que la pantalla
+   * (`validarDeduccion`), no escribiendo la entidad a mano, así que lo que el
+   * golden mide es el camino real.
+   */
+  validarDeducciones: z.boolean().default(false),
 });
 
 export type ConfigGolden = z.infer<typeof zConfig>;
@@ -117,6 +130,14 @@ export interface ResultadoGolden {
   extras: string[];
   porRubro: FilaRubro[];
   ok: boolean;
+  /**
+   * `claveItem → origen` de lo que emitió el pipeline. No entra en el contrato
+   * de precisión —el 2 % de RNF-1 se mide sobre `cantCompra`— pero un caso que
+   * ejercita la deducción necesita poder afirmar que el ítem salió `deducido`:
+   * la cantidad sola no lo distingue de un ítem explícito que dio el mismo
+   * número. Vacío en la comparación pura, que no corre el pipeline.
+   */
+  origenes: Record<string, Origen>;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +219,7 @@ export function compararComputo(
     extras.length === 0 &&
     porRubro.every((fila) => fila.errorProm <= UMBRAL_ERROR_RUBRO);
 
-  return { caso, config, comparaciones, ausentes: ausentes.sort(), extras, porRubro, ok };
+  return { caso, config, comparaciones, ausentes: ausentes.sort(), extras, porRubro, ok, origenes: {} };
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +280,45 @@ async function armarObra(db: Db, config: ConfigGolden) {
 }
 
 /**
+ * Valida, una por una, todas las deducciones que el motor dejó en `propuesta`.
+ *
+ * Se relee la tabla después de cada validación porque validar recomputa la obra,
+ * y un recompute puede retirar una propuesta que dejó de sostenerse: quedarse
+ * con la lista de la primera lectura llevaría a validar un id que ya no está.
+ * El tope de vueltas es una red de seguridad contra un ciclo, no una regla del
+ * dominio.
+ */
+async function validarDeduccionesPropuestas(
+  db: Db,
+  obraId: string,
+  actor: { usuarioId: string; email: string },
+): Promise<number> {
+  const TOPE = 100;
+  let validadas = 0;
+
+  for (let vuelta = 0; vuelta < TOPE; vuelta += 1) {
+    const [propuesta] = await db
+      .select({ id: deducciones.id, campo: deducciones.campo })
+      .from(deducciones)
+      .where(and(eq(deducciones.obraId, obraId), eq(deducciones.estado, 'propuesta')))
+      .orderBy(deducciones.campo)
+      .limit(1);
+    if (!propuesta) return validadas;
+
+    const resultado = await validarDeduccion(
+      { obraId, deduccionId: propuesta.id },
+      { ...actor, rol: 'titular' },
+    );
+    if (!resultado.ok) {
+      throw new Error(`No pude validar la deducción de "${propuesta.campo}": ${resultado.error}`);
+    }
+    validadas += 1;
+  }
+
+  throw new Error(`Más de ${TOPE} deducciones propuestas: algo está en loop.`);
+}
+
+/**
  * Corre un caso del golden set de punta a punta y devuelve la comparación.
  *
  * Monta su propia base en memoria y su propio storage temporal: no toca
@@ -291,13 +351,27 @@ export async function correrCasoGolden(caso: string): Promise<ResultadoGolden> {
       await procesarDocumento(documento.id, { db, storage, provider });
     }
 
+    if (config.validarDeducciones) {
+      await validarDeduccionesPropuestas(db, obra.id, {
+        usuarioId: usuario.id,
+        email: usuario.email,
+      });
+    }
+
     const filas = await db
-      .select({ claveItem: computoItems.claveItem, cantCompra: computoItems.cantCompra })
+      .select({
+        claveItem: computoItems.claveItem,
+        cantCompra: computoItems.cantCompra,
+        origen: computoItems.origen,
+      })
       .from(computoItems)
       .where(and(eq(computoItems.obraId, obra.id), eq(computoItems.estado, 'activo')));
 
     const reales = new Map(filas.map((fila) => [fila.claveItem, fila.cantCompra]));
-    return compararComputo(caso, config, esperados, reales);
+    return {
+      ...compararComputo(caso, config, esperados, reales),
+      origenes: Object.fromEntries(filas.map((fila) => [fila.claveItem, fila.origen])),
+    };
   } finally {
     await rm(raizStorage, { recursive: true, force: true });
     resetDb();

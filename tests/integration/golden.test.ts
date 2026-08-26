@@ -50,6 +50,7 @@ const CONFIG_DEMO: ConfigGolden = {
   tipoObra: 'nueva',
   zona: 'CABA',
   documentos: ['tests/fixtures/pdfs/obra-demo.pdf'],
+  validarDeducciones: false,
 };
 
 function esperado(claveItem: string, cantCompra: number): ItemEsperado {
@@ -61,7 +62,7 @@ describe('golden set — corrida real del pipeline', () => {
     'todos los casos quedan dentro del contrato de precisión (RNF-1)',
     async () => {
       const casos = await listarCasosGolden();
-      expect(casos).toContain('obra-demo');
+      expect(casos).toEqual(['obra-demo', 'obra-reforma']);
 
       for (const caso of casos) {
         const resultado = await correr(caso);
@@ -115,6 +116,40 @@ describe('golden set — corrida real del pipeline', () => {
       expect(reales.get('gruesa.cemento')).toBe(150);
       expect(reales.get('gruesa.cal')).toBe(200);
       expect(reales.get('gruesa.arena')).toBe(1);
+    },
+    TIMEOUT_MS,
+  );
+
+  it(
+    'obra-reforma computa los 10 ítems de una reforma con deducción validada',
+    async () => {
+      const resultado = await correr('obra-reforma');
+
+      expect(resultado.comparaciones).toHaveLength(10);
+      expect(resultado.porRubro.map((f) => [f.rubro, f.items])).toEqual([
+        ['aberturas', 1],
+        ['seco', 6],
+        ['pintura', 2],
+        ['gruesa', 1],
+      ]);
+      expect(resultado.comparaciones.filter((c) => c.error !== 0)).toEqual([]);
+
+      const reales = new Map(resultado.comparaciones.map((c) => [c.claveItem, c.real]));
+      // La ventana sin acotar en la planta: la deducción «planilla ↔ plano»
+      // validada le da las medidas, y es UNA sola (la planilla no suma).
+      expect(reales.get('aberturas.V5')).toBe(1);
+      // El origen es lo que prueba que la deducción corrió: la cantidad sola no
+      // distingue "salió de la deducción" de "salió solo de la planilla".
+      expect(resultado.origenes['aberturas.V5']).toBe('deducido');
+      expect(resultado.origenes['gruesa.demolicion']).toBe('explicito');
+      // El tabique existente no aporta un metro: 4 × 2,50 × 2 = 20 m², no 35.
+      expect(reales.get('seco.placas')).toBe(23.04);
+      expect(reales.get('seco.montantes')).toBe(11);
+      // El muro a demoler no compra materiales, solo m² de demolición.
+      expect(reales.get('gruesa.demolicion')).toBe(10.4);
+      expect(reales.get('gruesa.ladrillos')).toBeUndefined();
+      expect(reales.get('pintura.latex_paredes')).toBe(6);
+      expect(reales.get('pintura.latex_cielorrasos')).toBe(2);
     },
     TIMEOUT_MS,
   );

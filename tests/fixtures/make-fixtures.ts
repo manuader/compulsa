@@ -1,12 +1,14 @@
 /**
  * Generador de fixtures sintéticos: `npm run fixtures`.
  *
- * Escribe dos cosas que los tests dan por existentes (y que están commiteadas,
- * para que la suite no dependa de regenerarlas):
+ * Escribe lo que los tests dan por existente (y que está commiteado, para que la
+ * suite no dependa de regenerarlo):
  *
- *   tests/fixtures/pdfs/obra-demo.pdf    3 páginas A4 apaisado (planta, corte, planilla)
- *   tests/fixtures/pdfs/sin-escala.pdf   1 página sin escala declarada
- *   tests/fixtures/analysis/obra-demo-p1..p3.json   qué "ve" el provider mock en cada página
+ *   tests/fixtures/pdfs/obra-demo.pdf     3 páginas A4 apaisado (planta, corte, planilla)
+ *   tests/fixtures/pdfs/obra-reforma.pdf  2 páginas (planta de reforma, planilla)
+ *   tests/fixtures/pdfs/sin-escala.pdf    1 página sin escala declarada
+ *   tests/fixtures/analysis/obra-demo-p1..p3.json     qué "ve" el provider mock
+ *   tests/fixtures/analysis/obra-reforma-p1..p2.json  ídem, para el golden 2
  *
  * `sin-escala.pdf` NO tiene fixture de análisis a propósito: es el caso que
  * ejercita el bloqueo por escala del pipeline (RF-201).
@@ -183,6 +185,104 @@ const LAMINAS: Lamina[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// obra-reforma.pdf — el segundo caso del golden set (tests/golden/obra-reforma)
+//
+// Ejercita tres cosas que `obra-demo` no toca, todas de F2/§11:
+//
+//   · un muro a demoler (M1, 4 × 2,60 m) ⇒ solo `gruesa.demolicion`;
+//   · un tabique EXISTENTE (T9) que no computa nada, al lado de uno nuevo (T2);
+//   · una ventana (V5) dibujada en la planta SIN medidas y listada en la
+//     planilla CON medidas ⇒ deducción `planilla_plano`. Validada, el ítem sale
+//     con `origen: 'deducido'` y con la cantidad de la planta (una sola V5, no
+//     dos: la planilla especifica, no suma).
+// ---------------------------------------------------------------------------
+
+const R1: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANTA REFORMA',
+    codigo: 'A-01',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planta',
+    escala: '1:50',
+    escalaConfiable: true,
+    revision: '1',
+    confianza: 0.94,
+  },
+  entidades: [
+    {
+      tipo: 'muro',
+      nombre: 'M1',
+      bbox: [0.06, 0.18, 0.02, 0.4],
+      confianza: 0.9,
+      estadoReforma: 'demoler',
+      atributos: { tipo: 'mamposteria', largoM: 4, alturaM: 2.6 },
+    },
+    {
+      tipo: 'tabique',
+      nombre: 'T9',
+      bbox: [0.12, 0.62, 0.28, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'existente',
+      atributos: { tipo: 'durlock', largoM: 3, alturaM: 2.5, caras: 2 },
+    },
+    {
+      tipo: 'tabique',
+      nombre: 'T2',
+      bbox: [0.44, 0.2, 0.02, 0.42],
+      confianza: 0.9,
+      estadoReforma: 'nueva',
+      atributos: { tipo: 'durlock', largoM: 4, alturaM: 2.5, caras: 2 },
+    },
+    {
+      // Sin `anchoM` ni `altoM`: en el plano la ventana no está acotada.
+      tipo: 'abertura',
+      nombre: 'V5',
+      bbox: [0.18, 0.16, 0.1, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'nueva',
+      atributos: { tag: 'V5', tipologia: 'ventana' },
+    },
+    {
+      tipo: 'ambiente',
+      nombre: 'Cocina',
+      bbox: [0.12, 0.24, 0.28, 0.32],
+      confianza: 0.92,
+      estadoReforma: 'nueva',
+      atributos: { superficieM2: 9, perimetroM: 12, alturaM: 2.5, vanosM2: 2 },
+    },
+  ],
+};
+
+const R2: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANILLA DE CARPINTERÍAS',
+    codigo: 'A-05',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planilla',
+    escala: null,
+    escalaConfiable: true,
+    revision: '1',
+    confianza: 0.9,
+  },
+  entidades: [
+    {
+      // La misma V5, acá sí acotada. No es una segunda ventana.
+      tipo: 'abertura',
+      nombre: 'V5',
+      bbox: [0.1, 0.3, 0.6, 0.1],
+      confianza: 0.9,
+      estadoReforma: 'nueva',
+      atributos: { tag: 'V5', tipologia: 'ventana', anchoM: 1.2, altoM: 1 },
+    },
+  ],
+};
+
+const LAMINAS_REFORMA: Lamina[] = [
+  { clave: 'obra-reforma-p1', encabezado: 'PLANTA REFORMA — 1:50', analisis: R1 },
+  { clave: 'obra-reforma-p2', encabezado: 'PLANILLA DE CARPINTERÍAS', analisis: R2 },
+];
+
+// ---------------------------------------------------------------------------
 // Dibujo
 // ---------------------------------------------------------------------------
 
@@ -266,10 +366,11 @@ async function nuevoDocumento(): Promise<PDFDocument> {
   return doc;
 }
 
-async function obraDemo(): Promise<Uint8Array> {
+/** Un PDF con una página por lámina, en orden. */
+async function documentoDe(laminas: readonly Lamina[]): Promise<Uint8Array> {
   const doc = await nuevoDocumento();
   const font = doc.embedStandardFont(StandardFonts.Helvetica);
-  for (const lamina of LAMINAS) {
+  for (const lamina of laminas) {
     dibujarLamina(doc.addPage([ANCHO, ALTO]), font, lamina);
   }
   return doc.save();
@@ -320,7 +421,8 @@ async function main(): Promise<void> {
   const escritos: string[] = [];
 
   const pdfs: Array<[string, Uint8Array]> = [
-    ['obra-demo.pdf', await obraDemo()],
+    ['obra-demo.pdf', await documentoDe(LAMINAS)],
+    ['obra-reforma.pdf', await documentoDe(LAMINAS_REFORMA)],
     ['sin-escala.pdf', await sinEscala()],
   ];
   for (const [nombre, bytes] of pdfs) {
@@ -329,7 +431,7 @@ async function main(): Promise<void> {
     escritos.push(`${fileURLToPath(destino)} (${bytes.length} bytes)`);
   }
 
-  for (const lamina of LAMINAS) {
+  for (const lamina of [...LAMINAS, ...LAMINAS_REFORMA]) {
     // Los fixtures son el contrato de los tests: si no validan, no se escriben.
     const analisis = zAnalisisLamina.parse(lamina.analisis);
     const destino = new URL(`${lamina.clave}.json`, DIR_ANALISIS);
