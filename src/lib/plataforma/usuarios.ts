@@ -152,7 +152,7 @@ export async function crearInvitacion(
   return invitacion;
 }
 
-/** Las invitaciones del estudio, de la más nueva a la más vieja. */
+/** Las invitaciones del estudio, en el orden en que se generaron. */
 export function listarInvitaciones(db: Db, estudioId: string): Promise<Invitacion[]> {
   return db
     .select()
