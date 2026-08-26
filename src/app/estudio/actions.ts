@@ -240,6 +240,9 @@ export async function guardarConfigAction(
         ? 0
         : await recomputarObrasDelEstudio(quien.estudioId, { db });
 
+    // `/obras` porque el recompute movió cantidades de compra que se ven en el
+    // tablero de cada obra. Las pantallas de adentro leen la cookie de sesión y
+    // ya se renderizan dinámicas, así que esto es cinturón sobre tirantes.
     await revalidar('/estudio/configuracion', '/obras');
     return {
       mensaje:
