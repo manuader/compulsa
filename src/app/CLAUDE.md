@@ -1,6 +1,6 @@
 # CLAUDE.md — src/app (workspace UI + API)
 
-El workspace del arquitecto (PRD §8). Ocho pantallas previstas; en F0 existen: tablero de obra, expediente, visor de láminas, planilla de cómputo y bandeja de consultas.
+El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más la agenda de proveedores y las tres del estudio.
 
 ## Reglas de UI
 
@@ -16,13 +16,66 @@ El workspace del arquitecto (PRD §8). Ocho pantallas previstas; en F0 existen: 
 ## Mapa de rutas
 
 ```
-/login, /register            auth
-/obras                       lista + crear
-/obras/[obraId]              tablero (estado por rubro, huecos abiertos, accesos)
-/obras/[obraId]/expediente   documentos y láminas (upload, clasificación, estados)
-/obras/[obraId]/laminas/[laminaId]  visor (pdf.js + overlay SVG de entidades/hallazgos)
-/obras/[obraId]/computo      planilla por rubro (grilla editable, aprobar rubro, export)
-/obras/[obraId]/bandeja      bandeja de consultas (hallazgos con acciones de un click)
-/obras/[obraId]/deducciones  bandeja de deducciones (propuestas del motor §11, validar/rechazar)
-/api/...                     route handlers (upload, pipeline, export, memoria, planilla derivada)
+/                                   redirige a /obras (el middleware manda a /login sin sesión)
+/login, /register                   auth (register acepta código de invitación)
+
+/obras                              lista + crear
+/obras/nueva                        alta de obra
+
+/obras/[obraId]                     tablero (rubros, huecos, compulsas, ahorro, accesos)
+       /expediente                  documentos y láminas (upload, clasificación, estados),
+                                    resumen ejecutivo, «Preguntale al expediente» (RF-106)
+                                    y «Qué cambió» (historial de recomputos)
+       /laminas/[laminaId]          visor (pdf.js + overlay SVG de entidades/hallazgos)
+       /computo                     planilla por rubro (grilla editable, aprobar rubro,
+                                    export, «Verificar cómputo» RF-306)
+       /bandeja                     bandeja de consultas (hallazgos con acciones de un click)
+       /deducciones                 bandeja de deducciones (propuestas del motor §11,
+                                    validar/rechazar, memoria .md y planilla derivada .xlsx)
+       /compulsas                   las compulsas del rubro, con su versión y su hash
+       /compulsas/nueva             wizard de armado (rubro aprobado → snapshot → shortlist)
+       /compulsas/[compulsaId]      lo que se pidió, y proveedor por proveedor: timeline,
+                                    cotización con score, banderas de sustitución, repreguntas,
+                                    registrar respuesta con preview, proponer negociación
+       /conversaciones              todos los hilos de la obra
+       /conversaciones/[contactoId] un hilo, con registro de mensajes entrantes
+       /comparativa                 cuadro ítems × proveedores, ranking, benchmark,
+                                    adjudicar y orden de compra
+       /config                      datos de la obra, archivar y eliminar
+
+/proveedores                        agenda del estudio (filtros por rubro y zona, opt-in WA)
+/proveedores/nuevo                  alta a mano
+/proveedores/importar               import CSV con preview y errores por línea
+
+/estudio                            ahorro acumulado, accesos y notificaciones
+/estudio/usuarios                   invitaciones, roles y bajas (solo titular)
+/estudio/configuracion              desperdicios, condiciones, mandato, pesos, MEP, checklists
+/estudio/auditoria                  auditoría del estudio, paginada por cursor
+
+/api/archivos/[...ref]                              descarga de archivos del estudio
+/api/laminas/[laminaId]                             reclasificar / confirmar escala
+/api/laminas/[laminaId]/procesar                    reproceso de una lámina
+/api/obras/[obraId]/documentos                      upload y borrado de documentos
+/api/obras/[obraId]/export                          XLSX del cómputo (consolidado o por rubro)
+/api/obras/[obraId]/planilla-carpinterias           XLSX de la planilla derivada
+/api/obras/[obraId]/deducciones/memoria             memoria de deducciones (.md)
+/api/obras/[obraId]/compulsas/[compulsaId]/reporte  comparativa (.xlsx) y orden de compra (.pdf,
+                                                    con `?documento=orden-compra`)
 ```
+
+## Dónde vive cada cosa
+
+- **Las pantallas son Server Components** y leen con `getDb()`. La interactividad vive en un
+  `ui.tsx` al lado (`"use client"`), que recibe **solo datos serializables y ya formateados**: si un
+  número tiene que salir en es-AR, se formatea en el server, no con el `toString()` de JS.
+- **Las mutaciones son Server Actions** en el `actions.ts` de cada carpeta. En un archivo
+  `'use server'` **todo export es un endpoint HTTP**, así que ahí van los envoltorios —sesión, obra
+  del estudio, actor con el rol de la sesión, `revalidatePath`— y la lógica vive en `src/lib/`.
+  Y **solo se pueden exportar funciones `async`**: una clase o una constante exportada de ahí rompe
+  el build entero (lo guarda `tests/unit/exports-de-next.test.ts`).
+- **Las descargas son route handlers** de `src/app/api/`, porque devuelven bytes con
+  `Content-Disposition`. Un `route.ts` solo exporta los verbos HTTP y las opciones de segmento.
+- **El rol se pide en el núcleo, no en la pantalla.** Esconder un botón que el server va a rechazar
+  es **cortesía** —y hay que hacerla: ofrecerle a un colaborador un «Adjudicar» que va a fallar es
+  mentirle—, pero la autorización la exige `requireAccion` adentro del core, porque todo `*Action`
+  es un endpoint que se puede invocar sin pasar por la pantalla.
