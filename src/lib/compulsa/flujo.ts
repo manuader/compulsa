@@ -67,6 +67,7 @@ import {
 import {
   getPresupuestoProvider,
   METADATOS_VACIOS,
+  sanearPresupuesto,
   type MetadatosPresupuesto,
   type PresupuestoProvider,
 } from '@/lib/analysis/presupuesto-tipos';
@@ -870,6 +871,11 @@ function metadatosPisados(
  * `entrada.lineas` gana sobre `entrada.texto`: si la UI ya mostró el preview y
  * el usuario lo confirmó (o lo corrigió), eso es lo que se guarda — volver a
  * parsear pisaría la corrección.
+ *
+ * Los tres caminos —provider, líneas ya parseadas y correcciones a mano— pasan
+ * por el **mismo** `sanearPresupuesto` antes de escribir: un total negativo o
+ * una línea sin descripción no entran a la base por venir de un formulario en
+ * vez de un LLM.
  */
 export async function registrarCotizacion(
   db: Db,
@@ -907,6 +913,25 @@ export async function registrarCotizacion(
 
   metadatos = metadatosPisados(metadatos, entrada.metadatos);
 
+  // El saneo es del **borde de escritura**, no del provider: las líneas ya
+  // parseadas y las correcciones a mano entran por la puerta de al lado y
+  // tienen que pasar por el mismo control. Un total negativo, un `validezDias`
+  // en 0 o una línea sin descripción no se persisten venga de donde venga —si
+  // no, viajan hasta la comparativa de P9 y hasta el índice de precios, que es
+  // lo que `acumularMuestra` (P2b) no tolera.
+  //
+  // La política es la de `sanearPresupuesto`: lo imposible **se anula**, no se
+  // rechaza ni se clampea (anular un precio es decir "no lo sé", clamparlo es
+  // inventarlo). Nada desaparece callado: lo corregido queda en la auditoría.
+  const antesDelSaneo = metadatos;
+  const saneo = sanearPresupuesto({ lineas, metadatos });
+  lineas = saneo.presupuesto.lineas;
+  metadatos = saneo.presupuesto.metadatos;
+
+  const metadatosCorregidos = (Object.keys(antesDelSaneo) as (keyof MetadatosPresupuesto)[]).filter(
+    (clave) => antesDelSaneo[clave] !== metadatos[clave],
+  );
+
   const [cotizacion] = await db
     .insert(cotizaciones)
     .values({
@@ -936,6 +961,10 @@ export async function registrarCotizacion(
     ivaDeclarado: metadatos.incluyeIva,
     validezDias: metadatos.validezDias,
     plazoDias: metadatos.plazoDias,
+    // Lo que el saneo tuvo que corregir: si el usuario cargó un total negativo
+    // y después no lo ve en la comparativa, la respuesta está acá.
+    lineasDescartadas: saneo.lineasDescartadas,
+    metadatosCorregidos,
   });
 
   return conciliarCotizacion(db, actor, cotizacion.id, deps);

@@ -187,8 +187,22 @@ export interface Hilo {
   pendientes: number;
 }
 
+/**
+ * El bloque de adjuntos se parte **solo en los salientes**.
+ *
+ * `componerCuerpo`/`partirCuerpo` son un par y el único que compone es el
+ * sistema, al escribir un borrador. Un entrante lo pega una persona: si copia
+ * la respuesta citando el pedido —cosa que hace cualquiera que contesta un
+ * mail—, el cuerpo trae el texto del RFQ **con su `MARCA_ADJUNTOS` adentro**, y
+ * partirlo truncaría en silencio lo que dijo el proveedor y le colgaría refs
+ * nuestras como si fueran archivos suyos. Un entrante se muestra crudo y
+ * completo, siempre.
+ */
 function comoMensajeHilo(fila: Mensaje): MensajeHilo {
-  const { texto, adjuntos } = partirCuerpo(fila.cuerpo);
+  const { texto, adjuntos } =
+    fila.direccion === 'saliente'
+      ? partirCuerpo(fila.cuerpo)
+      : { texto: fila.cuerpo, adjuntos: [] as string[] };
   return {
     id: fila.id,
     direccion: fila.direccion,

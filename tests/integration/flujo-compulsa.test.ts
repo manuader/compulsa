@@ -64,7 +64,12 @@ import {
   type ActorCompulsa,
 } from '@/lib/compulsa/flujo';
 import { FRASES_PALANCA } from '@/lib/negociacion/motor';
-import { CanalNoConfiguradoError, getCanal, partirCuerpo } from '@/lib/outreach/canal';
+import {
+  CanalNoConfiguradoError,
+  MARCA_ADJUNTOS,
+  getCanal,
+  partirCuerpo,
+} from '@/lib/outreach/canal';
 import { banderasDeContacto, leerHilo } from '@/lib/outreach/threads';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import type { StorageAdapter } from '@/lib/storage/index';
@@ -357,15 +362,30 @@ describe('flujo manual completo sobre el rubro seco', () => {
     const hiloTrasEnvio = await leerHilo(db, estudioId, contactoCorralon.id);
     expect(hiloTrasEnvio.mensajes[0].estado).toBe('enviado');
     expect(hiloTrasEnvio.pendientes).toBe(0);
+    // El saliente sí se parte: el texto limpio para copiar y las refs aparte.
+    expect(hiloTrasEnvio.mensajes[0].texto).toBe(lanzamiento.texto);
+    expect(hiloTrasEnvio.mensajes[0].adjuntos).toHaveLength(10);
 
+    // El proveedor contesta citando el pedido: el cuerpo entrante trae adentro
+    // el texto del RFQ **con su bloque de adjuntos**. Ese cuerpo lo pegó una
+    // persona y se guarda crudo, así que el lector no puede partirlo.
+    const respuestaCitada =
+      'Recibido, te paso el presupuesto por mail.\n\n' +
+      `> ${lanzamiento.texto.slice(0, 60)}${MARCA_ADJUNTOS}${lanzamiento.recortes[0].ref}`;
     const entrante = await registrarMensajeEntrante(
       db,
       colaborador,
       contactoCorralon.id,
-      'Te paso el presupuesto por mail.',
+      respuestaCitada,
       deps,
     );
     expect(entrante.contacto.estado).toBe('contactado'); // la cotización la registra el paso siguiente
+
+    const hiloConCita = await leerHilo(db, estudioId, contactoCorralon.id);
+    const recibido = hiloConCita.mensajes.find((m) => m.estado === 'recibido');
+    // Nada truncado y ninguna ref nuestra atribuida al proveedor.
+    expect(recibido?.texto).toBe(respuestaCitada);
+    expect(recibido?.adjuntos).toEqual([]);
 
     // --- 4. Cotización + conciliación (pin RF-902) --------------------------
     const primera = await registrarCotizacion(
@@ -584,6 +604,73 @@ describe('el presupuesto pegado a mano, sin fixture', () => {
     expect(registrada.muestrasIndice).toBe(2);
     // El texto crudo queda guardado para poder releerlo sin pedírselo de nuevo.
     expect(registrada.cotizacion.rawTexto).toBe(pegado);
+  });
+});
+
+describe('el saneo del borde de escritura', () => {
+  it('un total negativo, un plazo imposible o una línea sin descripción no se persisten', async () => {
+    await prepararRubroSeco();
+    const { contactos } = await lanzarCompulsa(
+      db,
+      storage,
+      titular,
+      obraId,
+      'seco',
+      { proveedorIds: [corralon.id] },
+      deps,
+    );
+
+    // Camino de líneas ya parseadas + correcciones a mano: ni una ni otras
+    // pasan por el provider, así que el saneo tiene que estar en el core.
+    const registrada = await registrarCotizacion(
+      db,
+      colaborador,
+      contactos[0].id,
+      {
+        nombre: 'planilla-cargada-a-mano.csv',
+        lineas: [
+          {
+            descripcion: 'Masilla para juntas',
+            unidad: 'kg',
+            cantidad: 30,
+            precioUnitario: -5,
+            precioTotal: 0,
+            claveItemSugerida: null,
+            notas: null,
+          },
+          {
+            descripcion: '   ',
+            unidad: null,
+            cantidad: null,
+            precioUnitario: null,
+            precioTotal: null,
+            claveItemSugerida: null,
+            notas: null,
+          },
+        ],
+        metadatos: { total: -1, validezDias: 0, incluyeIva: true },
+      },
+      deps,
+    );
+
+    // La línea sin descripción se descarta; la otra queda, con los importes
+    // imposibles en `null` (anular, no clampear: clampear un precio es inventarlo).
+    expect(registrada.cotizacion.lineasJson).toHaveLength(1);
+    expect(registrada.cotizacion.lineasJson[0].descripcion).toBe('Masilla para juntas');
+    expect(registrada.cotizacion.lineasJson[0].precioUnitario).toBeNull();
+    expect(registrada.cotizacion.lineasJson[0].precioTotal).toBeNull();
+
+    // Un total negativo no llega a la comparativa de P9 ni al índice.
+    expect(registrada.cotizacion.total).toBeNull();
+    expect(registrada.cotizacion.validezDias).toBeNull();
+    expect(registrada.muestrasIndice).toBe(0);
+    // Lo que sí es válido no se toca.
+    expect(registrada.cotizacion.incluyeIva).toBe(true);
+
+    // Y nada desapareció callado: el saneo queda en la auditoría.
+    const [rastro] = await auditoriaDe('cotizacion_registrada');
+    expect(rastro.diffJson?.lineasDescartadas).toBe(1);
+    expect(rastro.diffJson?.metadatosCorregidos).toEqual(['total', 'validezDias']);
   });
 });
 
