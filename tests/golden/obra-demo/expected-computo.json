@@ -1,0 +1,77 @@
+[
+  {
+    "claveItem": "aberturas.V1",
+    "cantCompra": 1,
+    "derivacion": "Las carpinterías se agrupan por tag: V1 aparece una vez ⇒ 1 u neta. Sin desperdicio y a medida (no hay bulto que redondear): 1 u."
+  },
+  {
+    "claveItem": "aberturas.P1",
+    "cantCompra": 1,
+    "derivacion": "P1 (puerta 0,80 × 2,05) aparece una vez ⇒ 1 u neta, sin desperdicio, a medida: 1 u."
+  },
+  {
+    "claveItem": "aberturas.P2",
+    "cantCompra": 1,
+    "derivacion": "P2 (puerta 0,80 × 2,05) aparece una vez ⇒ 1 u neta, sin desperdicio, a medida: 1 u. Confianza 0,85 ≥ 0,70, así que se emite y no degrada a consulta."
+  },
+  {
+    "claveItem": "seco.placas",
+    "cantCompra": 31.68,
+    "derivacion": "T1: 5 m × 2,60 m × 2 caras = 26 m² netos; +12 % de desperdicio = 29,12 m²; 29,12 / 2,88 = 10,11 ⇒ 11 placas × 2,88 = 31,68 m²."
+  },
+  {
+    "claveItem": "seco.soleras",
+    "cantCompra": 10.4,
+    "derivacion": "Solera inferior + superior: 2 × 5 m = 10 ml netos, sin desperdicio; 10 / 2,60 = 3,85 ⇒ 4 barras × 2,60 = 10,40 ml."
+  },
+  {
+    "claveItem": "seco.montantes",
+    "cantCompra": 14,
+    "derivacion": "Montantes cada 0,40 m: ceil(5 / 0,40) + 1 = 12,5 → 13 + 1 = 14 u netas, sin desperdicio; la tira se cuenta por unidad ⇒ 14 u."
+  },
+  {
+    "claveItem": "seco.tornillos",
+    "cantCompra": 500,
+    "derivacion": "15 tornillos/m² × 26 m² = 390 u netas, sin desperdicio; 390 / 500 = 0,78 ⇒ 1 caja × 500 = 500 u."
+  },
+  {
+    "claveItem": "seco.masilla",
+    "cantCompra": 30,
+    "derivacion": "0,9 kg/m² × 26 m² = 23,40 kg netos, sin desperdicio; 23,40 / 15 = 1,56 ⇒ 2 baldes × 15 = 30 kg."
+  },
+  {
+    "claveItem": "seco.cinta",
+    "cantCompra": 90,
+    "derivacion": "2,3 ml/m² × 26 m² = 59,80 ml netos, sin desperdicio; 59,80 / 90 = 0,66 ⇒ 1 rollo × 90 = 90 ml."
+  },
+  {
+    "claveItem": "pintura.latex_paredes",
+    "cantCompra": 17,
+    "derivacion": "Paredes = perímetro × altura − vanos: Estar 18 × 2,60 − 4 = 42,80 m² y Dormitorio 14 × 2,60 − 2 = 34,40 m² ⇒ 77,20 m². 2 manos a 10 m²/L = 15,44 L netos; +5 % = 16,21 L; latas 1×10 + 1×4 + 3×1 = 17 L."
+  },
+  {
+    "claveItem": "pintura.latex_cielorrasos",
+    "cantCompra": 7,
+    "derivacion": "Los cielorrasos salen de la superficie de los ambientes (no de las terminaciones de la lámina 2): 20 + 12 = 32 m². 2 manos a 10 m²/L = 6,40 L netos; +5 % = 6,72 L; latas 1×4 + 3×1 = 7 L."
+  },
+  {
+    "claveItem": "gruesa.ladrillos",
+    "cantCompra": 396,
+    "derivacion": "M1: 6 m × 2,60 m = 15,60 m²; × 16,5 ladrillos/m² = 257,40 u netas; +5 % = 270,27; 270,27 / 198 = 1,37 ⇒ 2 pallets × 198 = 396 u."
+  },
+  {
+    "claveItem": "gruesa.cemento",
+    "cantCompra": 150,
+    "derivacion": "8 kg/m² × 15,60 m² = 124,80 kg netos, sin desperdicio; 124,80 / 50 = 2,50 ⇒ 3 bolsas × 50 = 150 kg."
+  },
+  {
+    "claveItem": "gruesa.cal",
+    "cantCompra": 200,
+    "derivacion": "12 kg/m² × 15,60 m² = 187,20 kg netos, sin desperdicio; 187,20 / 25 = 7,49 ⇒ 8 bolsas × 25 = 200 kg."
+  },
+  {
+    "claveItem": "gruesa.arena",
+    "cantCompra": 1,
+    "derivacion": "0,04 m³/m² × 15,60 m² = 0,62 m³ netos, sin desperdicio; a granel en múltiplos de 0,5: 0,62 / 0,5 = 1,25 ⇒ 2 × 0,5 = 1 m³."
+  }
+]

@@ -1,0 +1,113 @@
+'use server';
+
+/**
+ * Endpoints de la bandeja de consultas: sesión, obra y revalidación.
+ *
+ * En un archivo `'use server'` **todo export es un endpoint HTTP** que el
+ * cliente puede invocar con el payload que quiera. Por eso acá no hay ni una
+ * línea de lógica de dominio: los núcleos que mutan la base viven en
+ * `@/lib/bandeja/resolver` —reciben la obra y el actor explícitos, y no tienen
+ * forma de saber quién los llama— y este archivo exporta **solo** los
+ * envoltorios `*Action`, que son las cuatro líneas que faltan:
+ *
+ *   1. `requireUser()` — hay sesión válida.
+ *   2. `requireObra()` — la obra es del estudio del usuario (RNF-4). El `obraId`
+ *      que vale es el que devuelve el guard, **no** el que vino en el JSON.
+ *   3. el núcleo, con el actor sacado de la sesión.
+ *   4. `revalidatePath()` de las tres pantallas que muestran las consultas.
+ *
+ * Si alguna vez hay que exportar algo más de este archivo, la pregunta es si
+ * ese algo puede ser invocado por un cliente cualquiera; si la respuesta no es
+ * un sí rotundo, va al resolver.
+ */
+import { z } from 'zod';
+
+import { requireObra, requireUser } from '@/lib/auth/guards';
+import {
+  descartarHallazgo,
+  descartarLote,
+  confirmarSupuesto,
+  marcarExistente,
+  responderHallazgo,
+  zUuid,
+  type ActorBandeja,
+  type EntradaHallazgo,
+  type EntradaLote,
+  type EntradaRespuesta,
+  type ResultadoAccion,
+  type ResultadoLote,
+} from '@/lib/bandeja/resolver';
+
+/**
+ * La bandeja, la planilla y el tablero muestran las mismas consultas desde el
+ * server: tras resolver una, las tres tienen que volver a leerse.
+ */
+async function revalidar(obraId: string): Promise<void> {
+  const { revalidatePath } = await import('next/cache');
+  revalidatePath(`/obras/${obraId}/bandeja`);
+  revalidatePath(`/obras/${obraId}/computo`);
+  revalidatePath(`/obras/${obraId}`);
+}
+
+const PAYLOAD_ILEGIBLE = 'No pude leer la obra de la consulta.';
+
+/**
+ * Sesión válida + obra del estudio (RNF-4).
+ *
+ * El payload de una server action es texto que manda el cliente: el `obraId`
+ * se valida antes de tocarlo y la obra que vale es la que devuelve
+ * `requireObra`, no la que vino en el JSON.
+ */
+async function contexto(entrada: unknown): Promise<(ActorBandeja & { obraId: string }) | null> {
+  const parseo = z.object({ obraId: zUuid }).safeParse(entrada);
+  if (!parseo.success) return null;
+
+  const { usuario } = await requireUser();
+  const obra = await requireObra(parseo.data.obraId);
+  return { obraId: obra.id, usuarioId: usuario.id, email: usuario.email };
+}
+
+export async function responderHallazgoAction(entrada: EntradaRespuesta): Promise<ResultadoAccion> {
+  const ctx = await contexto(entrada);
+  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  const { obraId, ...actor } = ctx;
+  const resultado = await responderHallazgo({ ...entrada, obraId }, actor);
+  if (resultado.ok) await revalidar(obraId);
+  return resultado;
+}
+
+export async function marcarExistenteAction(entrada: EntradaHallazgo): Promise<ResultadoAccion> {
+  const ctx = await contexto(entrada);
+  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  const { obraId, ...actor } = ctx;
+  const resultado = await marcarExistente({ ...entrada, obraId }, actor);
+  if (resultado.ok) await revalidar(obraId);
+  return resultado;
+}
+
+export async function confirmarSupuestoAction(entrada: EntradaHallazgo): Promise<ResultadoAccion> {
+  const ctx = await contexto(entrada);
+  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  const { obraId, ...actor } = ctx;
+  const resultado = await confirmarSupuesto({ ...entrada, obraId }, actor);
+  if (resultado.ok) await revalidar(obraId);
+  return resultado;
+}
+
+export async function descartarHallazgoAction(entrada: EntradaHallazgo): Promise<ResultadoAccion> {
+  const ctx = await contexto(entrada);
+  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  const { obraId, ...actor } = ctx;
+  const resultado = await descartarHallazgo({ ...entrada, obraId }, actor);
+  if (resultado.ok) await revalidar(obraId);
+  return resultado;
+}
+
+export async function descartarLoteAction(entrada: EntradaLote): Promise<ResultadoLote> {
+  const ctx = await contexto(entrada);
+  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  const { obraId, ...actor } = ctx;
+  const resultado = await descartarLote({ ...entrada, obraId }, actor);
+  if (resultado.ok) await revalidar(obraId);
+  return resultado;
+}
