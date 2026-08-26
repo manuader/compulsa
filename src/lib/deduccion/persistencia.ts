@@ -42,8 +42,20 @@ import { registrarAuditoria } from '@/lib/audit';
 import { unirFuentes } from '@/lib/computo/presentacion';
 import { describirValor, enumerar, etiquetaCampo } from '@/lib/deduccion/motor';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
-import { recomputarObra } from '@/lib/pipeline/recomputar';
+import {
+  estaContradicha,
+  recomputarObra,
+  valorQueDocumenta,
+} from '@/lib/pipeline/recomputar';
 import type { Fuente, RolUsuario } from '@/types/domain';
+
+/**
+ * Las marcas de "superada por la documentación" las pone el recompute
+ * (`src/lib/pipeline/recomputar.ts`, que es quien detecta el conflicto). Se
+ * re-exportan acá para que la bandeja, la memoria y la planilla las lean del
+ * mismo lugar del que leen todo lo demás sobre una deducción.
+ */
+export { estaContradicha, valorQueDocumenta };
 
 // ---------------------------------------------------------------------------
 // Contratos
@@ -139,6 +151,10 @@ export function valorDeDeduccion(fila: Pick<Deduccion, 'campo' | 'valorJson'>): 
  * así que la bandeja y la memoria (RF-505) la vuelven a componer con lo que sí
  * está: la regla, el campo, el valor y las láminas que la sostienen. Dice lo
  * mismo con menos color; la trazabilidad —qué regla, qué láminas— está entera.
+ *
+ * Si la deducción quedó **superada por la documentación**, la frase lo dice al
+ * final: es lo primero que hay que saber al leerla en la memoria, porque el
+ * número de la fila ya no es el que se computa.
  */
 export function explicarDeduccion(
   fila: Pick<Deduccion, 'campo' | 'regla' | 'valorJson' | 'fuentesJson'>,
@@ -154,7 +170,18 @@ export function explicarDeduccion(
   const citas = citarLaminas(fila.fuentesJson, codigos);
   const donde = citas.length === 1 ? `la lámina ${citas[0]}` : `las láminas ${enumerar(citas)}`;
 
-  return `${dato}${de} sale de la regla «${TITULO_REGLA[fila.regla]}», cruzando ${donde}.`;
+  const base = `${dato}${de} sale de la regla «${TITULO_REGLA[fila.regla]}», cruzando ${donde}.`;
+  return estaContradicha(fila) ? `${base} ${frase(fila)}` : base;
+}
+
+/** "Superada por la documentación, que ahora dice 2,40 m: se computa con eso." */
+function frase(fila: Pick<Deduccion, 'campo' | 'valorJson'>): string {
+  const documentado = valorQueDocumenta(fila);
+  const escrito =
+    documentado === null || typeof documentado === 'boolean'
+      ? String(documentado)
+      : describirValor(fila.campo, documentado);
+  return `Superada por la documentación, que ahora dice ${escrito}: se computa con eso.`;
 }
 
 /** Códigos de las láminas citadas, sin repetir y en el orden en que aparecen. */

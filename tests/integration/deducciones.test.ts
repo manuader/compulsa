@@ -43,7 +43,11 @@ import {
   type Entidad,
   type Hallazgo,
 } from '@/db/schema';
+import type { AnalysisProvider } from '@/lib/analysis/index';
+import { crearProviderMock } from '@/lib/analysis/mock';
+import { descartarHallazgo } from '@/lib/bandeja/resolver';
 import {
+  explicarDeduccion,
   NO_ENCONTRADA,
   rechazarDeduccion,
   validarDeduccion,
@@ -75,6 +79,29 @@ let soloLectura: ActorDeduccion;
 // ---------------------------------------------------------------------------
 // Lecturas de apoyo
 // ---------------------------------------------------------------------------
+
+/**
+ * El mismo provider mock de siempre, pero con la planta acotando el tabique T1.
+ *
+ * Es como se ejercita "la lamina se volvio a analizar y ahora dice otra cosa":
+ * el fixture de `casa-deduccion-p1` deja T1 sin altura a proposito, y esto
+ * simula la revision del plano que la agrega.
+ */
+function plantaQueAcota(alturaM: number): AnalysisProvider {
+  const base = crearProviderMock();
+  return {
+    leerRotulo: (lamina) => base.leerRotulo(lamina),
+    async extraerEntidades(lamina, ctx) {
+      const entidades = await base.extraerEntidades(lamina, ctx);
+      if (lamina.numeroPagina !== 1) return entidades;
+      return entidades.map((entidad) =>
+        entidad.tipo === 'tabique' && entidad.nombre === 'T1'
+          ? { ...entidad, atributos: { ...entidad.atributos, alturaM } }
+          : entidad,
+      );
+    },
+  };
+}
 
 function todasLasDeducciones(): Promise<Deduccion[]> {
   return db
@@ -379,6 +406,101 @@ describe('validar una deducción', () => {
     expect(item?.origen).toBe('deducido');
     expect(item?.cantNeta).toBe(2);
     expect(await gateDe('aberturas')).toEqual({ ok: true, bloqueantes: 0 });
+  });
+
+  it('si el reanálisis trae OTRO valor, gana la documentación y el conflicto se avisa', async () => {
+    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
+    await validarDeduccion({ obraId, deduccionId: altura.id }, titular);
+    expect((await itemPorClave('seco.placas'))?.origen).toBe('deducido');
+
+    // La planta se vuelve a analizar y ahora SÍ acota el tabique: 2,40 m.
+    await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.4) });
+
+    // 1) Manda lo escrito: 5 × 2,40 × 2 = 24 m², y el ítem vuelve a ser explícito.
+    const placas = await itemPorClave('seco.placas');
+    expect(placas?.origen).toBe('explicito');
+    expect(placas?.cantNeta).toBe(24);
+
+    // 2) Pero no en silencio: queda una consulta no bloqueante con los dos valores.
+    const consulta = await hallazgoPorClave('deduccion.contradicha.T1.alturaM');
+    expect(consulta?.estado).toBe('abierto');
+    expect(consulta?.tipo).toBe('inconsistencia');
+    expect(consulta?.bloqueante).toBe(false);
+    expect(consulta?.descripcion).toContain('se validó en 2,60 m');
+    expect(consulta?.descripcion).toContain('ahora dice 2,40 m');
+    expect(await laminasCitadas(consulta!.laminasJson)).toEqual(['A-01', 'A-02']);
+    // No frena nada: el cómputo usa el dato bueno.
+    expect((await gateDe('seco')).bloqueantes).toBe(1); // el largo del T1 del corte, de antes
+
+    // 3) La deducción queda marcada como superada, sin dejar de estar validada.
+    const superada = await deduccionDe('A-01', 'T1', 'alturaM');
+    expect(superada.estado).toBe('validada');
+    expect(superada.valorJson).toEqual({
+      alturaM: 2.6,
+      _contradicha: true,
+      _valorDocumentado: 2.4,
+    });
+
+    // 4) Y la memoria la muestra como superada.
+    expect(explicarDeduccion(superada)).toContain(
+      'Superada por la documentación, que ahora dice 2,40 m',
+    );
+
+    // 5) Con su registro en la auditoría, con los dos números.
+    const auditadas = await auditoriaDe('deduccion_contradicha');
+    expect(auditadas).toHaveLength(1);
+    expect(auditadas[0]?.diffJson).toMatchObject({ valorDeducido: 2.6, valorDocumentado: 2.4 });
+  });
+
+  it('la contradicción es idempotente y no se reabre si el arquitecto la descarta', async () => {
+    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
+    await validarDeduccion({ obraId, deduccionId: altura.id }, titular);
+    await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.4) });
+
+    // Idempotencia: un segundo recompute no vuelve a marcar ni a auditar.
+    const auditoriaAntes = new Set((await todaLaAuditoria()).map((fila) => fila.id));
+    const resumen = await recomputarObra(obraId);
+    expect(resumen.deduccionesContradichas).toBe(0);
+    expect((await todaLaAuditoria()).filter((fila) => !auditoriaAntes.has(fila.id))).toEqual([]);
+
+    // Descartada, no vuelve: es una consulta como cualquier otra.
+    const consulta = await hallazgoPorClave('deduccion.contradicha.T1.alturaM');
+    expect(await descartarHallazgo({ obraId, hallazgoId: consulta!.id }, titular)).toEqual({
+      ok: true,
+    });
+    await recomputarObra(obraId);
+    expect((await hallazgoPorClave('deduccion.contradicha.T1.alturaM'))?.estado).toBe('descartado');
+  });
+
+  it('si el reanálisis trae el MISMO valor no hay contradicción ni marca', async () => {
+    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
+    await validarDeduccion({ obraId, deduccionId: altura.id }, titular);
+
+    // La planta ahora acota 2,60 m, que es exactamente lo que se había deducido.
+    await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.6) });
+
+    expect(await hallazgoPorClave('deduccion.contradicha.T1.alturaM')).toBeUndefined();
+    expect(await auditoriaDe('deduccion_contradicha')).toHaveLength(0);
+
+    const sinMarca = await deduccionDe('A-01', 'T1', 'alturaM');
+    expect(sinMarca.estado).toBe('validada');
+    expect(sinMarca.valorJson).toEqual({ alturaM: 2.6 });
+    expect((await itemPorClave('seco.placas'))?.cantNeta).toBe(26);
+  });
+
+  it('cuando la documentación vuelve a coincidir, la marca se levanta sola', async () => {
+    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
+    await validarDeduccion({ obraId, deduccionId: altura.id }, titular);
+    await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.4) });
+    expect((await deduccionDe('A-01', 'T1', 'alturaM')).valorJson._contradicha).toBe(true);
+
+    // La lámina se corrige y vuelve a decir 2,60 m.
+    await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.6) });
+
+    const limpia = await deduccionDe('A-01', 'T1', 'alturaM');
+    expect(limpia.valorJson).toEqual({ alturaM: 2.6 });
+    expect((await hallazgoPorClave('deduccion.contradicha.T1.alturaM'))?.estado).toBe('descartado');
+    expect(await auditoriaDe('deduccion_contradiccion_resuelta')).toHaveLength(1);
   });
 
   it('no pisa un dato que ya cargó una persona con otro valor', async () => {

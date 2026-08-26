@@ -352,8 +352,15 @@ export function tieneBBoxUtil(bbox: BBox | undefined): bbox is BBox {
   return ancho > 0 && alto > 0;
 }
 
+/**
+ * Clave de identidad de una entidad dentro de una lámina, solo para agrupar en
+ * memoria. El separador es `::` y no un byte NUL: un NUL en el fuente le da a
+ * `git diff` un archivo binario y lo esconde de `grep`. No hay ambigüedad
+ * posible porque `tipo` sale de un enum cerrado y ninguno de sus valores lleva
+ * `:`, así que el primer `::` siempre parte donde corresponde.
+ */
 function claveDeEntidad(tipo: string, nombre: string): string {
-  return `${tipo}\u0000${nombre}`;
+  return `${tipo}::${nombre}`;
 }
 
 /**
