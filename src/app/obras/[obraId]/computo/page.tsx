@@ -8,6 +8,7 @@
  * en `PlanillaRubro`, que llama a las server actions de `./actions`.
  */
 import { eq } from 'drizzle-orm';
+import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { PlanillaRubro } from '@/components/planilla/planilla-rubro';
@@ -81,6 +82,8 @@ function Chip({ href, activo, children }: { href: string; activo: boolean; child
     </Link>
   );
 }
+
+export const metadata: Metadata = { title: 'Cómputo' };
 
 export default async function ComputoPage({
   params,

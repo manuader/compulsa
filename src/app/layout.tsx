@@ -8,8 +8,14 @@ import { getSession } from '@/lib/auth/session';
 import { salirAction } from './(auth)/actions';
 import './globals.css';
 
+/**
+ * `template` es lo que hace que la solapa del browser diga en qué pantalla
+ * estás: cada página aporta su nombre y acá se le pega la marca. El layout de
+ * `/obras/[obraId]` mete además el nombre de la obra en el medio, así dos obras
+ * abiertas en dos solapas se distinguen sin cambiar de pestaña.
+ */
 export const metadata: Metadata = {
-  title: 'Compulsa',
+  title: { default: 'Compulsa', template: '%s · Compulsa' },
   description: 'Análisis documental, cómputo y compulsa de obra para estudios de arquitectura.',
 };
 

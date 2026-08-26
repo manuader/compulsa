@@ -5,6 +5,7 @@
  * interactiva (upload, selects, reproceso) vive en `ui.tsx`.
  */
 import { asc, eq } from 'drizzle-orm';
+import type { Metadata } from 'next';
 
 import { getDb } from '@/db/client';
 import { documentos, laminas } from '@/db/schema';
@@ -17,6 +18,8 @@ const FECHA = new Intl.DateTimeFormat('es-AR', {
   month: '2-digit',
   year: 'numeric',
 });
+
+export const metadata: Metadata = { title: 'Expediente' };
 
 export default async function ExpedientePage({
   params,

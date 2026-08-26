@@ -6,6 +6,7 @@
  * traducen "no existe" al `redirect()` / `notFound()` que espera el App Router.
  */
 import { and, eq } from 'drizzle-orm';
+import { cache } from 'react';
 
 import { getDb, type Db } from '@/db/client';
 import { obras, type Obra } from '@/db/schema';
@@ -49,8 +50,16 @@ export async function requireUser(): Promise<SesionActiva> {
   return redirect('/login');
 }
 
-/** Obra del estudio de la sesión, o 404. Nunca consultes una obra sin pasar por acá. */
-export async function requireObra(obraId: string): Promise<Obra> {
+/**
+ * Obra del estudio de la sesión, o 404. Nunca consultes una obra sin pasar por acá.
+ *
+ * Memoizado por request con `cache()` de React: en una pantalla de obra esto se
+ * llama al menos tres veces con el mismo id —`generateMetadata`, el layout y la
+ * página— y las tres tienen que hacerlo (`src/app/CLAUDE.md` §3: ninguna confía
+ * en que otra ya validó). Sin el memo serían tres lecturas de sesión y tres
+ * `select` idénticos. El memo es por request: no cachea nada entre usuarios.
+ */
+export const requireObra = cache(async function requireObra(obraId: string): Promise<Obra> {
   const { estudio } = await requireUser();
   try {
     return await requireObraCore(await getDb(), estudio.id, obraId);
@@ -61,4 +70,4 @@ export async function requireObra(obraId: string): Promise<Obra> {
     }
     throw error;
   }
-}
+});

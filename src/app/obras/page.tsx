@@ -1,4 +1,5 @@
 import { desc, eq } from 'drizzle-orm';
+import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
@@ -28,6 +29,8 @@ const FECHA = new Intl.DateTimeFormat('es-AR', {
   month: '2-digit',
   year: 'numeric',
 });
+
+export const metadata: Metadata = { title: 'Obras' };
 
 export default async function ObrasPage() {
   const { estudio } = await requireUser();

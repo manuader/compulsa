@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
@@ -34,6 +35,25 @@ const SOLAPAS = [
 function esSolapaActiva(pathname: string, href: string, base: string): boolean {
   if (href === base) return pathname === base;
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+/**
+ * Mete el nombre de la obra en el título de la solapa. Cada pantalla de adentro
+ * aporta el suyo ("Expediente", "Cómputo"…) y termina en «Expediente · Casa
+ * Belgrano · Compulsa»; el tablero, que no exporta título propio, cae en el
+ * `default` y queda «Casa Belgrano · Compulsa».
+ *
+ * `requireObra` está memoizado por request, así que esto no agrega una consulta:
+ * es la misma que hace el layout dos líneas más abajo.
+ */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ obraId: string }>;
+}): Promise<Metadata> {
+  const { obraId } = await params;
+  const obra = await requireObra(obraId);
+  return { title: { default: obra.nombre, template: `%s · ${obra.nombre} · Compulsa` } };
 }
 
 export default async function ObraLayout({

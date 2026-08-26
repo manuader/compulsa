@@ -9,8 +9,10 @@
  * resuelven acá. No renombres el parámetro sin buscar sus usos.
  */
 import { and, eq } from 'drizzle-orm';
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { cache } from 'react';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
@@ -24,12 +26,17 @@ import type { BBox, EstadoAnalisis, Fuente } from '@/types/domain';
 /** Misma forma que valida `requireObraCore`: un id mal formado es un 404, no un 500. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Mismas etiquetas que el expediente (`expediente/ui.tsx`): el badge de una
+ * lámina tiene que decir lo mismo en las dos pantallas. El detalle largo va en
+ * `explicacionDelEstado`, que acá abajo se muestra completo.
+ */
 const ETIQUETA_ESTADO: Record<EstadoAnalisis, string> = {
-  pendiente: 'Pendiente de análisis',
+  pendiente: 'Pendiente',
   procesando: 'Procesando',
   analizada: 'Analizada',
-  bloqueada_escala: 'Bloqueada por escala',
-  error: 'Error de análisis',
+  bloqueada_escala: 'Falta la escala',
+  error: 'Error',
 };
 
 const TONO_ESTADO: Record<EstadoAnalisis, BadgeTone> = {
@@ -104,6 +111,44 @@ function primerParametro(valor: string | string[] | undefined): string | null {
   return valor ?? null;
 }
 
+/**
+ * La lámina de la URL, o 404. Memoizado por request: `generateMetadata` y la
+ * página la piden con los mismos ids y no tiene sentido leerla dos veces.
+ * Siempre con `obra_id` en el `where` — una lámina de otra obra no existe (RNF-4).
+ */
+const cargarLamina = cache(async function cargarLamina(obraId: string, laminaId: string) {
+  if (!UUID_RE.test(laminaId)) notFound();
+
+  const db = await getDb();
+  const [lamina] = await db
+    .select()
+    .from(laminas)
+    .where(and(eq(laminas.id, laminaId), eq(laminas.obraId, obraId)));
+  if (!lamina) notFound();
+  return lamina;
+});
+
+/** "A-01 — PLANTA PB", el mismo encabezado que se ve arriba de la lámina. */
+function nombreDeLamina(lamina: {
+  codigo: string | null;
+  titulo: string | null;
+  numeroPagina: number;
+}): string {
+  const cuerpo = lamina.titulo ?? `Página ${lamina.numeroPagina}`;
+  return lamina.codigo ? `${lamina.codigo} — ${cuerpo}` : cuerpo;
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ obraId: string; laminaId: string }>;
+}): Promise<Metadata> {
+  const { obraId, laminaId } = await params;
+  const obra = await requireObra(obraId);
+  const lamina = await cargarLamina(obra.id, laminaId);
+  return { title: nombreDeLamina(lamina) };
+}
+
 export default async function LaminaPage({
   params,
   searchParams,
@@ -113,15 +158,9 @@ export default async function LaminaPage({
 }) {
   const [{ obraId, laminaId }, query] = await Promise.all([params, searchParams]);
   const obra = await requireObra(obraId);
-  if (!UUID_RE.test(laminaId)) notFound();
+  const lamina = await cargarLamina(obra.id, laminaId);
 
   const db = await getDb();
-  const [lamina] = await db
-    .select()
-    .from(laminas)
-    .where(and(eq(laminas.id, laminaId), eq(laminas.obraId, obra.id)));
-  if (!lamina) notFound();
-
   const highlight = primerParametro(query.highlight);
 
   const [filasEntidades, filasHallazgos, destacado] = await Promise.all([
@@ -187,10 +226,7 @@ export default async function LaminaPage({
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-lg font-semibold text-neutral-900">
-            {lamina.codigo ? `${lamina.codigo} — ` : ''}
-            {lamina.titulo ?? `Página ${lamina.numeroPagina}`}
-          </h2>
+          <h2 className="text-lg font-semibold text-neutral-900">{nombreDeLamina(lamina)}</h2>
           <Badge tone={TONO_ESTADO[lamina.estadoAnalisis]}>
             {ETIQUETA_ESTADO[lamina.estadoAnalisis]}
           </Badge>

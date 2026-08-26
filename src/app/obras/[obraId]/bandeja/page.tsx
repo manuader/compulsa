@@ -9,6 +9,7 @@
  * obra, no el de la vista.
  */
 import { eq } from 'drizzle-orm';
+import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { getDb } from '@/db/client';
@@ -77,6 +78,8 @@ function etiquetaDeLamina(fila: { codigo: string | null; titulo: string | null; 
 function capitalizar(texto: string): string {
   return texto.charAt(0).toUpperCase() + texto.slice(1);
 }
+
+export const metadata: Metadata = { title: 'Bandeja de consultas' };
 
 export default async function BandejaPage({
   params,
