@@ -5,6 +5,8 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { getDb } from '@/db/client';
 import { requireUser } from '@/lib/auth/guards';
+import { ahorroDelEstudio, type AhorroDelEstudio } from '@/lib/compulsa/adjudicar';
+import { formatearImporte } from '@/lib/compulsa/comparativa';
 import { listarNotificaciones } from '@/lib/plataforma/notificaciones';
 import { esRolSuficiente, ETIQUETA_ROL } from '@/lib/plataforma/roles';
 
@@ -34,7 +36,11 @@ const FECHA = new Intl.DateTimeFormat('es-AR', {
  */
 export default async function EstudioPage() {
   const { usuario, estudio } = await requireUser();
-  const avisos = await listarNotificaciones(await getDb(), usuario.id, MAX_EN_LISTA);
+  const db = await getDb();
+  const [avisos, ahorro] = await Promise.all([
+    listarNotificaciones(db, usuario.id, MAX_EN_LISTA),
+    ahorroDelEstudio(db, estudio.id),
+  ]);
   const esTitular = esRolSuficiente(usuario, 'titular');
   const esColaborador = esRolSuficiente(usuario, 'colaborador');
 
@@ -50,6 +56,8 @@ export default async function EstudioPage() {
           </p>
         </div>
       </header>
+
+      <AhorroAcumulado ahorro={ahorro} />
 
       <nav className="grid gap-4 sm:grid-cols-3" aria-label="Secciones del estudio">
         <AccesoEstudio
@@ -117,6 +125,66 @@ export default async function EstudioPage() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/** "1 compulsa" / "3 compulsas": el plural se escribe, no se deja "1 compulsa(s)". */
+function plural(n: number, uno: string, varios: string): string {
+  return `${n} ${n === 1 ? uno : varios}`;
+}
+
+/**
+ * Ahorro acumulado del estudio (RF-1104): la suma de lo ahorrado en todas las
+ * compulsas adjudicadas, de todas las obras.
+ *
+ * **Una cifra por moneda.** Sumar pesos con dólares necesitaría un tipo de
+ * cambio que nadie escribió, y el sistema no inventa números (P4). Sin nada
+ * adjudicado se muestra un guion y se explica de dónde va a salir: un "$ 0" se
+ * leería como "no ahorramos nada" en vez de "todavía no hay contra qué medir",
+ * que es el mismo criterio que el tablero de obra.
+ */
+function AhorroAcumulado({ ahorro }: { ahorro: AhorroDelEstudio }) {
+  const vacio = ahorro.porMoneda.length === 0;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Ahorro acumulado del estudio</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        {vacio ? (
+          <>
+            <p className="text-2xl font-semibold tabular-nums text-neutral-900">—</p>
+            <p className="text-sm text-neutral-600">
+              Sale al adjudicar: la mediana de las ofertas menos lo que se adjudicó, más lo que se
+              consiguió negociando. Todavía no hay ninguna compulsa adjudicada.
+            </p>
+          </>
+        ) : (
+          <>
+            <dl className="flex flex-wrap gap-x-10 gap-y-3">
+              {ahorro.porMoneda.map((entrada) => (
+                <div key={entrada.moneda}>
+                  <dt className="text-xs font-medium tracking-wide text-neutral-500 uppercase">
+                    {entrada.moneda}
+                  </dt>
+                  <dd className="text-2xl font-semibold tabular-nums text-neutral-900">
+                    {`${entrada.moneda === 'ARS' ? '$' : entrada.moneda} ${formatearImporte(entrada.ahorro)}`}
+                  </dd>
+                  <dd className="text-xs text-neutral-500">
+                    {plural(entrada.adjudicadas, 'compulsa adjudicada', 'compulsas adjudicadas')}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="text-sm text-neutral-600">
+              Sobre {plural(ahorro.obras, 'obra', 'obras')} del estudio. Mediana de las ofertas menos
+              lo adjudicado, más las mejoras de negociación.
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
