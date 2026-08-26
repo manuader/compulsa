@@ -23,5 +23,6 @@ El workspace del arquitecto (PRD §8). Ocho pantallas previstas; en F0 existen: 
 /obras/[obraId]/laminas/[laminaId]  visor (pdf.js + overlay SVG de entidades/hallazgos)
 /obras/[obraId]/computo      planilla por rubro (grilla editable, aprobar rubro, export)
 /obras/[obraId]/bandeja      bandeja de consultas (hallazgos con acciones de un click)
-/api/...                     route handlers (upload, pipeline, export)
+/obras/[obraId]/deducciones  bandeja de deducciones (propuestas del motor §11, validar/rechazar)
+/api/...                     route handlers (upload, pipeline, export, memoria, planilla derivada)
 ```
