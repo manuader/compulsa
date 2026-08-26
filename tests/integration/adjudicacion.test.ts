@@ -14,6 +14,10 @@
  *     titular, y una compulsa de otro estudio no existe.
  *  4. **El reporte XLSX** sale con las celdas del cuadro, hoja por cotización y
  *     hoja de condiciones, y con el mismo control de tenant.
+ *  5. **El loop de negociación cierra (RF-1003):** el mismo pin del ahorro, esta
+ *     vez sin ninguna fila puesta a dedo —el motor propone, `resolverNegociacion`
+ *     escribe el resultado—, más `descartarCotizacion`, que saca una columna del
+ *     cuadro, del ranking y de la mediana sin borrarla.
  *
  * `next/headers` va mockeado porque la route del reporte lee la cookie de ahí
  * (mismo patrón que `tests/integration/export-route.test.ts`).
@@ -50,7 +54,23 @@ import {
   resumenCompulsasObra,
   type ActorAdjudicacion,
 } from '@/lib/compulsa/adjudicar';
-import { CompulsaNoEncontradaError } from '@/lib/outreach/threads';
+import {
+  CotizacionYaDescartadaError,
+  descartarCotizacion,
+  NegociacionImposibleError,
+  NegociacionYaResueltaError,
+  proponerNegociacion,
+  resolverNegociacion,
+  // Homónima de la de `plataforma/roles` (que es la que usa `adjudicarCompulsa`)
+  // y **no** es la misma clase: hasta que P11 unifique los dos guards, un
+  // `instanceof` con la equivocada pasaría de largo.
+  RolInsuficienteError as RolInsuficienteEnFlujo,
+} from '@/lib/compulsa/flujo';
+import {
+  CompulsaNoEncontradaError,
+  CotizacionNoEncontradaError,
+  NegociacionNoEncontradaError,
+} from '@/lib/outreach/threads';
 import { RolInsuficienteError } from '@/lib/plataforma/roles';
 import { CONDICIONES_RFQ_DEFAULT, MANDATO_DEFAULT, type ItemRfq } from '@/types/domain';
 
@@ -540,6 +560,269 @@ describe('ahorro: (mediana − adjudicado) + mejoras aceptadas', () => {
 
     expect(resumen.total).toBe(1);
     expect(resumen.cotizaciones).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cerrar la ronda de negociación (RF-1003) — el pin del ahorro, sin atajos
+// ---------------------------------------------------------------------------
+
+/**
+ * Deja la compulsa como estaba **antes** de negociar: el corralón todavía pide
+ * 105 y no hay ninguna ronda escrita. El `sembrar()` mete la fila de
+ * `negociaciones` ya `aceptada` a mano, que es exactamente lo que este bloque
+ * no quiere: acá la mejora tiene que salir del camino real.
+ */
+async function antesDeNegociar(): Promise<void> {
+  await db.delete(negociaciones);
+  await db.update(cotizaciones).set({ total: 105 }).where(eq(cotizaciones.id, cotA));
+}
+
+/** La ronda 1 propuesta por el motor, sin insertar la fila a mano. */
+async function proponerRonda1(): Promise<string> {
+  const propuesta = await proponerNegociacion(db, colaborador, cotA);
+  if (!propuesta.procede) {
+    throw new Error(`El motor escaló la ronda del test: ${propuesta.motivo}`);
+  }
+  return propuesta.negociacion.id;
+}
+
+describe('resolverNegociacion: la ronda deja de nacer y morir en «pendiente»', () => {
+  beforeEach(antesDeNegociar);
+
+  it('el ahorro sale del camino real: 105 → 100 negociado da los mismos 15', async () => {
+    // El pin de RF-1104, esta vez sin ninguna fila puesta a dedo: el motor
+    // propone, una persona dice que el proveedor aceptó y carga el número
+    // nuevo, y recién ahí el término «mejoras aceptadas» tiene de dónde salir.
+    const negociacionId = await proponerRonda1();
+
+    const cierre = await resolverNegociacion(db, colaborador, negociacionId, {
+      resultado: 'aceptada',
+      nuevoTotal: 100,
+      nota: 'Cerró en 100 si adjudicamos esta semana.',
+    });
+
+    expect(cierre.totalAnterior).toBe(105);
+    expect(cierre.totalNuevo).toBe(100);
+    expect(cierre.mejora).toBe(5);
+    expect(cierre.negociacion.resultado).toBe('aceptada');
+    expect(cierre.cotizacion.total).toBe(100);
+
+    await adjudicar();
+
+    expect(await ahorroDeCompulsa(db, compulsaId)).toEqual({
+      totalesComparables: [100, 110, 120],
+      totalAdjudicado: 100,
+      mejoras: [5],
+      ahorro: 15,
+    });
+  });
+
+  it('el contacto vuelve a «cotizó»: no queda clavado en «negociando»', async () => {
+    const negociacionId = await proponerRonda1();
+
+    const [enNegociacion] = await db
+      .select()
+      .from(contactosCompulsa)
+      .innerJoin(cotizaciones, eq(cotizaciones.contactoId, contactosCompulsa.id))
+      .where(eq(cotizaciones.id, cotA));
+    expect(enNegociacion.contactos_compulsa.estado).toBe('negociando');
+
+    await resolverNegociacion(db, colaborador, negociacionId, {
+      resultado: 'rechazada',
+    });
+
+    const [despues] = await db
+      .select()
+      .from(contactosCompulsa)
+      .innerJoin(cotizaciones, eq(cotizaciones.contactoId, contactosCompulsa.id))
+      .where(eq(cotizaciones.id, cotA));
+    expect(despues.contactos_compulsa.estado).toBe('cotizo');
+  });
+
+  it('rechazada no toca el total y no suma mejora', async () => {
+    const negociacionId = await proponerRonda1();
+
+    const cierre = await resolverNegociacion(db, colaborador, negociacionId, {
+      resultado: 'rechazada',
+      nota: 'No baja de 105.',
+    });
+
+    expect(cierre.totalAnterior).toBe(105);
+    expect(cierre.totalNuevo).toBe(105);
+    expect(cierre.mejora).toBe(0);
+    expect(cierre.cotizacion.total).toBe(105);
+
+    await adjudicar();
+    const ahorro = await ahorroDeCompulsa(db, compulsaId);
+    // Adjudicado 105 con mediana 110 y sin mejora: 5, no 15.
+    expect(ahorro?.mejoras).toEqual([]);
+    expect(ahorro?.ahorro).toBe(5);
+  });
+
+  it('deja el rastro con el antes, el después y la mejora', async () => {
+    const negociacionId = await proponerRonda1();
+    await resolverNegociacion(db, colaborador, negociacionId, {
+      resultado: 'aceptada',
+      nuevoTotal: 100,
+    });
+
+    const [fila] = await db
+      .select()
+      .from(auditoria)
+      .where(and(eq(auditoria.obraId, obraId), eq(auditoria.accion, 'negociacion_resuelta')));
+
+    expect(fila.actorNombre).toBe('beto@norte.ar');
+    expect(fila.targetRef).toBe(`negociaciones:${negociacionId}`);
+    expect(fila.diffJson).toMatchObject({
+      cotizacionId: cotA,
+      proveedor: 'Corralón San Martín',
+      ronda: 1,
+      resultado: 'aceptada',
+      total: { antes: 105, despues: 100 },
+      mejora: 5,
+    });
+
+    const [ronda] = await db.select().from(negociaciones).where(eq(negociaciones.id, negociacionId));
+    expect(ronda.logJson).toMatchObject({ cerradaPor: 'beto@norte.ar', totalNuevo: 100 });
+    // El log de la propuesta no se pisa: el comparable con el que se decidió
+    // sigue ahí (es lo que hace auditable la contraoferta).
+    expect(ronda.logJson).toMatchObject({ mejorTotalComparable: 105 });
+  });
+
+  it('aceptada sin total nuevo no se puede: una mejora sin número no es una mejora', async () => {
+    const negociacionId = await proponerRonda1();
+
+    await expect(
+      resolverNegociacion(db, colaborador, negociacionId, { resultado: 'aceptada' }),
+    ).rejects.toBeInstanceOf(NegociacionImposibleError);
+
+    // Y un importe imposible tampoco entra: no se clampea, se rechaza.
+    await expect(
+      resolverNegociacion(db, colaborador, negociacionId, { resultado: 'aceptada', nuevoTotal: 0 }),
+    ).rejects.toBeInstanceOf(RangeError);
+
+    const [ronda] = await db.select().from(negociaciones).where(eq(negociaciones.id, negociacionId));
+    expect(ronda.resultado).toBe('pendiente');
+  });
+
+  it('una ronda se resuelve una sola vez', async () => {
+    const negociacionId = await proponerRonda1();
+    await resolverNegociacion(db, colaborador, negociacionId, {
+      resultado: 'aceptada',
+      nuevoTotal: 100,
+    });
+
+    await expect(
+      resolverNegociacion(db, colaborador, negociacionId, {
+        resultado: 'aceptada',
+        nuevoTotal: 90,
+      }),
+    ).rejects.toBeInstanceOf(NegociacionYaResueltaError);
+
+    const [cotizacion] = await db.select().from(cotizaciones).where(eq(cotizaciones.id, cotA));
+    expect(cotizacion.total).toBe(100);
+  });
+
+  it('con rol de lectura no se cierra nada (RF-1201) y una ronda ajena no existe (RNF-4)', async () => {
+    const negociacionId = await proponerRonda1();
+    const lector = { ...colaborador, rol: 'lectura' as const };
+
+    await expect(
+      resolverNegociacion(db, lector, negociacionId, { resultado: 'rechazada' }),
+    ).rejects.toBeInstanceOf(RolInsuficienteEnFlujo);
+
+    await expect(
+      resolverNegociacion(db, ajeno, negociacionId, { resultado: 'rechazada' }),
+    ).rejects.toBeInstanceOf(NegociacionNoEncontradaError);
+
+    const [ronda] = await db.select().from(negociaciones).where(eq(negociaciones.id, negociacionId));
+    expect(ronda.resultado).toBe('pendiente');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Descartar una cotización (`estado = 'descartada'`, el estado inalcanzable)
+// ---------------------------------------------------------------------------
+
+describe('descartarCotizacion: sacar una columna sin borrarla', () => {
+  it('la saca de la comparativa, del ranking y de la mediana del ahorro', async () => {
+    await descartarCotizacion(db, colaborador, cotC, 'Mandó un presupuesto corregido.');
+
+    const datos = await leerComparativa(db, estudioId, compulsaId, { ahora: AHORA });
+    expect(datos.comparativa.columnas.map((c) => c.proveedorNombre)).toEqual([
+      'Corralón San Martín',
+      'Ferretería del Centro',
+    ]);
+    expect(datos.ranking.map((p) => p.id)).toEqual([cotA, cotB]);
+
+    // Y el ahorro se mide contra dos ofertas, no tres: mediana de [100, 110]
+    // nearest-rank = 100 ⇒ 100 − 100 + 5 de la mejora.
+    await adjudicar();
+    expect(await ahorroDeCompulsa(db, compulsaId)).toEqual({
+      totalesComparables: [100, 110],
+      totalAdjudicado: 100,
+      mejoras: [5],
+      ahorro: 5,
+    });
+  });
+
+  it('la fila sigue existiendo y el motivo queda en la auditoría', async () => {
+    await descartarCotizacion(db, colaborador, cotC, '  Recotizó más barato.  ');
+
+    const [fila] = await db.select().from(cotizaciones).where(eq(cotizaciones.id, cotC));
+    expect(fila.estado).toBe('descartada');
+    expect(fila.total).toBe(120); // no se toca nada más
+
+    const [rastro] = await db
+      .select()
+      .from(auditoria)
+      .where(and(eq(auditoria.obraId, obraId), eq(auditoria.accion, 'cotizacion_descartada')));
+    expect(rastro.targetRef).toBe(`cotizaciones:${cotC}`);
+    expect(rastro.diffJson).toMatchObject({
+      proveedor: 'Maderera Norte',
+      estado: { antes: 'conciliada', despues: 'descartada' },
+      motivo: 'Recotizó más barato.',
+    });
+  });
+
+  it('el tablero deja de contarla como cotización recibida', async () => {
+    expect((await resumenCompulsasObra(db, obraId)).cotizaciones).toBe(3);
+
+    await descartarCotizacion(db, colaborador, cotC, 'Duplicada.');
+
+    expect((await resumenCompulsasObra(db, obraId)).cotizaciones).toBe(2);
+  });
+
+  it('sin motivo no se descarta: una columna que desaparece tiene que poder explicarse', async () => {
+    await expect(descartarCotizacion(db, colaborador, cotC, '   ')).rejects.toBeInstanceOf(
+      RangeError,
+    );
+
+    const [fila] = await db.select().from(cotizaciones).where(eq(cotizaciones.id, cotC));
+    expect(fila.estado).toBe('conciliada');
+  });
+
+  it('no se descarta dos veces', async () => {
+    await descartarCotizacion(db, colaborador, cotC, 'Duplicada.');
+
+    await expect(
+      descartarCotizacion(db, colaborador, cotC, 'Otra vez.'),
+    ).rejects.toBeInstanceOf(CotizacionYaDescartadaError);
+  });
+
+  it('con rol de lectura no se descarta (RF-1201) y una ajena no existe (RNF-4)', async () => {
+    const lector = { ...colaborador, rol: 'lectura' as const };
+
+    await expect(descartarCotizacion(db, lector, cotC, 'Duplicada.')).rejects.toBeInstanceOf(
+      RolInsuficienteEnFlujo,
+    );
+    await expect(descartarCotizacion(db, ajeno, cotC, 'Duplicada.')).rejects.toBeInstanceOf(
+      CotizacionNoEncontradaError,
+    );
+
+    const [fila] = await db.select().from(cotizaciones).where(eq(cotizaciones.id, cotC));
+    expect(fila.estado).toBe('conciliada');
   });
 });
 

@@ -12,7 +12,8 @@
  *  1. `FormularioNuevaCompulsa` — el wizard de armado, en una sola página.
  *  2. `PanelContacto` — el timeline de un proveedor con todo lo que se puede
  *     hacer sobre él: marcar enviado, registrar la respuesta con preview,
- *     proponer la negociación, cargar el total que faltaba.
+ *     proponer la negociación, **cerrar la ronda con lo que contestó**, cargar
+ *     el total que faltaba y descartar una cotización que quedó vieja.
  *
  * El botón de copiar —que en un canal manual es la acción principal de estas
  * pantallas— es una primitiva compartida: `@/components/ui/boton-copiar`.
@@ -24,10 +25,12 @@ import { useState, useTransition } from 'react';
 import {
   cargarTotalCotizacionAction,
   confirmarCotizacionAction,
+  descartarCotizacionAction,
   lanzarCompulsaAction,
   previsualizarRespuestaAction,
   proponerNegociacionAction,
   registrarEnvioAction,
+  resolverNegociacionAction,
   type PreviewPresupuesto,
 } from '@/app/obras/[obraId]/compulsas/actions';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
@@ -93,6 +96,14 @@ export interface MensajeVista {
   esProximoEnvio: boolean;
 }
 
+/** La ronda que se mandó y todavía no tiene resultado (RF-1003). */
+export interface NegociacionPendienteVista {
+  id: string;
+  ronda: number;
+  /** El número que se le pidió, ya formateado en es-AR. */
+  objetivoTotal: string | null;
+}
+
 export interface CotizacionVista {
   id: string;
   fecha: string;
@@ -106,6 +117,9 @@ export interface CotizacionVista {
   formaPago: string | null;
   lineas: number;
   sustituciones: number;
+  /** Fuera de la comparativa, del ranking y del ahorro (`estado = 'descartada'`). */
+  descartada: boolean;
+  negociacionPendiente: NegociacionPendienteVista | null;
 }
 
 export interface BanderaVista {
@@ -548,6 +562,14 @@ export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContacto
   const [totalDe, setTotalDe] = useState<string | null>(null);
   const [total, setTotal] = useState('');
 
+  // Cerrar la ronda con «Aceptó» abre el campo del precio nuevo; descartar
+  // abre el del motivo. Los dos guardan el id de la cotización sobre la que
+  // está trabajando el usuario: no hay dos abiertos a la vez.
+  const [aceptandoDe, setAceptandoDe] = useState<string | null>(null);
+  const [mejorado, setMejorado] = useState('');
+  const [descartandoDe, setDescartandoDe] = useState<string | null>(null);
+  const [motivo, setMotivo] = useState('');
+
   function correr(accion: () => Promise<{ ok: boolean; error?: string }>): void {
     setError(null);
     iniciar(async () => {
@@ -673,10 +695,16 @@ export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContacto
           <div
             key={cotizacion.id}
             id={`cotizacion-${cotizacion.id}`}
-            className="flex flex-col gap-2 rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2"
+            className={[
+              'flex flex-col gap-2 rounded-md border px-3 py-2',
+              cotizacion.descartada
+                ? 'border-neutral-200 bg-white opacity-60'
+                : 'border-neutral-200 bg-neutral-50',
+            ].join(' ')}
           >
             <div className="flex flex-wrap items-center gap-2 text-sm text-neutral-800">
               <strong className="font-medium">Cotización del {cotizacion.fecha}</strong>
+              {cotizacion.descartada ? <Badge tone="neutral">Descartada</Badge> : null}
               {cotizacion.score !== null ? (
                 <Badge tone="info">Fidelidad {cotizacion.score}</Badge>
               ) : null}
@@ -696,7 +724,92 @@ export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContacto
               {cotizacion.plazoDias !== null ? <span>Entrega {cotizacion.plazoDias} días</span> : null}
             </div>
 
-            {puedeEscribir ? (
+            {/* --- Cerrar la ronda que quedó esperando (RF-1003) ----------- */}
+            {puedeEscribir && cotizacion.negociacionPendiente && !cotizacion.descartada ? (
+              <div className="flex flex-col gap-2 rounded-md border border-sky-300 bg-sky-50 px-3 py-2">
+                <p className="text-sm text-sky-900">
+                  Ronda {cotizacion.negociacionPendiente.ronda} mandada
+                  {cotizacion.negociacionPendiente.objetivoTotal === null
+                    ? ''
+                    : `, pidiendo ${cotizacion.moneda} ${cotizacion.negociacionPendiente.objetivoTotal}`}
+                  . ¿Qué contestó? Mientras no lo digas, la mejora no cuenta para el ahorro de la
+                  compulsa.
+                </p>
+                {aceptandoDe === cotizacion.id ? (
+                  <span className="flex flex-wrap items-end gap-2">
+                    <Input
+                      label={`Total nuevo (${cotizacion.moneda})`}
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={mejorado}
+                      onChange={(evento) => setMejorado(evento.target.value)}
+                      className="w-48"
+                    />
+                    <Button
+                      size="sm"
+                      disabled={pendiente}
+                      onClick={() =>
+                        correr(async () => {
+                          const resultado = await resolverNegociacionAction({
+                            obraId,
+                            negociacionId: cotizacion.negociacionPendiente!.id,
+                            resultado: 'aceptada',
+                            nuevoTotal: Number(mejorado),
+                          });
+                          if (resultado.ok) {
+                            setAceptandoDe(null);
+                            setMejorado('');
+                          }
+                          return resultado;
+                        })
+                      }
+                    >
+                      Guardar el precio mejorado
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setAceptandoDe(null)}
+                      disabled={pendiente}
+                    >
+                      Cancelar
+                    </Button>
+                  </span>
+                ) : (
+                  <span className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setAceptandoDe(cotizacion.id);
+                        setMejorado('');
+                      }}
+                      disabled={pendiente}
+                    >
+                      Aceptó: cargar el precio nuevo
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={pendiente}
+                      onClick={() =>
+                        correr(() =>
+                          resolverNegociacionAction({
+                            obraId,
+                            negociacionId: cotizacion.negociacionPendiente!.id,
+                            resultado: 'rechazada',
+                          }),
+                        )
+                      }
+                    >
+                      No aceptó
+                    </Button>
+                  </span>
+                )}
+              </div>
+            ) : null}
+
+            {puedeEscribir && !cotizacion.descartada ? (
               <div className="flex flex-wrap items-center gap-2">
                 {cotizacion.tieneTotal ? (
                   <Button size="sm" variant="secondary" onClick={() => negociar(cotizacion.id)} disabled={pendiente}>
@@ -747,7 +860,72 @@ export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContacto
                     </span>
                   </span>
                 )}
+
+                {/* Descartar no borra: saca la columna del cuadro, del ranking
+                    y de la mediana del ahorro. Es lo que hay que hacer cuando el
+                    proveedor recotiza, para que su oferta vieja no compita
+                    contra la nueva. */}
+                {descartandoDe === cotizacion.id ? null : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setDescartandoDe(cotizacion.id);
+                      setMotivo('');
+                    }}
+                    disabled={pendiente}
+                  >
+                    Descartar
+                  </Button>
+                )}
               </div>
+            ) : null}
+
+            {puedeEscribir && descartandoDe === cotizacion.id ? (
+              <span className="flex flex-wrap items-end gap-2">
+                <Input
+                  label="Por qué se descarta"
+                  placeholder="Mandó un presupuesto corregido"
+                  value={motivo}
+                  onChange={(evento) => setMotivo(evento.target.value)}
+                  className="w-72"
+                />
+                <Button
+                  size="sm"
+                  disabled={pendiente || motivo.trim() === ''}
+                  onClick={() =>
+                    correr(async () => {
+                      const resultado = await descartarCotizacionAction({
+                        obraId,
+                        cotizacionId: cotizacion.id,
+                        motivo,
+                      });
+                      if (resultado.ok) {
+                        setDescartandoDe(null);
+                        setMotivo('');
+                      }
+                      return resultado;
+                    })
+                  }
+                >
+                  Sacarla de la comparativa
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setDescartandoDe(null)}
+                  disabled={pendiente}
+                >
+                  Cancelar
+                </Button>
+              </span>
+            ) : null}
+
+            {cotizacion.descartada ? (
+              <p className="text-xs text-neutral-600">
+                Descartada: no entra a la comparativa, al ranking ni al ahorro. La cotización queda
+                guardada y el motivo está en la auditoría.
+              </p>
             ) : null}
           </div>
         ))}

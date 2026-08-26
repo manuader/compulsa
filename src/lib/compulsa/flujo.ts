@@ -1,6 +1,7 @@
 /**
  * El flujo de una compulsa, de punta a punta: lanzarla, registrar lo que
- * contesta el proveedor, conciliar el presupuesto y proponer la negociación.
+ * contesta el proveedor, conciliar el presupuesto, proponer la negociación,
+ * cerrar la ronda con su resultado y descartar una cotización que quedó vieja.
  *
  * ## Por qué esto NO vive en un archivo `'use server'`
  *
@@ -84,7 +85,11 @@ import { generarTextoRfq } from '@/lib/compulsa/texto-rfq';
 import { acumularMuestra } from '@/lib/indice/percentiles';
 import { proponerContraoferta, type MotivoNoProcede } from '@/lib/negociacion/motor';
 import { componerCuerpo, getCanal, type CanalOutreach } from '@/lib/outreach/canal';
-import { requireContactoCore, requireCotizacionCore } from '@/lib/outreach/threads';
+import {
+  requireContactoCore,
+  requireCotizacionCore,
+  requireNegociacionCore,
+} from '@/lib/outreach/threads';
 import { MIME_PDF } from '@/lib/pipeline/refs';
 import { puedeContactarsePorWhatsapp, requireProveedorCore } from '@/lib/proveedores/gestion';
 import { PLANTILLAS } from '@/lib/rubros/index';
@@ -209,6 +214,37 @@ export type ResultadoNegociacion =
       ronda: number;
     };
 
+/**
+ * Cómo terminó una ronda, según lo que contestó el proveedor.
+ *
+ * Es un subconjunto de `resultado_negociacion` a propósito: `pendiente` es de
+ * dónde sale y `contraoferta` no lo decide una persona apretando un botón —una
+ * contraoferta del proveedor es un total nuevo, o sea una ronda nueva—.
+ */
+export type ResultadoRonda = 'aceptada' | 'rechazada';
+
+export interface CierreNegociacion {
+  resultado: ResultadoRonda;
+  /**
+   * El total mejorado que aceptó el proveedor. **Obligatorio con `aceptada`**:
+   * una negociación aceptada sin número nuevo no es una negociación, y es el
+   * valor contra el que se mide el ahorro (RF-1104).
+   */
+  nuevoTotal?: number;
+  /** Lo que dijo el proveedor, para que la ronda no quede como un booleano. */
+  nota?: string;
+}
+
+export interface ResultadoCierreNegociacion {
+  negociacion: Negociacion;
+  cotizacion: Cotizacion;
+  /** `total` antes y después. Iguales si se rechazó. */
+  totalAnterior: number | null;
+  totalNuevo: number | null;
+  /** `totalAnterior − totalNuevo`, o 0. Es lo que suma al ahorro de la compulsa. */
+  mejora: number;
+}
+
 // ---------------------------------------------------------------------------
 // Errores
 // ---------------------------------------------------------------------------
@@ -287,6 +323,26 @@ export class NegociacionImposibleError extends Error {
   constructor(motivo: string) {
     super(motivo);
     this.name = 'NegociacionImposibleError';
+  }
+}
+
+export class NegociacionYaResueltaError extends Error {
+  constructor(
+    readonly negociacionId: string,
+    readonly resultado: ResultadoRonda,
+  ) {
+    super(
+      `Esa ronda de negociación ya está ${resultado}: el resultado se escribe una sola vez (RF-1003). ` +
+        'Si el proveedor volvió a mover el precio, abrí la ronda siguiente.',
+    );
+    this.name = 'NegociacionYaResueltaError';
+  }
+}
+
+export class CotizacionYaDescartadaError extends Error {
+  constructor(readonly cotizacionId: string) {
+    super('Esa cotización ya está descartada.');
+    this.name = 'CotizacionYaDescartadaError';
   }
 }
 
@@ -1326,4 +1382,187 @@ export async function proponerNegociacion(
     objetivoTotal: decision.objetivoTotal,
     ronda,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Cerrar el loop: cómo terminó la ronda y qué se hace con la cotización
+// ---------------------------------------------------------------------------
+
+/**
+ * Escribe cómo terminó una ronda de negociación (RF-1003).
+ *
+ * ## Por qué esto existe
+ *
+ * `proponerNegociacion` escribía la ronda con `resultado = 'pendiente'` y nada
+ * la actualizaba nunca. Tres cosas quedaban rotas por eso, y las tres se
+ * arreglan acá:
+ *
+ *  1. **El ahorro mentía por defecto.** El término «mejoras aceptadas» de
+ *     RF-1104 sale de las rondas con `resultado = 'aceptada'`; sin una sola fila
+ *     que llegara a ese estado, era código muerto en producción y el tablero
+ *     mostraba siempre la cuenta corta.
+ *  2. **El contacto quedaba clavado en `negociando`** para siempre, aunque el
+ *     proveedor hubiera contestado hace tres semanas.
+ *  3. **RF-1003 sin outcome:** «todo queda escrito, gane o pierda» no se cumple
+ *     si lo único que se escribe es que se mandó el mensaje.
+ *
+ * ## Las tres reglas
+ *
+ * - **`aceptada` exige `nuevoTotal`.** Es el precio mejorado y se escribe en
+ *   `cotizaciones.total`, que es el número por el que se compra y contra el que
+ *   se mide todo lo demás. Pasa por el mismo saneo que el resto de los importes
+ *   del módulo: mayor a cero y finito, redondeado a dos decimales; lo imposible
+ *   no entra, no se clampea.
+ * - **`rechazada` no toca el total.** El proveedor dijo que no: el número que
+ *   vale sigue siendo el que había.
+ * - **En los dos casos el contacto vuelve a `cotizo`**, que es su estado real:
+ *   tiene una cotización en la mesa y ya no hay una ronda esperando respuesta.
+ *   No pasa a `cerrado`: cerrar es de la adjudicación.
+ *
+ * Una ronda se resuelve **una sola vez**: reescribir el resultado dejaría la
+ * mejora contada dos veces si el segundo `nuevoTotal` fuera más bajo.
+ */
+export async function resolverNegociacion(
+  db: Db,
+  actor: ActorCompulsa,
+  negociacionId: string,
+  cierre: CierreNegociacion,
+): Promise<ResultadoCierreNegociacion> {
+  requireRolCore(actor, 'colaborador');
+  const { negociacion, cotizacion, contexto } = await requireNegociacionCore(
+    db,
+    actor.estudioId,
+    negociacionId,
+  );
+
+  if (negociacion.resultado !== 'pendiente') {
+    throw new NegociacionYaResueltaError(negociacion.id, negociacion.resultado as ResultadoRonda);
+  }
+
+  const totalAnterior = cotizacion.total;
+  let totalNuevo = totalAnterior;
+
+  if (cierre.resultado === 'aceptada') {
+    if (cierre.nuevoTotal === undefined) {
+      throw new NegociacionImposibleError(
+        'Para dar la ronda por aceptada hace falta el total nuevo: es el precio que consiguió la negociación.',
+      );
+    }
+    if (!Number.isFinite(cierre.nuevoTotal) || cierre.nuevoTotal <= 0) {
+      throw new RangeError(
+        `El total mejorado tiene que ser un importe mayor a cero: ${String(cierre.nuevoTotal)}.`,
+      );
+    }
+    totalNuevo = Math.round(cierre.nuevoTotal * 100) / 100;
+  }
+
+  const nota = cierre.nota?.trim() || null;
+
+  const [actualizada] = await db
+    .update(negociaciones)
+    .set({
+      resultado: cierre.resultado,
+      logJson: {
+        ...(negociacion.logJson ?? {}),
+        cerradaPor: actor.email,
+        cerradaAt: new Date().toISOString(),
+        resultado: cierre.resultado,
+        totalAnterior,
+        totalNuevo,
+        ...(nota ? { nota } : {}),
+      },
+    })
+    .where(eq(negociaciones.id, negociacion.id))
+    .returning();
+
+  let cotizacionFinal = cotizacion;
+  if (cierre.resultado === 'aceptada' && totalNuevo !== totalAnterior) {
+    [cotizacionFinal] = await db
+      .update(cotizaciones)
+      .set({ total: totalNuevo })
+      .where(eq(cotizaciones.id, cotizacion.id))
+      .returning();
+  }
+
+  // El contacto vuelve a «cotizó»: la ronda dejó de estar en el aire. Va
+  // incondicional —también si ya estaba en `cotizo`— porque un UPDATE que no
+  // cambia nada es más barato que una lectura para decidir si hacerlo.
+  await db
+    .update(contactosCompulsa)
+    .set({ estado: 'cotizo' })
+    .where(eq(contactosCompulsa.id, contexto.contacto.id));
+
+  const mejora =
+    totalAnterior !== null && totalNuevo !== null && totalAnterior > totalNuevo
+      ? Math.round((totalAnterior - totalNuevo) * 100) / 100
+      : 0;
+
+  await auditar(actor, contexto.obra.id, 'negociacion_resuelta', `negociaciones:${negociacion.id}`, {
+    contactoId: contexto.contacto.id,
+    cotizacionId: cotizacion.id,
+    proveedor: contexto.proveedor.nombre,
+    ronda: negociacion.ronda,
+    resultado: cierre.resultado,
+    total: { antes: totalAnterior, despues: totalNuevo },
+    mejora,
+    nota,
+  });
+
+  return {
+    negociacion: actualizada,
+    cotizacion: cotizacionFinal,
+    totalAnterior,
+    totalNuevo,
+    mejora,
+  };
+}
+
+/**
+ * Saca una cotización de la comparativa sin borrarla (`estado = 'descartada'`).
+ *
+ * Es el estado que el esquema definía desde P1 y al que **no llegaba nadie**: un
+ * proveedor que recotiza dejaba su columna vieja viva en el cuadro, en el
+ * ranking, en la mediana del ahorro y en el mejor comparable de la negociación,
+ * compitiendo contra su propia oferta nueva.
+ *
+ * Los lectores ya filtran por `estado` (`leerComparativa` y `ahorroDeCompulsa`
+ * piden `conciliada`; el resumen del tablero excluye `descartada`
+ * explícitamente), así que descartar alcanza para que desaparezca de los cuatro
+ * lugares. Las filas siguen ahí —la conciliación, las repreguntas, el hilo— y el
+ * motivo queda en la auditoría: `src/db/CLAUDE.md` §7, en datos de negocio no
+ * hay deletes físicos.
+ */
+export async function descartarCotizacion(
+  db: Db,
+  actor: ActorCompulsa,
+  cotizacionId: string,
+  motivo: string,
+): Promise<Cotizacion> {
+  requireRolCore(actor, 'colaborador');
+  const { cotizacion, contexto } = await requireCotizacionCore(db, actor.estudioId, cotizacionId);
+
+  if (cotizacion.estado === 'descartada') throw new CotizacionYaDescartadaError(cotizacion.id);
+
+  const limpio = motivo.trim();
+  if (limpio === '') {
+    throw new RangeError(
+      'Escribí por qué se descarta: dentro de un mes, una columna que desapareció sin motivo no se puede explicar.',
+    );
+  }
+
+  const [descartada] = await db
+    .update(cotizaciones)
+    .set({ estado: 'descartada' })
+    .where(eq(cotizaciones.id, cotizacion.id))
+    .returning();
+
+  await auditar(actor, contexto.obra.id, 'cotizacion_descartada', `cotizaciones:${cotizacion.id}`, {
+    contactoId: contexto.contacto.id,
+    proveedor: contexto.proveedor.nombre,
+    estado: { antes: cotizacion.estado, despues: 'descartada' },
+    total: cotizacion.total,
+    motivo: limpio,
+  });
+
+  return descartada;
 }

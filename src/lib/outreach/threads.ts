@@ -4,7 +4,8 @@
  *
  * Dos cosas viven acá y no en el core de flujo a propósito:
  *
- * 1. **`requireContactoCore` / `requireCompulsaCore` / `requireCotizacionCore`.**
+ * 1. **`requireContactoCore` / `requireCompulsaCore` / `requireCotizacionCore` /
+ *    `requireNegociacionCore`.**
  *    Un `contactoId` que llega de una URL o de un payload no nombra nada hasta
  *    que se prueba que cuelga de una obra de **este** estudio
  *    (`contacto → compulsa → obra → estudio`). Un id ajeno y un id inventado
@@ -36,12 +37,14 @@ import {
   contactosCompulsa,
   cotizaciones,
   mensajes,
+  negociaciones,
   obras,
   proveedores,
   type Compulsa,
   type ContactoCompulsa,
   type Cotizacion,
   type Mensaje,
+  type Negociacion,
   type Obra,
   type Proveedor,
 } from '@/db/schema';
@@ -87,6 +90,13 @@ export class CotizacionNoEncontradaError extends Error {
   constructor(readonly cotizacionId: string) {
     super('No encontré esa cotización en una obra de este estudio.');
     this.name = 'CotizacionNoEncontradaError';
+  }
+}
+
+export class NegociacionNoEncontradaError extends Error {
+  constructor(readonly negociacionId: string) {
+    super('No encontré esa ronda de negociación en una obra de este estudio.');
+    this.name = 'NegociacionNoEncontradaError';
   }
 }
 
@@ -177,6 +187,35 @@ export async function requireCotizacionCore(
     cotizacion: fila.cotizacion,
     contexto: await requireContactoCore(db, estudioId, fila.contactoId),
   };
+}
+
+/**
+ * La ronda de negociación con su cotización y su contexto — o "no existe".
+ *
+ * Un salto más largo que los otros tres (negociación → cotización → contacto →
+ * compulsa → obra → estudio) y por eso mismo el que más falta hacía: cerrar una
+ * negociación **escribe** el total de la cotización, así que un `negociacionId`
+ * suelto no puede tocar nada hasta que se prueba de qué estudio es.
+ */
+export async function requireNegociacionCore(
+  db: Db,
+  estudioId: string,
+  negociacionId: string,
+): Promise<{ negociacion: Negociacion; cotizacion: Cotizacion; contexto: ContextoContacto }> {
+  if (!esUuid(negociacionId)) throw new NegociacionNoEncontradaError(negociacionId);
+
+  const [fila] = await db
+    .select({ negociacion: negociaciones, cotizacionId: cotizaciones.id })
+    .from(negociaciones)
+    .innerJoin(cotizaciones, eq(cotizaciones.id, negociaciones.cotizacionId))
+    .innerJoin(contactosCompulsa, eq(contactosCompulsa.id, cotizaciones.contactoId))
+    .innerJoin(compulsas, eq(compulsas.id, contactosCompulsa.compulsaId))
+    .innerJoin(obras, eq(obras.id, compulsas.obraId))
+    .where(and(eq(negociaciones.id, negociacionId), eq(obras.estudioId, estudioId)));
+
+  if (!fila) throw new NegociacionNoEncontradaError(negociacionId);
+  const { cotizacion, contexto } = await requireCotizacionCore(db, estudioId, fila.cotizacionId);
+  return { negociacion: fila.negociacion, cotizacion, contexto };
 }
 
 // ---------------------------------------------------------------------------

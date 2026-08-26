@@ -20,7 +20,7 @@
  *    «Copiar» copia lo que el proveedor tiene que leer, y los recortes son links
  *    de descarga.
  */
-import { desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
@@ -38,7 +38,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { getDb } from '@/db/client';
-import { compulsas, cotizaciones } from '@/db/schema';
+import { compulsas, cotizaciones, negociaciones } from '@/db/schema';
 import { requireObra, requireUser } from '@/lib/auth/guards';
 import { formatearCantidad, formatearNumero } from '@/lib/computo/unidades';
 import {
@@ -150,6 +150,24 @@ export default async function CompulsaPage({
 
   const puedeEscribir = esRolSuficiente(usuario, 'colaborador');
 
+  // Las rondas de negociación sin resultado: son las que el panel tiene que
+  // ofrecer cerrar. Va después del `Promise.all` porque necesita los ids de las
+  // cotizaciones, que salen de ahí.
+  const idsCotizaciones = cotizadas.map((fila) => fila.id);
+  const rondasAbiertas =
+    idsCotizaciones.length === 0
+      ? []
+      : await db
+          .select()
+          .from(negociaciones)
+          .where(
+            and(
+              inArray(negociaciones.cotizacionId, idsCotizaciones),
+              eq(negociaciones.resultado, 'pendiente'),
+            ),
+          )
+          .orderBy(desc(negociaciones.ronda));
+
   const deEstaCompulsa = avisos.filter((aviso) => aviso.compulsaId === compulsa.id);
   // Ver el encabezado del archivo: escritura idempotente durante el render, y
   // **solo si el que mira puede escribir** — el núcleo lo decide con el actor,
@@ -193,8 +211,11 @@ export default async function CompulsaPage({
         claveItem: bandera.claveItem,
         nota: bandera.nota,
       })),
-      cotizaciones: suyas.map(
-        (fila): CotizacionVista => ({
+      cotizaciones: suyas.map((fila): CotizacionVista => {
+        const ronda = rondasAbiertas.find((abierta) => abierta.cotizacionId === fila.id) ?? null;
+        const objetivo = Number((ronda?.ofertaJson as { objetivoTotal?: unknown })?.objetivoTotal);
+
+        return {
           id: fila.id,
           fecha: FECHA.format(fila.createdAt),
           total: fila.total === null ? null : formatearNumero(fila.total, 2),
@@ -207,8 +228,19 @@ export default async function CompulsaPage({
           formaPago: fila.formaPago,
           lineas: fila.lineasJson.length,
           sustituciones: banderas.filter((bandera) => bandera.cotizacionId === fila.id).length,
-        }),
-      ),
+          descartada: fila.estado === 'descartada',
+          // La ronda que quedó esperando respuesta. El objetivo baja ya
+          // formateado en es-AR, como el resto de los números de esta pantalla.
+          negociacionPendiente:
+            ronda === null
+              ? null
+              : {
+                  id: ronda.id,
+                  ronda: ronda.ronda,
+                  objetivoTotal: Number.isFinite(objetivo) ? formatearNumero(objetivo, 2) : null,
+                },
+        };
+      }),
       mensajes: hilo.mensajes.map((mensaje) => ({
         id: mensaje.id,
         direccion: mensaje.direccion,

@@ -55,12 +55,16 @@ import { conciliar, precioUnitarioDe } from '@/lib/compulsa/conciliacion';
 import {
   CompulsaVigenteError,
   CotizacionYaConciliadaError,
+  CotizacionYaDescartadaError,
+  descartarCotizacion,
   lanzarCompulsa,
   NegociacionImposibleError,
+  NegociacionYaResueltaError,
   proponerNegociacion,
   registrarCotizacion,
   registrarEnvio,
   requireRolCore,
+  resolverNegociacion,
   RolInsuficienteError,
   RubroNoAprobadoError,
   SinItemsError,
@@ -73,6 +77,7 @@ import { CanalNoConfiguradoError } from '@/lib/outreach/canal';
 import {
   ContactoNoEncontradoError,
   CotizacionNoEncontradaError,
+  NegociacionNoEncontradaError,
   requireContactoCore,
   requireCotizacionCore,
 } from '@/lib/outreach/threads';
@@ -288,10 +293,13 @@ function mensajeDeDominio(error: unknown): string | null {
     error instanceof SinProveedoresContactablesError ||
     error instanceof SinMensajePendienteError ||
     error instanceof CotizacionYaConciliadaError ||
+    error instanceof CotizacionYaDescartadaError ||
     error instanceof NegociacionImposibleError ||
+    error instanceof NegociacionYaResueltaError ||
     error instanceof CanalNoConfiguradoError ||
     error instanceof ContactoNoEncontradoError ||
     error instanceof CotizacionNoEncontradaError ||
+    error instanceof NegociacionNoEncontradaError ||
     error instanceof ObraNoEncontradaError ||
     error instanceof RangeError
   ) {
@@ -306,6 +314,26 @@ async function revalidar(obraId: string, compulsaId?: string): Promise<void> {
   revalidatePath(`/obras/${obraId}/conversaciones`);
   revalidatePath(`/obras/${obraId}`);
   if (compulsaId) revalidatePath(`/obras/${obraId}/compulsas/${compulsaId}`);
+}
+
+/**
+ * Revalida las pantallas que un cambio sobre un contacto toca, incluida **la
+ * comparativa**: cerrar una negociación mueve el total y descartar una
+ * cotización le saca una columna entera al cuadro.
+ *
+ * Es una función y no cuatro líneas repetidas porque el `compulsaId` sale de una
+ * consulta: la acción tiene el contacto, no la compulsa.
+ */
+async function revalidarCompulsaDe(db: Db, obraId: string, contactoId: string): Promise<void> {
+  const [contacto] = await db
+    .select({ compulsaId: contactosCompulsa.compulsaId })
+    .from(contactosCompulsa)
+    .where(eq(contactosCompulsa.id, contactoId));
+
+  await revalidar(obraId, contacto?.compulsaId);
+  const { revalidatePath } = await import('next/cache');
+  revalidatePath(`/obras/${obraId}/comparativa`);
+  revalidatePath(`/obras/${obraId}/conversaciones/${contactoId}`);
 }
 
 function auditar(
@@ -1059,6 +1087,74 @@ export async function proponerNegociacionAction(entrada: unknown): Promise<Resul
       ronda: resultado.ronda,
       objetivoTotal: resultado.objetivoTotal,
     };
+  } catch (error) {
+    const mensaje = mensajeDeDominio(error);
+    if (!mensaje) throw error;
+    return { ok: false, error: mensaje };
+  }
+}
+
+const zCierreNegociacion = z.object({
+  obraId: zUuid,
+  negociacionId: zUuid,
+  resultado: z.enum(['aceptada', 'rechazada']),
+  nuevoTotal: z.number().nullable().optional(),
+  nota: z.string().max(2_000).optional(),
+});
+
+/**
+ * «Aceptó» / «No aceptó»: cierra la ronda y, si aceptó, escribe el total nuevo.
+ *
+ * Es la otra mitad de `proponerNegociacionAction`, que hasta ahora escribía la
+ * ronda y la dejaba `pendiente` para siempre (RF-1003 sin outcome, y el término
+ * «mejoras aceptadas» del ahorro sin una sola fila que lo alimentara).
+ */
+export async function resolverNegociacionAction(entrada: unknown): Promise<ResultadoAccionCompulsa> {
+  const parseo = zCierreNegociacion.safeParse(entrada);
+  if (!parseo.success) {
+    return { ok: false, error: parseo.error.issues[0]?.message ?? PAYLOAD_ILEGIBLE };
+  }
+  const { obraId, negociacionId, resultado, nuevoTotal, nota } = parseo.data;
+
+  const ctx = await contexto(obraId);
+  try {
+    const cierre = await resolverNegociacion(ctx.db, ctx.actor, negociacionId, {
+      resultado,
+      nuevoTotal: nuevoTotal ?? undefined,
+      nota,
+    });
+    await revalidarCompulsaDe(ctx.db, ctx.obraId, cierre.cotizacion.contactoId);
+    return { ok: true };
+  } catch (error) {
+    const mensaje = mensajeDeDominio(error);
+    if (!mensaje) throw error;
+    return { ok: false, error: mensaje };
+  }
+}
+
+const zDescarte = z.object({
+  obraId: zUuid,
+  cotizacionId: zUuid,
+  motivo: z.string().trim().min(1, 'Escribí por qué se descarta.').max(2_000),
+});
+
+/** Saca la cotización de la comparativa sin borrarla (`estado = 'descartada'`). */
+export async function descartarCotizacionAction(entrada: unknown): Promise<ResultadoAccionCompulsa> {
+  const parseo = zDescarte.safeParse(entrada);
+  if (!parseo.success) {
+    return { ok: false, error: parseo.error.issues[0]?.message ?? PAYLOAD_ILEGIBLE };
+  }
+
+  const ctx = await contexto(parseo.data.obraId);
+  try {
+    const descartada = await descartarCotizacion(
+      ctx.db,
+      ctx.actor,
+      parseo.data.cotizacionId,
+      parseo.data.motivo,
+    );
+    await revalidarCompulsaDe(ctx.db, ctx.obraId, descartada.contactoId);
+    return { ok: true };
   } catch (error) {
     const mensaje = mensajeDeDominio(error);
     if (!mensaje) throw error;
