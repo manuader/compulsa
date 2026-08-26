@@ -14,7 +14,7 @@ import { useState, useTransition } from 'react';
 import { aprobarRubroAction, crearItemManualAction } from '@/app/obras/[obraId]/computo/actions';
 import { FilaItem, type ItemPlanilla } from '@/components/planilla/fila-item';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, estilosBoton } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
@@ -166,9 +166,12 @@ export function PlanillaRubro({
               {yaAprobado ? 'Rubro aprobado' : 'Aprobar rubro'}
             </Button>
           </span>
+          {/* Descarga: es un `<a>` de verdad, vestido de botón con las mismas
+              clases que `Button` (§8: reusar la primitiva, no copiarle los
+              estilos). */}
           <a
             href={`/api/obras/${obraId}/export?rubro=${rubro}`}
-            className="inline-flex h-8 items-center justify-center rounded-md border border-neutral-300 bg-white px-3 text-sm font-medium text-neutral-900 hover:bg-neutral-100"
+            className={estilosBoton('secondary', 'sm')}
           >
             Exportar XLSX
           </a>

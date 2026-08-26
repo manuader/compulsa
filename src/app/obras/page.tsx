@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { estilosBoton } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { getDb } from '@/db/client';
 import { obras } from '@/db/schema';
@@ -49,8 +49,10 @@ export default async function ObrasPage() {
           <h1 className="text-xl font-semibold tracking-tight text-neutral-900">Obras</h1>
           <p className="text-sm text-neutral-600">{estudio.nombre}</p>
         </div>
-        <Link href="/obras/nueva">
-          <Button>Crear obra</Button>
+        {/* El link se viste de botón: un `<Button>` acá dejaría un `<button>`
+            adentro de un `<a>`, que el HTML no admite. */}
+        <Link href="/obras/nueva" className={estilosBoton()}>
+          Crear obra
         </Link>
       </div>
 
@@ -61,8 +63,8 @@ export default async function ObrasPage() {
             <p className="text-sm text-neutral-600">
               Creá la primera y después subí la documentación para arrancar el cómputo.
             </p>
-            <Link href="/obras/nueva">
-              <Button>Crear la primera obra</Button>
+            <Link href="/obras/nueva" className={estilosBoton()}>
+              Crear la primera obra
             </Link>
           </CardContent>
         </Card>

@@ -18,6 +18,27 @@ const SIZES: Record<ButtonSize, string> = {
   md: 'h-10 px-4 text-sm',
 };
 
+/**
+ * Las clases de un botón, sin el `<button>`.
+ *
+ * Es para lo que **parece** un botón pero no lo es: un `<Link>` que navega.
+ * Meter un `<Button>` adentro de un `<Link>` produce `<a><button>`, que el
+ * HTML no admite (contenido interactivo anidado): el navegador desarma el
+ * marcado, el teclado ve dos paradas de tab para un solo destino y el lector de
+ * pantalla anuncia un botón donde hay un enlace.
+ *
+ * `Button` usa esta misma función, así que un cambio de estilo no se puede
+ * escapar de un lado (`src/app/CLAUDE.md` §8: reusar las primitivas, no
+ * duplicar estilos de botón).
+ */
+export function estilosBoton(
+  variant: ButtonVariant = 'primary',
+  size: ButtonSize = 'md',
+  className?: string,
+): string {
+  return [BASE, VARIANTS[variant], SIZES[size], className].filter(Boolean).join(' ');
+}
+
 export interface ButtonProps extends ComponentPropsWithRef<'button'> {
   variant?: ButtonVariant;
   size?: ButtonSize;
@@ -30,11 +51,5 @@ export function Button({
   className,
   ...props
 }: ButtonProps) {
-  return (
-    <button
-      type={type}
-      className={[BASE, VARIANTS[variant], SIZES[size], className].filter(Boolean).join(' ')}
-      {...props}
-    />
-  );
+  return <button type={type} className={estilosBoton(variant, size, className)} {...props} />;
 }
