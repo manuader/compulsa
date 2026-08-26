@@ -154,9 +154,13 @@ interface ContextoObra {
 async function contexto(entrada: unknown): Promise<ContextoObra | null> {
   const parseo = z.object({ obraId: zUuid }).safeParse(entrada);
   if (!parseo.success) return null;
+  return contextoDeObra(parseo.data.obraId);
+}
 
+/** La misma resolución, para quien ya validó la forma del id y no quiere parsearla dos veces. */
+async function contextoDeObra(obraId: string): Promise<ContextoObra> {
   const { usuario, estudio } = await requireUser();
-  const obra = await requireObra(parseo.data.obraId);
+  const obra = await requireObra(obraId);
   return {
     obraId: obra.id,
     nombre: obra.nombre,
@@ -245,8 +249,8 @@ export async function eliminarObraAction(entrada: unknown): Promise<ResultadoAcc
     .safeParse(entrada);
   if (!parseo.success) return { ok: false, error: PAYLOAD_ILEGIBLE };
 
-  const ctx = await contexto(parseo.data);
-  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  // El id ya pasó por `zUuid` acá arriba: `contextoDeObra` no lo vuelve a parsear.
+  const ctx = await contextoDeObra(parseo.data.obraId);
 
   if (parseo.data.confirmacion.trim() !== ctx.nombre) {
     return {

@@ -336,6 +336,7 @@ describe('eliminarObra', () => {
     expect(conteos.computoRubros).toBe(1);
     expect(conteos.hallazgos).toBe(antes.hallazgos);
     expect(conteos.archivos).toBe(4); // el original + una lámina por página
+    expect(conteos.archivosPendientes).toBe(0);
 
     // Nada de la obra sobrevive, ni siquiera su auditoría (excepción documentada
     // a `src/db/CLAUDE.md` §7: una obra eliminada no deja registros huérfanos).
@@ -371,6 +372,84 @@ describe('eliminarObra', () => {
       entidades: 10,
       computoRubros: 1,
       archivos: 4,
+    });
+  });
+
+  it('si el storage falla en un archivo, la obra igual se elimina y el rastro queda', async () => {
+    // El caso feo: los deletes de la base ya commitearon y el storage tira un
+    // error ordinario (permisos, disco lleno) en un archivo cualquiera. Si el
+    // rastro se escribiera después de la limpieza, la obra quedaría borrada sin
+    // una sola línea de auditoría, y si el error cortara el loop, los archivos
+    // que venían después quedarían colgados sin que nadie sepa cuáles.
+    await subirYProcesar('obra-demo.pdf');
+    await archivarObra(db, estudioId, obraId, actor);
+
+    const intentos: string[] = [];
+    const storageRoto: StorageAdapter = {
+      guardar: (ruta, bytes, mime) => storage.guardar(ruta, bytes, mime),
+      leer: (ref) => storage.leer(ref),
+      async eliminar(ref) {
+        intentos.push(ref);
+        if (intentos.length === 2) throw new Error('EACCES: permiso denegado');
+        await storage.eliminar(ref);
+      },
+    };
+
+    const conteos = await eliminarObra(db, storageRoto, estudioId, obraId, actor);
+
+    // No lanza: la obra se eliminó de verdad.
+    expect(conteos.archivos).toBe(4);
+    expect(conteos.archivosPendientes).toBe(1);
+
+    // 1) La base quedó purgada igual.
+    expect(await conteosDe(obraId)).toEqual({
+      documentos: 0,
+      laminas: 0,
+      entidades: 0,
+      computoItems: 0,
+      computoRubros: 0,
+      hallazgos: 0,
+      auditoria: 0,
+    });
+    expect(await db.select().from(obras).where(eq(obras.id, obraId))).toHaveLength(0);
+
+    // 2) El rastro EXISTE con sus conteos: es lo único que sobrevive a la purga.
+    const rastro = await db
+      .select()
+      .from(auditoria)
+      .where(and(isNull(auditoria.obraId), eq(auditoria.accion, 'obra_eliminada')));
+    expect(rastro).toHaveLength(1);
+    expect(rastro[0].targetRef).toBe('obras:Casa Demo');
+    expect(rastro[0].diffJson).toMatchObject({
+      obraId,
+      nombre: 'Casa Demo',
+      documentos: 1,
+      laminas: 3,
+      entidades: 10,
+      archivos: 4,
+    });
+
+    // 3) El archivo malo no cortó la limpieza: se intentaron los cuatro y los
+    //    otros tres se borraron.
+    expect(intentos).toHaveLength(4);
+    expect(await borrado(intentos[0])).toBe(true);
+    expect(await borrado(intentos[1])).toBe(false); // el que falló sigue ahí
+    expect(await borrado(intentos[2])).toBe(true);
+    expect(await borrado(intentos[3])).toBe(true);
+
+    // 4) Y el que quedó colgado tiene nombre y apellido en la auditoría.
+    const pendientes = await db
+      .select()
+      .from(auditoria)
+      .where(and(isNull(auditoria.obraId), eq(auditoria.accion, 'obra_archivos_pendientes')));
+    expect(pendientes).toHaveLength(1);
+    expect(pendientes[0].targetRef).toBe('obras:Casa Demo');
+    expect(pendientes[0].diffJson).toMatchObject({
+      obraId,
+      pendientes: 1,
+      refs: [intentos[1]],
+      truncado: false,
+      detalle: 'EACCES: permiso denegado',
     });
   });
 

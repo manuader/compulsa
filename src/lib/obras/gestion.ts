@@ -96,7 +96,13 @@ export interface ConteosObra {
   computoRubros: number;
   hallazgos: number;
   auditoria: number;
+  /** Archivos que la obra tenía en el storage: los que se intentó borrar. */
   archivos: number;
+  /**
+   * De esos, cuántos el storage no pudo borrar. Quedan huérfanos (basura, no
+   * corrupción) y su lista está en la auditoría `obra_archivos_pendientes`.
+   */
+  archivosPendientes: number;
 }
 
 /** Qué se llevó puesto la eliminación de un documento. */
@@ -114,6 +120,17 @@ export interface ConteosDocumento {
 
 /** Respuesta con la que se cierran las consultas de escala de un documento borrado. */
 export const RESPUESTA_DOCUMENTO_ELIMINADO = { auto: 'documento eliminado' } as const;
+
+/**
+ * Acción de la auditoría que lista los archivos que el storage no pudo borrar
+ * al eliminar una obra. Es una **segunda** fila, después de `obra_eliminada`:
+ * la obra ya no está, y lo que queda es una tarea de limpieza con nombre y
+ * apellido de cada archivo.
+ */
+export const ACCION_ARCHIVOS_PENDIENTES = 'obra_archivos_pendientes';
+
+/** Cuántas refs entran en el diff de esa fila. Más que esto no es una lista, es un volcado. */
+const MAX_REFS_AUDITADAS = 50;
 
 export class ObraNoArchivadaError extends Error {
   constructor(readonly obraId: string) {
@@ -315,6 +332,23 @@ export function desarchivarObra(
  *  - **Primero la base, después los archivos.** Si el storage falla a mitad de
  *    camino quedan archivos huérfanos —basura, recuperable a mano—; al revés
  *    quedaría una obra visible con sus PDF ya borrados, que es peor.
+ *
+ * ## Por qué el rastro se escribe ANTES de tocar el storage
+ *
+ * La fila `obra_eliminada` es lo único que sobrevive a la purga: sin ella, una
+ * obra desaparecida no deja ni una línea. Los deletes de la base ya
+ * commitearon cuando arranca la limpieza de archivos, así que si el rastro se
+ * escribiera al final, un `EACCES` cualquiera en un solo archivo —permisos, un
+ * disco lleno, el volumen desmontado— dejaría la obra borrada de la base y
+ * **cero** auditoría. El orden correcto es: purgar, dejar el rastro, y recién
+ * después barrer los archivos.
+ *
+ * Por lo mismo, un archivo que no se puede borrar **no aborta la limpieza del
+ * resto**: cada ref va en su propio try, los que fallan se juntan y salen en
+ * una segunda fila de auditoría (`obra_archivos_pendientes`) con la lista, que
+ * es lo que convierte "algo quedó colgado" en una tarea accionable. La función
+ * no lanza: la obra se eliminó de verdad, y avisarle al usuario que falló sería
+ * mentirle sobre lo que pasó.
  */
 export async function eliminarObra(
   db: Db,
@@ -367,9 +401,7 @@ export async function eliminarObra(
     .returning({ id: auditoria.id });
   await db.delete(obras).where(eq(obras.id, obra.id));
 
-  for (const ref of refs) await storage.eliminar(ref);
-
-  const conteos: ConteosObra = {
+  const purgado = {
     documentos: documentosBorrados.length,
     laminas: laminasBorradas.length,
     entidades: entidadesBorradas.length,
@@ -382,16 +414,44 @@ export async function eliminarObra(
 
   // La fila que queda: sin `obra_id` (la obra ya no existe y la FK la rechazaría)
   // y con el nombre en el `target_ref`, que es lo único con lo que una persona
-  // puede reconocer después qué se eliminó.
+  // puede reconocer después qué se eliminó. Va acá, con la base ya purgada y el
+  // storage sin tocar: es el único punto del cuerpo en el que no se puede
+  // perder (ver el encabezado).
   await auditar(undefined, actor, 'obra_eliminada', `obras:${obra.nombre}`, {
     obraId: obra.id,
     nombre: obra.nombre,
     zona: obra.zona,
     tipo: obra.tipo,
-    ...conteos,
+    ...purgado,
   });
 
-  return conteos;
+  // Secuencial a propósito: son decenas de refs y el adapter local no gana nada
+  // en paralelo. Si algún día el storage es remoto y esto pesa, el lugar del
+  // batch es acá — no cambia nada de lo de arriba.
+  const pendientes: string[] = [];
+  let ultimoDetalle: string | null = null;
+  for (const ref of refs) {
+    try {
+      await storage.eliminar(ref);
+    } catch (error) {
+      pendientes.push(ref);
+      ultimoDetalle = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  if (pendientes.length > 0) {
+    await auditar(undefined, actor, ACCION_ARCHIVOS_PENDIENTES, `obras:${obra.nombre}`, {
+      obraId: obra.id,
+      nombre: obra.nombre,
+      pendientes: pendientes.length,
+      refs: pendientes.slice(0, MAX_REFS_AUDITADAS),
+      truncado: pendientes.length > MAX_REFS_AUDITADAS,
+      detalle: ultimoDetalle,
+      motivo: 'La obra se eliminó; estos archivos quedaron en el storage y hay que borrarlos a mano.',
+    });
+  }
+
+  return { ...purgado, archivosPendientes: pendientes.length };
 }
 
 // ---------------------------------------------------------------------------
