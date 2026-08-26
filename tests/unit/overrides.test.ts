@@ -96,6 +96,31 @@ describe('desperdicio configurable: el pin 12% → 15%', () => {
     expect(placas.presentacion).toBe('9 placas de 2,88 m²');
   });
 
+  it('el override POR RUBRO pisa el desperdicio de referencia del rubro', () => {
+    // Es lo que ofrece el formulario de configuración: un % por rubro.
+    const placas = placasCon({ seco: 15 });
+
+    expect(placas.desperdicioPct).toBe(15);
+    expect(placas.cantCompra).toBe(31.68);
+  });
+
+  it('el override por rubro NO toca a los ítems que la plantilla emitió en 0', () => {
+    // Las soleras, los montantes y los tornillos no se desperdician: subir "el
+    // desperdicio de seco" no puede hacer que se compren 15% más de tornillos.
+    const plantillas = plantillasConConfig(config({ seco: 15 }));
+    const { items } = computarRubro([tabique()], plantillas.seco, 'nueva');
+    const porClave = Object.fromEntries(items.map((item) => [item.claveItem, item]));
+
+    expect(porClave['seco.soleras']?.desperdicioPct).toBe(0);
+    expect(porClave['seco.montantes']?.desperdicioPct).toBe(0);
+    expect(porClave['seco.tornillos']?.desperdicioPct).toBe(0);
+    expect(porClave['seco.placas']?.desperdicioPct).toBe(15);
+  });
+
+  it('el override por ítem le gana al del rubro', () => {
+    expect(placasCon({ seco: 15, 'seco.placas': 0 }).desperdicioPct).toBe(0);
+  });
+
   it('un override de un ítem que la plantilla no emite no rompe nada', () => {
     const placas = placasCon({ 'gruesa.ladrillos': 25, 'seco.no_existe': 40 });
 

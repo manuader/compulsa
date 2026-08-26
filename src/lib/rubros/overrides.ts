@@ -208,26 +208,53 @@ export function recomputarCompra(entrada: EntradaCompra): CompraCalculada {
 // ---------------------------------------------------------------------------
 
 /**
- * El ítem con el desperdicio configurado por el estudio, si hay uno para su
- * clave. `0` es un valor válido (bajar el desperdicio a cero), así que la
- * pregunta es si la clave **está**, no si el número es truthy.
+ * El desperdicio que le corresponde al ítem según la configuración.
+ *
+ * `desperdiciosPct` acepta **dos clases de clave**, y en ese orden de prioridad:
+ *
+ *  1. **Por ítem** (`"seco.placas"`), que es como lo tipó P1 y lo que un día
+ *     va a querer un estudio que compra las placas a un proveedor puntual.
+ *  2. **Por rubro** (`"seco"`), que es lo que el formulario de configuración
+ *     ofrece, porque nadie quiere llenar seis campos por rubro.
+ *
+ * El override por rubro **solo pisa a los ítems que la plantilla emitió con el
+ * desperdicio de referencia del rubro**. Las soleras, los montantes y los
+ * tornillos salen con 0% porque no se desperdician: subir "el desperdicio de
+ * seco" a 15% y que de golpe se compren 15% más de tornillos sería otra cosa,
+ * y no la que el usuario pidió.
+ *
+ * `0` es un valor, no un "sin configurar": la pregunta es si la clave **está**,
+ * no si el número es truthy.
  */
-export function aplicarDesperdicio(
+export function desperdicioEfectivo(
   item: ItemComputo,
+  plantilla: Pick<PlantillaRubro, 'id' | 'desperdicioDefaultPct'>,
   desperdiciosPct: Readonly<Record<string, number>>,
-): ItemComputo {
-  const configurado = desperdiciosPct[item.claveItem];
-  if (configurado === undefined || configurado === item.desperdicioPct) return item;
+): number {
+  const porItem = desperdiciosPct[item.claveItem];
+  if (porItem !== undefined) return porItem;
+
+  const porRubro = desperdiciosPct[plantilla.id];
+  if (porRubro !== undefined && item.desperdicioPct === plantilla.desperdicioDefaultPct) {
+    return porRubro;
+  }
+
+  return item.desperdicioPct;
+}
+
+/** El ítem con otro desperdicio: la neta no se toca, la compra se rehace. */
+export function aplicarDesperdicio(item: ItemComputo, desperdicioPct: number): ItemComputo {
+  if (desperdicioPct === item.desperdicioPct) return item;
 
   const compra = recomputarCompra({
     unidad: item.unidad,
     cantNeta: item.cantNeta,
-    desperdicioPct: configurado,
+    desperdicioPct,
     presentacion: item.presentacion,
     cantCompraActual: item.cantCompra,
   });
 
-  return { ...item, desperdicioPct: configurado, ...compra };
+  return { ...item, desperdicioPct, ...compra };
 }
 
 /** Una plantilla que aplica los overrides del estudio a lo que emite. */
@@ -242,7 +269,9 @@ function conConfig(
     computar(entidades: readonly EntidadPersistida[], tipoObra: TipoObra): ResultadoComputo {
       const { items, hallazgos } = plantilla.computar(entidades, tipoObra);
       return {
-        items: items.map((item) => aplicarDesperdicio(item, desperdiciosPct)),
+        items: items.map((item) =>
+          aplicarDesperdicio(item, desperdicioEfectivo(item, plantilla, desperdiciosPct)),
+        ),
         // Los hallazgos no dependen del desperdicio: pasan tal cual.
         hallazgos,
       };

@@ -25,9 +25,16 @@ import {
   estudios,
   invitaciones,
   notificaciones,
+  obras,
   usuarios,
 } from '@/db/schema';
 import { registrarEstudioCore } from '@/lib/auth/session';
+import {
+  archivarObra,
+  editarObra,
+  eliminarDocumento,
+  eliminarObra,
+} from '@/lib/obras/gestion';
 import {
   CHECKLIST_DEFAULT,
   checklistEfectivo,
@@ -43,7 +50,7 @@ import {
   marcarLeida,
   marcarTodasLeidas,
 } from '@/lib/plataforma/notificaciones';
-import { RolInsuficienteError } from '@/lib/plataforma/roles';
+import { RolInsuficienteError, UsuarioInactivoError } from '@/lib/plataforma/roles';
 import {
   aceptarInvitacionCore,
   cambiarActivoUsuario,
@@ -57,6 +64,7 @@ import {
   UltimoTitularError,
   type ActorPlataforma,
 } from '@/lib/plataforma/usuarios';
+import type { StorageAdapter } from '@/lib/storage/index';
 import { RUBROS } from '@/types/domain';
 
 import { createTestDb } from '../helpers/test-db';
@@ -656,6 +664,135 @@ describe('el checklist manda sobre el gate de aprobación', () => {
 
     expect(ajustarHallazgosAlChecklist(sinItem, efectivo)[0].bloqueante).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// La matriz completa, contra los cores de verdad
+// ---------------------------------------------------------------------------
+
+/**
+ * Parametrizado sobre los núcleos que mutan y aceptan un actor.
+ *
+ * No es un test del helper `requireRolCore` (eso está en
+ * `tests/unit/roles.test.ts`): es la prueba de que **cada core lo llama**. Un
+ * core nuevo que se olvide del guard no aparece acá, así que la lista se
+ * actualiza a mano cuando se agrega uno — es el precio de no poder preguntarle
+ * al módulo qué exporta y qué muta.
+ *
+ * Los que faltan porque no aceptan actor (`*Action` con sesión, rutas de API)
+ * están en la tabla del reporte de P7 con el archivo que los guarda.
+ */
+describe('matriz de roles contra los cores que mutan', () => {
+  let obraId: string;
+
+  /** El storage revienta a propósito: si el guard corre primero, nunca se lo toca. */
+  const storageQueRevienta: StorageAdapter = {
+    guardar: () => Promise.reject(new Error('el guard tenía que cortar antes')),
+    leer: () => Promise.reject(new Error('el guard tenía que cortar antes')),
+    eliminar: () => Promise.reject(new Error('el guard tenía que cortar antes')),
+  };
+
+  beforeEach(async () => {
+    const [obra] = await db
+      .insert(obras)
+      .values({ estudioId, nombre: 'Casa Belgrano', zona: 'CABA', tipo: 'nueva', moneda: 'ars' })
+      .returning();
+    obraId = obra.id;
+  });
+
+  interface CoreMutante {
+    nombre: string;
+    minimo: 'colaborador' | 'titular';
+    correr: (actor: ActorPlataforma) => Promise<unknown>;
+  }
+
+  const CORES: CoreMutante[] = [
+    {
+      nombre: 'editarObra',
+      minimo: 'colaborador',
+      correr: (actor) => editarObra(db, estudioId, obraId, { nombre: 'Otra' }, actor),
+    },
+    {
+      nombre: 'archivarObra',
+      minimo: 'colaborador',
+      correr: (actor) => archivarObra(db, estudioId, obraId, actor),
+    },
+    {
+      nombre: 'eliminarDocumento',
+      minimo: 'colaborador',
+      correr: (actor) =>
+        eliminarDocumento(db, storageQueRevienta, estudioId, obraId, obraId, actor),
+    },
+    {
+      nombre: 'guardarConfig',
+      minimo: 'colaborador',
+      correr: (actor) => guardarConfig(db, actor, { desperdiciosPct: { seco: 15 } }),
+    },
+    {
+      nombre: 'guardarItemChecklist',
+      minimo: 'colaborador',
+      correr: (actor) =>
+        guardarItemChecklist(db, actor, 'seco', 'seco.altura_tabiques', { activo: false }),
+    },
+    {
+      nombre: 'eliminarObra',
+      minimo: 'titular',
+      correr: (actor) => eliminarObra(db, storageQueRevienta, estudioId, obraId, actor),
+    },
+    {
+      nombre: 'crearInvitacion',
+      minimo: 'titular',
+      correr: (actor) => crearInvitacion(db, actor, 'lectura'),
+    },
+    {
+      nombre: 'cambiarRolUsuario',
+      minimo: 'titular',
+      correr: (actor) => cambiarRolUsuario(db, actor, actor.usuarioId, 'lectura'),
+    },
+    {
+      nombre: 'cambiarActivoUsuario',
+      minimo: 'titular',
+      correr: (actor) => cambiarActivoUsuario(db, actor, actor.usuarioId, false),
+    },
+  ];
+
+  const SOLO_TITULAR = CORES.filter((core) => core.minimo === 'titular');
+
+  it('las cinco acciones sensibles de la matriz tienen core o dueño declarado', () => {
+    // Lanzar compulsa y adjudicar llegan en P8/P9: hoy la tabla las declara y
+    // no hay core que las implemente. El resto sí está.
+    expect(SOLO_TITULAR.map((core) => core.nombre)).toEqual([
+      'eliminarObra',
+      'crearInvitacion',
+      'cambiarRolUsuario',
+      'cambiarActivoUsuario',
+    ]);
+  });
+
+  it.each(CORES)('lectura no puede $nombre', async ({ correr }) => {
+    await expect(correr(comoRol('lectura'))).rejects.toBeInstanceOf(RolInsuficienteError);
+  });
+
+  it.each(SOLO_TITULAR)('colaborador no puede $nombre', async ({ correr }) => {
+    await expect(correr(comoRol('colaborador'))).rejects.toBeInstanceOf(RolInsuficienteError);
+  });
+
+  it.each(CORES)('un titular DESACTIVADO no puede $nombre', async ({ correr }) => {
+    await expect(correr(comoRol('titular', false))).rejects.toBeInstanceOf(UsuarioInactivoError);
+  });
+
+  it.each(CORES.filter((core) => core.minimo === 'colaborador'))(
+    'un colaborador SÍ puede $nombre',
+    async ({ correr }) => {
+      // No se chequea el resultado: cada core devuelve lo suyo y eso lo cubren
+      // sus propios tests. Lo que se prueba es que el guard lo deja pasar —y
+      // por eso `eliminarDocumento` falla con "no encontré ese documento", no
+      // con un error de rol.
+      const error = await correr(comoRol('colaborador')).catch((e: unknown) => e);
+      expect(error).not.toBeInstanceOf(RolInsuficienteError);
+      expect(error).not.toBeInstanceOf(UsuarioInactivoError);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
