@@ -87,7 +87,10 @@ export default async function ObraLayout({
         </p>
       </div>
 
-      <nav aria-label="Secciones de la obra" className="border-b border-neutral-200">
+      <nav
+        aria-label="Secciones de la obra"
+        className="flex flex-wrap items-end justify-between gap-2 border-b border-neutral-200"
+      >
         <ul className="-mb-px flex flex-wrap gap-1">
           {SOLAPAS.map(({ etiqueta, segmento }) => {
             const href = `${base}${segmento}`;
@@ -110,7 +113,37 @@ export default async function ObraLayout({
             );
           })}
         </ul>
+
+        {/* Fuera de la lista de solapas a propósito: no es una quinta pantalla
+            del trabajo diario, es donde se cambian los datos y se archiva. */}
+        <Link
+          href={`${base}/config`}
+          aria-current={esSolapaActiva(pathname, `${base}/config`, base) ? 'page' : undefined}
+          className={[
+            '-mb-px inline-flex items-center gap-1 border-b-2 px-3 py-2 text-sm transition-colors',
+            esSolapaActiva(pathname, `${base}/config`, base)
+              ? 'border-neutral-900 font-medium text-neutral-900'
+              : 'border-transparent text-neutral-500 hover:border-neutral-300 hover:text-neutral-900',
+          ].join(' ')}
+        >
+          <span aria-hidden="true">⚙</span> Configuración
+        </Link>
       </nav>
+
+      {/* La obra archivada se navega igual: el aviso explica por qué no aparece
+          en el listado, no bloquea nada. */}
+      {obra.estado === 'archivada' ? (
+        <p className="rounded-md border border-neutral-300 bg-neutral-100 px-3 py-2 text-sm text-neutral-700">
+          Obra archivada — no aparece en el listado y está para consulta.{' '}
+          <Link
+            href={`${base}/config#zona-de-riesgo`}
+            className="font-medium text-neutral-900 underline"
+          >
+            Desarchivala o eliminala definitivamente
+          </Link>{' '}
+          desde la configuración.
+        </p>
+      ) : null}
 
       {children}
     </div>
