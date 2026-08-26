@@ -25,6 +25,7 @@ import {
   entradasDeRanking,
   estadoValidez,
   formatearImporte,
+  formatearMonto,
   rankear,
   vencimientoDe,
   type CompulsaComparativa,
@@ -509,5 +510,24 @@ describe('formatearImporte: es-AR', () => {
     expect(formatearImporte(1875400.5)).toBe('1.875.400,50');
     expect(formatearImporte(20000)).toBe('20.000');
     expect(formatearImporte(0)).toBe('0');
+  });
+});
+
+describe('formatearMonto: el signo va antes del símbolo', () => {
+  it('un ahorro positivo sale con el símbolo adelante', () => {
+    expect(formatearMonto('ARS', 15)).toBe('$ 15');
+    expect(formatearMonto('USD', 1875400.5)).toBe('USD 1.875.400,50');
+  });
+
+  it('un ahorro negativo escribe «-$», no «$ -»', () => {
+    // Adjudicar por encima de la mediana da negativo (RF-1104) y el tablero lo
+    // muestra tal cual; en es-AR el menos va antes del símbolo.
+    expect(formatearMonto('ARS', -79840)).toBe('-$ 79.840');
+    expect(formatearMonto('USD', -0.5)).toBe('-USD 0,50');
+  });
+
+  it('el cero no lleva signo', () => {
+    expect(formatearMonto('ARS', 0)).toBe('$ 0');
+    expect(formatearMonto('ARS', -0.004)).toBe('$ 0');
   });
 });

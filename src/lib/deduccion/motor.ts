@@ -267,7 +267,7 @@ export function deducir(
     }
 
     for (const candidato of salida.candidatos) {
-      const clave = `${candidato.destino.id} ${candidato.campo}`;
+      const clave = `${candidato.destino.id}::${candidato.campo}`;
       if (resueltos.has(clave)) continue; // ya lo resolvió una regla de más prioridad
       if (!esCampoDeducible(candidato.destino.tipo, candidato.campo)) continue; // RF-506
 

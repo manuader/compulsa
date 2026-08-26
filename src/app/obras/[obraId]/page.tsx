@@ -16,7 +16,7 @@ import { getDb } from '@/db/client';
 import { computoItems, computoRubros, deducciones, documentos, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
 import { resumenCompulsasObra } from '@/lib/compulsa/adjudicar';
-import { formatearImporte } from '@/lib/compulsa/comparativa';
+import { formatearMonto } from '@/lib/compulsa/comparativa';
 import { checklistEfectivoDeTodos, contarBloqueantes } from '@/lib/plataforma/checklists';
 import { PLANTILLAS } from '@/lib/rubros';
 import { RUBROS, type EstadoRubro } from '@/types/domain';
@@ -396,7 +396,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
                 <dd className="text-2xl font-semibold tabular-nums text-neutral-900">
                   {compulsas.adjudicadas === 0
                     ? '—'
-                    : `${obra.moneda === 'ARS' ? '$' : obra.moneda} ${formatearImporte(compulsas.ahorro)}`}
+                    : formatearMonto(obra.moneda, compulsas.ahorro)}
                 </dd>
                 <dd className="text-xs text-neutral-500">
                   {compulsas.adjudicadas === 0

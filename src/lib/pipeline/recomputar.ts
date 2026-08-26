@@ -414,7 +414,7 @@ async function sincronizarHallazgos(
  * tabla, con la obra ya fijada por el `where`.
  */
 function claveDeDeduccion(fila: { entidadId: string; campo: string }): string {
-  return `${fila.entidadId} ${fila.campo}`;
+  return `${fila.entidadId}::${fila.campo}`;
 }
 
 function valoresDeDeduccion(
@@ -487,7 +487,7 @@ async function sincronizarDeducciones(
     if (!previa) {
       await db.insert(deducciones).values(valoresDeDeduccion(obraId, propuesta));
       resumen.deduccionesPropuestas += 1;
-      await auditar(obraId, 'deduccion_propuesta', `deducciones:${clave.replace(' ', '.')}`, {
+      await auditar(obraId, 'deduccion_propuesta', `deducciones:${clave.replace('::', '.')}`, {
         regla: propuesta.regla,
         valor: propuesta.valor,
         confianza: propuesta.confianza,
@@ -504,7 +504,7 @@ async function sincronizarDeducciones(
       .set(valoresDeDeduccion(obraId, propuesta))
       .where(eq(deducciones.id, previa.id));
     resumen.deduccionesActualizadas += 1;
-    await auditar(obraId, 'deduccion_actualizada', `deducciones:${clave.replace(' ', '.')}`, diff);
+    await auditar(obraId, 'deduccion_actualizada', `deducciones:${clave.replace('::', '.')}`, diff);
   }
 
   for (const fila of existentes) {
@@ -935,6 +935,38 @@ export async function recomputarObra(
   if (deps.resumen !== false) await persistirResumen(db, obraId);
 
   return resumen;
+}
+
+/**
+ * Recomputa las obras **activas** de un estudio y devuelve cuántas tocó.
+ *
+ * Lo llama la configuración del estudio cuando cambia el desperdicio por rubro:
+ * ese número no es un dato de la obra sino del estudio, y mueve la cantidad de
+ * compra de ítems que ya están escritos. Sin este barrido, la pantalla guardaba
+ * el número y la planilla seguía mostrando el anterior hasta que algo más
+ * disparara un recompute —responder una consulta, validar una deducción,
+ * reprocesar una lámina—.
+ *
+ * Va **en serie y sin transacción**, como el resto del pipeline:
+ * `recomputarObra` es idempotente y barata, y correrlas de a una deja la base en
+ * un estado consistente obra por obra en vez de a medio camino en todas.
+ *
+ * Las archivadas quedan afuera: no se listan, no se exportan y no se compulsan.
+ * Cuando se desarchiva una, el primer recompute la pone al día.
+ */
+export async function recomputarObrasDelEstudio(
+  estudioId: string,
+  deps: { db?: Db } = {},
+): Promise<number> {
+  const db = deps.db ?? (await getDb());
+
+  const activas = await db
+    .select({ id: obras.id })
+    .from(obras)
+    .where(and(eq(obras.estudioId, estudioId), eq(obras.estado, 'activa')));
+
+  for (const obra of activas) await recomputarObra(obra.id, { db });
+  return activas.length;
 }
 
 /**
