@@ -27,9 +27,13 @@ const TONO_TIPO: Record<TipoObra, BadgeTone> = {
  * Las pantallas de la obra (PRD §8). Las solapas apuntan siempre a su ruta
  * definitiva, sin páginas de relleno de por medio.
  *
- * «Deducciones» es la única que lleva contador: las otras cuatro son lugares a
- * los que se va, y esta es una **cola de trabajo** —lo que el motor propuso y
- * espera una decisión—. Sin el número, nadie entra a mirar si hay algo.
+ * «Deducciones» es la única que lleva contador: las otras son lugares a los que
+ * se va, y esta es una **cola de trabajo** —lo que el motor propuso y espera una
+ * decisión—. Sin el número, nadie entra a mirar si hay algo.
+ *
+ * El orden es el del trabajo: primero se mide (expediente, cómputo, bandeja,
+ * deducciones), después se pide precio (compulsas, conversaciones) y al final se
+ * compara y se adjudica.
  */
 const SOLAPAS = [
   { etiqueta: 'Tablero', segmento: '' },
@@ -37,6 +41,9 @@ const SOLAPAS = [
   { etiqueta: 'Cómputo', segmento: '/computo' },
   { etiqueta: 'Bandeja', segmento: '/bandeja' },
   { etiqueta: 'Deducciones', segmento: '/deducciones' },
+  { etiqueta: 'Compulsas', segmento: '/compulsas' },
+  { etiqueta: 'Conversaciones', segmento: '/conversaciones' },
+  { etiqueta: 'Comparativa', segmento: '/comparativa' },
 ] as const;
 
 function esSolapaActiva(pathname: string, href: string, base: string): boolean {
