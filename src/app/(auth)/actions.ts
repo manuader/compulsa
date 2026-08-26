@@ -9,7 +9,19 @@
  */
 import { z } from 'zod';
 
-import { EmailYaRegistradoError, login, logout, registrarEstudio } from '@/lib/auth/session';
+import { getDb } from '@/db/client';
+import {
+  EmailYaRegistradoError,
+  guardarCookieSesion,
+  login,
+  logout,
+  registrarEstudio,
+} from '@/lib/auth/session';
+import {
+  aceptarInvitacionCore,
+  InvitacionInvalidaError,
+  normalizarCodigo,
+} from '@/lib/plataforma/usuarios';
 
 /** Estado que `useActionState` devuelve al formulario. Todo serializable. */
 export interface EstadoAuth {
@@ -32,8 +44,24 @@ const zLogin = z.object({
   password: z.string().min(1, 'Escribí tu contraseña.'),
 });
 
+/**
+ * Alta creando estudio: el camino de siempre. El que se suma con código no pasa
+ * por acá — no hay estudio que nombrar.
+ */
 const zRegistro = z.object({
   nombreEstudio: z.string().trim().min(1, 'Poné el nombre del estudio.'),
+  nombre: z.string().trim().min(1, 'Poné tu nombre.'),
+  email: zEmail,
+  password: z.string().min(8, 'La contraseña necesita al menos 8 caracteres.'),
+});
+
+/** Alta por invitación: mismo formulario, sin nombre de estudio y con código. */
+const zRegistroConCodigo = z.object({
+  codigoInvitacion: z
+    .string()
+    .trim()
+    .min(1, 'Escribí el código de invitación.')
+    .transform(normalizarCodigo),
   nombre: z.string().trim().min(1, 'Poné tu nombre.'),
   email: zEmail,
   password: z.string().min(8, 'La contraseña necesita al menos 8 caracteres.'),
@@ -77,21 +105,62 @@ export async function ingresarAction(
   return irAlWorkspace();
 }
 
+/**
+ * Alta de cuenta, por los dos caminos.
+ *
+ * **Con código de invitación** el usuario se suma a un estudio que ya existe,
+ * con el rol que la invitación dice; **sin código** crea un estudio nuevo y
+ * queda como titular. Es el mismo formulario porque es la misma decisión del
+ * usuario ("me quiero dar de alta"), y porque un `/register?codigo=…` tiene que
+ * poder llegar con el campo ya lleno.
+ *
+ * Qué camino se toma lo decide **el server** mirando si vino un código, no un
+ * flag del cliente.
+ */
 export async function registrarAction(
   _estadoPrevio: EstadoAuth,
   formData: FormData,
 ): Promise<EstadoAuth> {
   const crudo = {
+    codigoInvitacion: texto(formData, 'codigoInvitacion').trim(),
     nombreEstudio: texto(formData, 'nombreEstudio'),
     nombre: texto(formData, 'nombre'),
     email: texto(formData, 'email'),
     password: texto(formData, 'password'),
   };
   const valores = {
+    codigoInvitacion: crudo.codigoInvitacion,
     nombreEstudio: crudo.nombreEstudio,
     nombre: crudo.nombre,
     email: crudo.email,
   };
+
+  const conCodigo = crudo.codigoInvitacion !== '';
+
+  if (conCodigo) {
+    const parseo = zRegistroConCodigo.safeParse(crudo);
+    if (!parseo.success) return { errores: erroresPorCampo(parseo.error), valores };
+
+    try {
+      const { token } = await aceptarInvitacionCore(await getDb(), {
+        codigo: parseo.data.codigoInvitacion,
+        nombre: parseo.data.nombre,
+        email: parseo.data.email,
+        password: parseo.data.password,
+      });
+      await guardarCookieSesion(token);
+    } catch (error) {
+      if (error instanceof InvitacionInvalidaError) {
+        return { errores: { codigoInvitacion: error.message }, valores };
+      }
+      if (error instanceof EmailYaRegistradoError) {
+        return { errores: { email: 'Ya hay una cuenta con ese mail. Probá ingresando.' }, valores };
+      }
+      throw error;
+    }
+
+    return irAlWorkspace();
+  }
 
   const parseo = zRegistro.safeParse(crudo);
   if (!parseo.success) return { errores: erroresPorCampo(parseo.error), valores };

@@ -139,6 +139,19 @@ async function cookieStore() {
   return cookies();
 }
 
+/**
+ * Deja la cookie de sesión para un token ya creado.
+ *
+ * Es público porque el alta por invitación (`@/lib/plataforma/usuarios`) crea la
+ * sesión con `crearSesion()` y necesita cerrar el círculo sin duplicar los
+ * flags de la cookie: `httpOnly`, `sameSite` y `secure` se definen **una sola
+ * vez**, acá. Una segunda copia en otro módulo es una que un día se va a
+ * quedar sin `httpOnly`.
+ */
+export async function guardarCookieSesion(token: string): Promise<void> {
+  return guardarCookie(token);
+}
+
 async function guardarCookie(token: string): Promise<void> {
   const store = await cookieStore();
   store.set(COOKIE_SESION, token, {
