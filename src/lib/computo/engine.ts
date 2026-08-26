@@ -11,7 +11,9 @@
  *   2. aplica la regla de oro §11.b — un ítem con confianza por debajo del
  *      umbral no se emite y se degrada a consulta bloqueante;
  *   3. suma los sanity checks de obra;
- *   4. deduplica hallazgos por clave, que es única por obra (idempotencia).
+ *   4. deduplica hallazgos por clave, que es única por obra (idempotencia);
+ *   5. marca `origen: 'deducido'` los ítems que se apoyaron en un dato que entró
+ *      por una deducción validada (§11, P6).
  */
 import { sanityChecks } from '@/lib/computo/sanity';
 import { hallazgoBajaConfianza, UMBRAL_CONFIANZA } from '@/lib/hallazgos/taxonomia';
@@ -64,6 +66,77 @@ export function computarRubro(
   return { items: emitidos, hallazgos: [...hallazgos, ...degradados] };
 }
 
+// ---------------------------------------------------------------------------
+// Origen deducido (§11): qué ítems se apoyaron en un dato deducido
+// ---------------------------------------------------------------------------
+
+/**
+ * Atributos de cada entidad cuyo valor NO está escrito en la documentación sino
+ * que entró por una deducción que el arquitecto validó: `entidadId → campos`.
+ *
+ * El engine no sabe de la tabla `deducciones` ni quiere saber: recibe el mapa ya
+ * armado (lo arma `recomputarObra`) y con eso alcanza.
+ */
+export type CamposDeducidos = ReadonlyMap<string, ReadonlySet<string>>;
+
+/** Default de `computarObra`: sin deducciones validadas nada cambia de origen. */
+const SIN_DEDUCCIONES: CamposDeducidos = new Map();
+
+/** Las mismas entidades, pero sin los atributos que aportó una deducción. */
+function sinCamposDeducidos(
+  entidades: readonly EntidadPersistida[],
+  camposDeducidos: CamposDeducidos,
+): EntidadPersistida[] {
+  return entidades.map((entidad) => {
+    const campos = camposDeducidos.get(entidad.id);
+    if (campos === undefined || campos.size === 0) return entidad;
+    const atributos = { ...entidad.atributos };
+    for (const campo of campos) delete atributos[campo];
+    return { ...entidad, atributos };
+  });
+}
+
+/** Todo lo del ítem menos su `origen`: si esto cambió, el dato deducido se usó. */
+function huellaDeItem(item: ItemComputo): string {
+  return JSON.stringify([
+    item.rubro,
+    item.descripcion,
+    item.unidad,
+    item.cantNeta,
+    item.desperdicioPct,
+    item.cantCompra,
+    item.presentacion,
+    item.confianza,
+    item.fuentes.map((fuente) => [fuente.laminaId, fuente.bbox]),
+  ]);
+}
+
+/**
+ * Marca `deducido` los ítems que **efectivamente** usaron un dato deducido.
+ *
+ * La prueba no es "la entidad tiene algún campo deducido" sino "el ítem sale
+ * distinto sin ese campo": se computa una segunda vez con los campos deducidos
+ * borrados y se comparan las dos salidas. Un ítem que no cambia no se apoyó en
+ * la deducción y sigue siendo explícito —una altura deducida no vuelve deducidos
+ * a los ítems de pintura que solo miran la superficie—, y una deducción que
+ * repite el default de la plantilla (`caras: 2`) tampoco ensucia nada.
+ *
+ * Un ítem `supuesto` no se toca: decir "se computó sobre un supuesto declarado"
+ * es más fuerte que decir "se dedujo", y es lo que manda a la bandeja.
+ */
+function marcarDeducidos(
+  items: readonly ItemComputo[],
+  sinDeduccion: readonly ItemComputo[],
+): ItemComputo[] {
+  const huellas = new Map(sinDeduccion.map((item) => [item.claveItem, huellaDeItem(item)]));
+  return items.map((item) => {
+    if (item.origen !== 'explicito') return item;
+    const previa = huellas.get(item.claveItem);
+    if (previa !== undefined && previa === huellaDeItem(item)) return item;
+    return { ...item, origen: 'deducido' };
+  });
+}
+
 /** Deja el primer hallazgo de cada clave: la clave es única por obra. */
 function deduplicarPorClave(hallazgos: readonly HallazgoDetectado[]): HallazgoDetectado[] {
   const vistas = new Set<string>();
@@ -77,17 +150,17 @@ function deduplicarPorClave(hallazgos: readonly HallazgoDetectado[]): HallazgoDe
 }
 
 /**
- * Computa la obra entera.
+ * Una pasada completa del motor sobre un juego de entidades.
  *
  * Los rubros se corren siempre en el orden canónico de `RUBROS` (no en el que
  * los pida el llamador) para que el resultado sea comparable entre corridas.
  * Los sanity checks son de obra, no de rubro: corren aunque se pida un solo
  * rubro, y sus hallazgos salen con `rubro: null`.
  */
-export function computarObra(
+function correrPlantillas(
   entidades: readonly EntidadPersistida[],
   tipoObra: TipoObra,
-  rubros: readonly RubroId[] = RUBROS,
+  rubros: readonly RubroId[],
 ): ResultadoComputo {
   const items: ItemComputo[] = [];
   const hallazgos: HallazgoDetectado[] = [];
@@ -102,4 +175,31 @@ export function computarObra(
   hallazgos.push(...sanityChecks(entidades));
 
   return { items, hallazgos: deduplicarPorClave(hallazgos) };
+}
+
+/**
+ * Computa la obra entera.
+ *
+ * `camposDeducidos` es opcional y por defecto está vacío: sin deducciones
+ * validadas el motor corre exactamente una vez y devuelve lo mismo de siempre.
+ * Con deducciones validadas corre una segunda pasada "de control" sin esos datos
+ * para saber qué ítems dependen de ellos y marcarlos `origen: 'deducido'`.
+ */
+export function computarObra(
+  entidades: readonly EntidadPersistida[],
+  tipoObra: TipoObra,
+  rubros: readonly RubroId[] = RUBROS,
+  camposDeducidos: CamposDeducidos = SIN_DEDUCCIONES,
+): ResultadoComputo {
+  const resultado = correrPlantillas(entidades, tipoObra, rubros);
+  if (camposDeducidos.size === 0) return resultado;
+
+  const control = correrPlantillas(
+    sinCamposDeducidos(entidades, camposDeducidos),
+    tipoObra,
+    rubros,
+  );
+  // Los hallazgos son los de la pasada real: la de control es una hipótesis
+  // ("¿qué pasaría si el dato deducido no estuviera?"), no el estado de la obra.
+  return { items: marcarDeducidos(resultado.items, control.items), hallazgos: resultado.hallazgos };
 }
