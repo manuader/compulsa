@@ -23,6 +23,7 @@ import { useRef, useState, useTransition, type DragEvent } from 'react';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
+import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import {
@@ -40,6 +41,8 @@ import {
 // de más abajo, que son `Record<Union, string>`: si el dominio suma un valor,
 // falta la etiqueta y no compila. La exhaustividad la garantiza el tipo.
 import type { Disciplina, EstadoAnalisis, TipoLamina } from '@/types/domain';
+
+import { eliminarDocumentoAction } from './actions';
 
 // ---------------------------------------------------------------------------
 // Datos que arma la página
@@ -276,6 +279,31 @@ function DocumentoCard({
   onCambio: () => void;
   refrescando: boolean;
 }) {
+  const [confirmando, setConfirmando] = useState(false);
+  const [borrando, setBorrando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const cuantasLaminas =
+    documento.laminas.length === 1 ? '1 lámina' : `${documento.laminas.length} láminas`;
+
+  async function eliminar(): Promise<void> {
+    setBorrando(true);
+    setError(null);
+    try {
+      const resultado = await eliminarDocumentoAction({ obraId, documentoId: documento.id });
+      if (!resultado.ok) {
+        setError(resultado.error);
+        return;
+      }
+      setConfirmando(false);
+      onCambio();
+    } catch (fallo) {
+      setError(mensajeDe(fallo));
+    } finally {
+      setBorrando(false);
+    }
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-wrap items-center justify-between gap-2">
@@ -283,13 +311,62 @@ function DocumentoCard({
           <h2 className="text-sm font-semibold text-neutral-900">{documento.nombreArchivo}</h2>
           {documento.version > 1 ? <Badge tone="info">v{documento.version}</Badge> : null}
         </div>
-        <p className="text-xs text-neutral-500">
-          {documento.laminas.length === 1
-            ? '1 lámina'
-            : `${documento.laminas.length} láminas`}{' '}
-          · subido el {documento.subidoEl}
-        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-xs text-neutral-500">
+            {cuantasLaminas} · subido el {documento.subidoEl}
+          </p>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={borrando || refrescando}
+            onClick={() => setConfirmando(true)}
+          >
+            Eliminar
+          </Button>
+        </div>
       </CardHeader>
+
+      {error ? (
+        <p role="alert" className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-800">
+          {error}
+        </p>
+      ) : null}
+
+      <Dialog
+        open={confirmando}
+        onClose={() => setConfirmando(false)}
+        title="Eliminar el documento"
+        footer={
+          <>
+            <Button variant="secondary" disabled={borrando} onClick={() => setConfirmando(false)}>
+              Cancelar
+            </Button>
+            <Button variant="danger" disabled={borrando} onClick={() => void eliminar()}>
+              {borrando ? 'Eliminando…' : 'Eliminar documento'}
+            </Button>
+          </>
+        }
+      >
+        <p>
+          Se elimina <span className="font-medium">{documento.nombreArchivo}</span>
+          {documento.version > 1 ? ` (versión ${documento.version})` : ''} y sus {cuantasLaminas}.
+        </p>
+        <ul className="mt-3 list-disc pl-5 text-neutral-700">
+          <li>Sus láminas y las entidades que se detectaron en ellas se eliminan.</li>
+          <li>
+            Los ítems de cómputo que salían de esas entidades quedan{' '}
+            <span className="font-medium">anulados</span>: no se borran, pero salen de la planilla y
+            del XLSX.
+          </li>
+          <li>Las consultas de esas láminas se cierran.</li>
+        </ul>
+        <p className="mt-3">Esto no se puede deshacer.</p>
+        {documento.version > 1 ? (
+          <p className="mt-2 text-neutral-600">
+            Las otras versiones de este archivo no se tocan: cada una es un documento aparte.
+          </p>
+        ) : null}
+      </Dialog>
 
       <CardContent className="p-0">
         {documento.laminas.length === 0 ? (
