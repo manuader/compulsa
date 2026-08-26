@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, lt, or, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
@@ -189,6 +189,10 @@ export default async function AuditoriaPage({ searchParams }: Props) {
   const idsDeObras = obrasDelEstudio.map((obra) => obra.id);
   const mails = equipo.map((miembro) => miembro.email);
 
+  // `or()` sin condiciones devuelve `undefined`, que en el `where` significa
+  // "sin filtro" — o sea, la auditoría de TODOS los estudios. No puede pasar
+  // (el usuario de la sesión ya es un mail del estudio), pero un alcance que
+  // falla abierto no es algo que se deje librado a que no pueda pasar.
   const alcance: SQL | undefined = obraElegida
     ? eq(auditoria.obraId, obraElegida)
     : or(
@@ -196,7 +200,7 @@ export default async function AuditoriaPage({ searchParams }: Props) {
         mails.length > 0
           ? and(isNull(auditoria.obraId), inArray(auditoria.actorNombre, mails))
           : undefined,
-      );
+      ) ?? sql`false`;
 
   // Se piden 51 para saber si hay página siguiente sin contar la tabla entera.
   const filas = await db
