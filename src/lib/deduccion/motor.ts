@@ -155,7 +155,6 @@ export interface SalidaRegla {
 
 /** Acceso a las láminas por entidad: las reglas razonan y se explican con esto. */
 export interface ContextoDeduccion {
-  lamina(entidad: EntidadPersistida): LaminaResumen | null;
   tipoLamina(entidad: EntidadPersistida): TipoLamina | null;
   /** Código para las explicaciones: `A-03`, o `sin código` si el rótulo no lo trae. */
   codigoLamina(entidad: EntidadPersistida): string;
@@ -219,19 +218,23 @@ export function enumerar(partes: readonly string[]): string {
 // Orquestación
 // ---------------------------------------------------------------------------
 
-const REGLAS: ReadonlyArray<{ regla: ReglaDeduccion; ejecutar: FnRegla }> = [
-  { regla: 'planilla_plano', ejecutar: deducirPlanillaPlano },
-  { regla: 'planta_corte', ejecutar: deducirPlantaCorte },
-  { regla: 'continuidad', ejecutar: deducirContinuidad },
-  { regla: 'idem_tipologia', ejecutar: deducirIdemTipologia },
-  { regla: 'cierre_cotas', ejecutar: deducirCierreCotas },
-];
+/**
+ * Qué función implementa cada regla. El ORDEN de ejecución no vive acá sino en
+ * `PRIORIDAD_REGLAS`: una sola lista manda, y así no hay forma de que la
+ * prioridad documentada y la real se separen.
+ */
+const IMPLEMENTACIONES: Record<ReglaDeduccion, FnRegla> = {
+  planilla_plano: deducirPlanillaPlano,
+  planta_corte: deducirPlantaCorte,
+  continuidad: deducirContinuidad,
+  idem_tipologia: deducirIdemTipologia,
+  cierre_cotas: deducirCierreCotas,
+};
 
 function crearContexto(laminas: readonly LaminaResumen[]): ContextoDeduccion {
   const porId = new Map(laminas.map((lamina) => [lamina.id, lamina]));
   const lamina = (entidad: EntidadPersistida): LaminaResumen | null => porId.get(entidad.laminaId) ?? null;
   return {
-    lamina,
     tipoLamina: (entidad) => lamina(entidad)?.tipo ?? null,
     codigoLamina: (entidad) => lamina(entidad)?.codigo ?? 'sin código',
   };
@@ -254,8 +257,8 @@ export function deducir(
   const resueltos = new Set<string>();
   const clavesVistas = new Set<string>();
 
-  for (const { regla, ejecutar } of REGLAS) {
-    const salida = ejecutar(entidades, ctx);
+  for (const regla of PRIORIDAD_REGLAS) {
+    const salida = IMPLEMENTACIONES[regla](entidades, ctx);
 
     for (const hallazgo of salida.inconsistencias) {
       if (clavesVistas.has(hallazgo.clave)) continue;
