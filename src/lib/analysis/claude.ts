@@ -17,7 +17,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { registrarAuditoria } from '@/lib/audit';
 import type { LaminaInput, ObraContexto } from '@/types/domain';
-import { zAnalisisLamina, type AnalisisLamina, type AnalysisProvider } from './tipos';
+import {
+  sanearAnalisis,
+  zAnalisisLaminaCrudo,
+  type AnalisisLamina,
+  type AnalysisProvider,
+} from './tipos';
 
 /** Una lámina se analiza de una sola vez; el rótulo y las entidades salen juntos. */
 const MAX_LAMINAS_EN_MEMORIA = 32;
@@ -89,8 +94,13 @@ async function pedirAnalisis(
         ],
       },
     ],
-    output_config: { format: zodOutputFormat(zAnalisisLamina) },
+    output_config: { format: zodOutputFormat(zAnalisisLaminaCrudo) },
   });
+
+  // El cable es laxo a propósito (ver tipos.ts): acá se aplica el contrato
+  // estricto y se descartan las entidades irrecuperables, contándolas.
+  const saneo =
+    respuesta.parsed_output === null ? null : sanearAnalisis(respuesta.parsed_output);
 
   // RNF-7: el costo por obra se mide desde acá. Cuando la llamada la dispara
   // `leerRotulo` todavía no hay `ObraContexto`, así que el vínculo con la obra
@@ -109,15 +119,16 @@ async function pedirAnalisis(
       tokensSalida: respuesta.usage.output_tokens,
       tokensCacheLectura: respuesta.usage.cache_read_input_tokens ?? 0,
       tokensCacheEscritura: respuesta.usage.cache_creation_input_tokens ?? 0,
+      entidadesDescartadas: saneo?.entidadesDescartadas ?? 0,
     },
   });
 
-  if (respuesta.parsed_output === null) {
+  if (saneo === null) {
     throw new Error(
       `Claude no devolvió un análisis que valide contra el contrato (lámina ${lamina.laminaId}, stop_reason: ${respuesta.stop_reason}).`,
     );
   }
-  return respuesta.parsed_output;
+  return saneo.analisis;
 }
 
 export function crearProviderClaude(): AnalysisProvider {

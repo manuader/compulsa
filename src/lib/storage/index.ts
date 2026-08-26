@@ -10,6 +10,16 @@ export interface StorageAdapter {
   guardar(ruta: string, bytes: Uint8Array, mime: string): Promise<string>;
   /** Lee los bytes de una ref devuelta por `guardar()`. */
   leer(ref: string): Promise<Uint8Array>;
+  /**
+   * Borra el archivo de `ref`.
+   *
+   * **Idempotente:** un archivo que ya no está no es un error. El borrado de una
+   * obra (`src/lib/obras/gestion.ts`) recorre decenas de refs y algunas pueden
+   * no existir —una lámina cuyo derivado se perdió entre corridas, un reproceso
+   * a medias—: si cada hueco cortara la operación, la obra quedaría eliminada a
+   * medias y sin manera de terminar de eliminarla.
+   */
+  eliminar(ref: string): Promise<void>;
 }
 
 let adaptador: StorageAdapter | undefined;

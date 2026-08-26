@@ -108,7 +108,7 @@ export async function GET(
   const libro = await generarXlsx(obra, items, estadosRubro, laminasObra, { rubro, fecha });
   // `nombreArchivoXlsx` sale siempre en ASCII (`[a-z0-9-]` + fecha), así que no
   // hace falta el `filename*=UTF-8''` que algunos navegadores manejan a su modo.
-  const archivo = nombreArchivoXlsx(obra.nombre, fecha);
+  const archivo = nombreArchivoXlsx(obra.nombre, fecha, rubro);
 
   // `Buffer` no entra en `BodyInit` (su `ArrayBufferLike` puede ser compartido);
   // la copia a `Uint8Array` es de decenas de KB y deja el tipo bien.

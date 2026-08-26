@@ -4,7 +4,7 @@
  * La referencia que devuelve `guardar()` es la propia ruta relativa con
  * separadores POSIX: así `/api/archivos/[...ref]` la sirve sin traducción.
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { StorageAdapter } from './index';
@@ -39,6 +39,19 @@ export function crearStorageLocal(raiz: string = RAIZ_UPLOADS): StorageAdapter {
       const origen = resolverRuta(raiz, ref);
       const buffer = await readFile(origen);
       return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    },
+
+    // Misma guarda anti-traversal que `leer`: la ref sale de la base, pero la
+    // base la escribió a partir de datos que en algún momento vinieron de una
+    // request. `ENOENT` se traga a propósito (ver `StorageAdapter.eliminar`);
+    // cualquier otro error del filesystem sí sube.
+    async eliminar(ref) {
+      const destino = resolverRuta(raiz, ref);
+      try {
+        await unlink(destino);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
     },
   };
 }

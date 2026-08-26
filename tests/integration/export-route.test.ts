@@ -208,7 +208,7 @@ describe('GET /api/obras/[obraId]/export: quién puede bajar el cómputo', () =>
 });
 
 describe('GET /api/obras/[obraId]/export: la descarga', () => {
-  it('sale como adjunto xlsx con el nombre computo-<slug>-<fecha>.xlsx', async () => {
+  it('sale como adjunto xlsx con el nombre computo-<slug>-consolidado-<fecha>.xlsx', async () => {
     cookieActual = token;
 
     const res = await pedir();
@@ -217,7 +217,7 @@ describe('GET /api/obras/[obraId]/export: la descarga', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe(MIME_XLSX);
     expect(res.headers.get('content-disposition')).toMatch(
-      /^attachment; filename="computo-casa-perez-\d{4}-\d{2}-\d{2}\.xlsx"$/,
+      /^attachment; filename="computo-casa-perez-consolidado-\d{4}-\d{2}-\d{2}\.xlsx"$/,
     );
     // El header no puede mentir sobre el tamaño de lo que efectivamente se manda.
     expect(res.headers.get('content-length')).toBe(String(cuerpo.byteLength));
@@ -267,10 +267,15 @@ describe('GET /api/obras/[obraId]/export: la descarga', () => {
     expect(claves).toEqual(['Clave', 'seco.placas', 'pintura.latex']);
   });
 
-  it('con ?rubro=<id> baja solo esa hoja y las referencias', async () => {
+  it('con ?rubro=<id> baja solo esa hoja, las referencias y nombra el rubro', async () => {
     cookieActual = token;
 
-    const wb = await libroDe(await pedir('?rubro=pintura'));
+    const res = await pedir('?rubro=pintura');
+    expect(res.headers.get('content-disposition')).toMatch(
+      /^attachment; filename="computo-casa-perez-pintura-\d{4}-\d{2}-\d{2}\.xlsx"$/,
+    );
+
+    const wb = await libroDe(res);
 
     expect(wb.worksheets.map((h) => h.name)).toEqual([PLANTILLAS.pintura.nombre, 'Referencias']);
     const pintura = wb.getWorksheet(PLANTILLAS.pintura.nombre)!;
