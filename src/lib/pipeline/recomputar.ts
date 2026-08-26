@@ -64,6 +64,7 @@ import {
 import { registrarAuditoria } from '@/lib/audit';
 import { computarObra, type EntidadPersistida } from '@/lib/computo/engine';
 import { esClaveDelMotor } from '@/lib/pipeline/claves';
+import { igualJson } from '@/lib/pipeline/json';
 import type { BBox, HallazgoDetectado, ItemComputo } from '@/types/domain';
 
 /** Nombre del actor de todas las escrituras del pipeline en `auditoria`. */
@@ -97,11 +98,6 @@ function resumenVacio(): ResumenRecompute {
     hallazgosActualizados: 0,
     hallazgosDescartados: 0,
   };
-}
-
-/** Comparación estructural de un jsonb (mismo productor ⇒ mismo orden de claves). */
-function igualJson(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
 // ---------------------------------------------------------------------------

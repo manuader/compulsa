@@ -91,6 +91,40 @@ function auditoriaDe(accion: string) {
     .where(and(eq(auditoria.obraId, obraId), eq(auditoria.accion, accion)));
 }
 
+/** Acciones que solo aparecen si el recompute escribió un dato de la obra. */
+const ESCRITURAS_DE_DATOS = new Set([
+  'computo_item_creado',
+  'computo_item_actualizado',
+  'computo_item_anulado',
+  'computo_item_desvinculado',
+  'computo_recalculado',
+  'entidad_actualizada',
+  'hallazgo_abierto',
+  'hallazgo_actualizado',
+  'hallazgo_descartado',
+  'hallazgo_reabierto',
+]);
+
+function todosLosItems() {
+  return db
+    .select()
+    .from(computoItems)
+    .where(eq(computoItems.obraId, obraId))
+    .orderBy(computoItems.claveItem);
+}
+
+function todasLasEntidades() {
+  return db.select().from(entidades).where(eq(entidades.obraId, obraId)).orderBy(entidades.id);
+}
+
+function todosLosHallazgos() {
+  return db.select().from(hallazgos).where(eq(hallazgos.obraId, obraId)).orderBy(hallazgos.clave);
+}
+
+function todaLaAuditoria() {
+  return db.select().from(auditoria).where(eq(auditoria.obraId, obraId));
+}
+
 /**
  * Provider que lee la escala pero no encuentra ninguna entidad. Sirve para
  * ejercitar la desaparición de entidades sin tocar la base a mano: es lo que
@@ -310,6 +344,49 @@ describe('idempotencia', () => {
     expect(itemsDespues.find((i) => i.claveItem === 'gruesa.ladrillos')?.cantCompra).toBe(396);
 
     expect((await clavesDeHallazgos()).sort()).toEqual(clavesAntes);
+  });
+
+  /**
+   * Regresión: Postgres devuelve las claves de un `jsonb` ordenadas, y el
+   * pipeline arma sus `Fuente` como `{laminaId, bbox, detalle}`. Con un
+   * `JSON.stringify` sensible al orden, `fuentes_json` "difería" siempre y una
+   * segunda corrida idéntica reescribía todos los ítems y todas las entidades,
+   * inundando `auditoria` de diffs fantasma con `antes == despues`.
+   *
+   * El invariante que este test pinnea: la segunda corrida no escribe **nada**.
+   */
+  it('un segundo procesado idéntico no reescribe ni audita: cero diffs fantasma', async () => {
+    const documento = await subirYProcesar('obra-demo.pdf');
+
+    const itemsAntes = await todosLosItems();
+    const entidadesAntes = await todasLasEntidades();
+    const hallazgosAntes = await todosLosHallazgos();
+    const auditoriaAntes = await todaLaAuditoria();
+
+    await procesarDocumento(documento.id, { db, storage });
+
+    // 1) Ni un solo registro de auditoría de escritura sobre cómputo, entidades
+    //    o hallazgos. (El pipeline sí audita el arranque de cada lámina y su
+    //    análisis: eso es la corrida, no una escritura de datos.)
+    const previas = new Set(auditoriaAntes.map((r) => r.id));
+    const nuevas = (await todaLaAuditoria()).filter((r) => !previas.has(r.id));
+    expect(auditoriaAntes.length).toBeGreaterThan(0);
+    expect(
+      nuevas
+        .filter((r) => ESCRITURAS_DE_DATOS.has(r.accion))
+        .map((r) => `${r.accion} ${r.targetRef}`),
+    ).toEqual([]);
+
+    // 2) Las filas quedan idénticas, `updated_at` incluido: sin churn no hay
+    //    "modificado" falso en la planilla ni en el expediente.
+    expect(await todosLosItems()).toEqual(itemsAntes);
+    expect(await todasLasEntidades()).toEqual(entidadesAntes);
+    expect(await todosLosHallazgos()).toEqual(hallazgosAntes);
+
+    // 3) El resumen que audita cada lámina lo dice con números: nada cambió.
+    for (const registro of nuevas.filter((r) => r.accion === 'lamina_analizada')) {
+      expect(registro.diffJson).toMatchObject({ creadas: 0, actualizadas: 0, eliminadas: 0 });
+    }
   });
 
   it('un ítem editado a mano sobrevive al recompute', async () => {

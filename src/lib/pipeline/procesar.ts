@@ -46,6 +46,7 @@ import { registrarAuditoria } from '@/lib/audit';
 import { separarPaginas } from '@/lib/pdf/split';
 import { extraerTexto } from '@/lib/pdf/texto';
 import { claveEscala } from '@/lib/pipeline/claves';
+import { igualJson } from '@/lib/pipeline/json';
 import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
   ACTOR_PIPELINE,
@@ -402,9 +403,13 @@ async function sincronizarEntidades(
     }
 
     conservadas.add(previa.id);
+    // `igualJson` y no `JSON.stringify`: `previa` viene de un `jsonb` con las
+    // claves reordenadas por Postgres y `valores` recién armado acá. Comparar
+    // texto daría "cambió" siempre y reescribiría la lámina entera en cada
+    // corrida (ver `@/lib/pipeline/json`).
     const cambio =
-      JSON.stringify(previa.atributosJson) !== JSON.stringify(valores.atributosJson) ||
-      JSON.stringify(previa.fuentesJson) !== JSON.stringify(valores.fuentesJson) ||
+      !igualJson(previa.atributosJson, valores.atributosJson) ||
+      !igualJson(previa.fuentesJson, valores.fuentesJson) ||
       previa.estadoReforma !== valores.estadoReforma ||
       previa.confianza !== valores.confianza;
     if (!cambio) continue;
