@@ -23,6 +23,7 @@ import {
   auditoria,
   checklistsEstudio,
   computoItems,
+  computoRubros,
   documentos,
   entidades,
   estudios,
@@ -33,6 +34,8 @@ import {
   sesiones,
   usuarios,
 } from '@/db/schema';
+import { aprobarRubroCore } from '@/app/obras/[obraId]/computo/actions';
+import { ObraNoEncontradaError } from '@/lib/auth/guards';
 import { crearSesion, leerSesion, loginCore, registrarEstudioCore } from '@/lib/auth/session';
 import {
   archivarObra,
@@ -898,6 +901,59 @@ describe('el checklist manda sobre el gate de aprobación', () => {
     const sinItem = [{ rubro: 'seco' as const, bloqueante: true, estado: 'abierto' as const }];
 
     expect(ajustarHallazgosAlChecklist(sinItem, efectivo)[0].bloqueante).toBe(true);
+  });
+});
+
+/**
+ * `aprobarRubroCore` vive en un archivo `'use server'`, o sea que **es un
+ * endpoint** con el payload que el cliente quiera. Hasta acá no chequeaba de qué
+ * estudio era la obra: el `estudioId` del actor se usaba solo para leer el
+ * checklist, y las tres queries filtraban por `obra_id` pelado. Con el id de una
+ * obra ajena, aprobaba el rubro de esa obra — y un rubro aprobado es la llave de
+ * `lanzarCompulsa`.
+ */
+describe('aprobarRubroCore: el aislamiento va adentro del núcleo (RNF-4)', () => {
+  let obraPropiaId: string;
+  let obraAjenaId: string;
+
+  beforeEach(async () => {
+    const [propia, ajena] = await db
+      .insert(obras)
+      .values([
+        { estudioId, nombre: 'Casa Propia', zona: 'CABA', tipo: 'nueva' },
+        { estudioId: otroEstudioId, nombre: 'Casa Ajena', zona: 'GBA', tipo: 'nueva' },
+      ])
+      .returning();
+    obraPropiaId = propia.id;
+    obraAjenaId = ajena.id;
+  });
+
+  const actor = () => ({ usuarioId: titular.usuarioId, email: titular.email, estudioId });
+
+  it('aprueba el rubro de una obra del estudio', async () => {
+    expect(await aprobarRubroCore(db, actor(), obraPropiaId, 'seco')).toEqual({ ok: true });
+
+    const [fila] = await db
+      .select()
+      .from(computoRubros)
+      .where(and(eq(computoRubros.obraId, obraPropiaId), eq(computoRubros.rubro, 'seco')));
+    expect(fila.estado).toBe('aprobado');
+  });
+
+  it('con la obra de otro estudio no aprueba nada y no distingue si existe', async () => {
+    await expect(aprobarRubroCore(db, actor(), obraAjenaId, 'seco')).rejects.toBeInstanceOf(
+      ObraNoEncontradaError,
+    );
+    // Un id inventado da exactamente el mismo error.
+    await expect(
+      aprobarRubroCore(db, actor(), '11111111-1111-1111-1111-111111111111', 'seco'),
+    ).rejects.toBeInstanceOf(ObraNoEncontradaError);
+
+    expect(
+      await db.select().from(computoRubros).where(eq(computoRubros.obraId, obraAjenaId)),
+    ).toEqual([]);
+    // Y tampoco deja rastro: el guard corta antes de escribir.
+    expect(await acciones()).not.toContain('rubro_aprobado');
   });
 });
 

@@ -27,7 +27,7 @@ import { z } from 'zod';
 import { getDb, type Db } from '@/db/client';
 import { computoItems, computoRubros, hallazgos } from '@/db/schema';
 import { registrarAuditoria } from '@/lib/audit';
-import { requireObra, requireUser } from '@/lib/auth/guards';
+import { requireObra, requireObraCore, requireUser } from '@/lib/auth/guards';
 import { redondear2 } from '@/lib/computo/unidades';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
 import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
@@ -466,6 +466,20 @@ export async function aprobarRubroAction(entrada: unknown): Promise<ResultadoAcc
  * hace con la sesión, y el seed corre como el titular que crea. Cualquier
  * llamador nuevo tiene que hacer lo mismo (la matriz de roles de P7 es la
  * fuente: `aprobar_rubro` es de titular).
+ *
+ * ## El aislamiento SÍ está acá, y no es una duda de estilo
+ *
+ * Este archivo es `'use server'`: **todo export es un endpoint HTTP** con el
+ * payload que el cliente quiera. Sin el `requireObraCore` de abajo, un
+ * `obraId` de otro estudio aprobaba el rubro de esa obra —y aprobar un rubro es
+ * la llave de `lanzarCompulsa`—, porque `actor.estudioId` solo se usaba para
+ * leer el checklist y ninguna de las tres queries tenía al estudio en el
+ * `where`. El guard va **adentro** del núcleo y no en el action por eso mismo:
+ * el action es uno de los llamadores, no el único.
+ *
+ * Lanza `ObraNoEncontradaError` (no devuelve `{ ok: false }`): una obra que no
+ * es de este estudio no existe, y un id ajeno y un id inventado dan el mismo
+ * error — no se filtra existencia (RNF-4).
  */
 export async function aprobarRubroCore(
   db: Db,
@@ -473,6 +487,8 @@ export async function aprobarRubroCore(
   obraId: string,
   rubro: RubroId,
 ): Promise<ResultadoAccion> {
+  await requireObraCore(db, actor.estudioId, obraId);
+
   const abiertos = await db
     .select({
       rubro: hallazgos.rubro,
