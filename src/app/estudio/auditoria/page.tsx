@@ -163,8 +163,9 @@ interface Props {
  * las filas **sin obra** (alta de invitación, configuración, la fila que
  * sobrevive a `obra_eliminada`) se acotan por el mail del actor, que es único
  * por usuario. Es exacto para todo lo que escribe una persona, que es todo lo
- * que hoy se audita sin obra. Una columna `estudio_id` lo haría directo — queda
- * anotado para P11.
+ * que hoy se audita sin obra. Una columna `estudio_id` en `auditoria` lo haría
+ * directo y dejaría de depender de que el actor sea una persona; queda como
+ * tarea futura, con su migración.
  */
 export default async function AuditoriaPage({ searchParams }: Props) {
   const { usuario, estudio } = await requireUser();

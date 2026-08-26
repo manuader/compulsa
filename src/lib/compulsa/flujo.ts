@@ -355,11 +355,15 @@ const JERARQUIA: Record<RolUsuario, number> = { lectura: 0, colaborador: 1, titu
 /**
  * El rol del actor alcanza, o no se hace nada.
  *
- * **TODO(P7): unificar.** Igual que la copia de `src/lib/proveedores/gestion.ts`,
- * esta función se borra cuando aterrice `src/lib/plataforma/roles.ts` con la
- * tabla completa de permisos. Misma jerarquía (`lectura < colaborador <
- * titular`), misma semántica (falla cerrado, lanza, no devuelve booleano). Los
- * bloques de roles de `tests/integration/flujo-compulsa.test.ts` son los que
+ * **Pendiente: unificar.** `src/lib/plataforma/roles.ts` ya existe con la tabla
+ * completa de permisos (`requireAccion`, RF-1201) y es el guard canónico; esta
+ * copia —y la gemela de `src/lib/proveedores/gestion.ts`— siguen acá porque
+ * migrar los llamados cambia la clase del error que ven los `*Action`
+ * (`RolInsuficienteError` son **dos** clases distintas hoy, una por módulo, y
+ * los `instanceof` de las pantallas y los tests distinguen). La jerarquía
+ * (`lectura < colaborador < titular`) y la semántica (falla cerrado, lanza, no
+ * devuelve booleano) son las mismas justamente para que unificar sea mecánico.
+ * Los bloques de roles de `tests/integration/flujo-compulsa.test.ts` son los que
  * tienen que seguir pasando sin tocarse.
  *
  * El reparto que aplica este módulo (RF-1201): **lanzar la compulsa es del

@@ -56,7 +56,10 @@ export const DIAS_INVITACION = 7;
 
 /**
  * Alfabeto sin los caracteres que se confunden dictando el código por teléfono:
- * sin O ni 0, sin I ni 1, sin L. 32 símbolos × 8 posiciones = 2^40 códigos.
+ * sin O ni 0, sin I ni 1, sin L. Quedan 23 letras y los dígitos 2–9, o sea
+ * **31 símbolos** × 8 posiciones ≈ 2^39,6 códigos. (La L sale con el `replace`
+ * de abajo y no del literal, así que el literal tiene 32 y el alfabeto real 31:
+ * es la cuenta que hay que hacer, no la que se lee de un vistazo.)
  */
 const ALFABETO_CODIGO = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'.replace('L', '');
 const LARGO_CODIGO = 8;
@@ -379,10 +382,12 @@ function hayOtroTitularActivo(estudioId: string, usuarioId: string): SQL {
  * frágil el test de la carrera. Con una sola conexión, los statements ya están
  * serializados y el `UPDATE` condicional es exacto.
  *
- * **P11, al pasar a Postgres real con pool:** envolver las dos funciones de
- * abajo en `db.transaction` con el `FOR UPDATE` sobre `estudios`. El
- * `UPDATE` condicional se queda igual — es correcto en los dos mundos, solo
- * deja de ser suficiente por sí solo.
+ * **Tarea futura, al pasar a Postgres real con pool:** envolver las dos
+ * funciones de abajo en `db.transaction` con el `FOR UPDATE` sobre `estudios`.
+ * El `UPDATE` condicional se queda igual — es correcto en los dos mundos, solo
+ * deja de ser suficiente por sí solo. Mientras tanto lo que lo sostiene es el
+ * `max: 1` del pool de `src/db/client.ts`, que está documentado allá como
+ * load-bearing justamente por esto.
  */
 function invarianteUltimoTitular(estudioId: string, usuarioId: string): SQL {
   return or(

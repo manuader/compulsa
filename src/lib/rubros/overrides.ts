@@ -286,9 +286,12 @@ function conConfig(
 /**
  * Las cuatro plantillas con la configuración del estudio aplicada.
  *
- * Es la entrada que el pipeline debería usar en lugar de `PLANTILLAS` cuando
- * computa una obra (ver el TODO(P11) del reporte de P7: hoy `recomputarObra`
- * sigue llamando a `computarObra`, que lee `PLANTILLAS` directo).
+ * Es la entrada que el pipeline usa en lugar de `PLANTILLAS` cuando computa una
+ * obra: `recomputarObra` llama a `computarObraConPlantillas(…,
+ * plantillasConConfig(config))`, así que el desperdicio configurado por el
+ * estudio llega al cómputo. (Hasta P11 no era así y esto quedaba sin usar; si
+ * alguna vez ves un rubro computado con el desperdicio de fábrica, el lugar a
+ * mirar es esa llamada.)
  *
  * No muta `PLANTILLAS`: devuelve objetos nuevos.
  */

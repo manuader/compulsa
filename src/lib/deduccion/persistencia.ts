@@ -81,10 +81,13 @@ export interface EntradaDeduccion {
 // ---------------------------------------------------------------------------
 
 /**
- * TODO(P7): cuando aterrice `src/lib/plataforma/roles.ts`, borrar esta copia y
- * apuntar los dos llamados al guard compartido. La jerarquía y la semántica
- * (lanza, no devuelve booleano) son las mismas que usó P4 en
- * `src/lib/proveedores/gestion.ts`, justamente para que unificar sea mecánico.
+ * **Pendiente: unificar.** `src/lib/plataforma/roles.ts` ya existe con el guard
+ * canónico (`requireAccion`); esta copia sigue acá por lo mismo que las otras
+ * dos (`compulsa/flujo.ts`, `proveedores/gestion.ts`): migrar los llamados
+ * cambia la clase del error que los `*Action` y los tests distinguen con
+ * `instanceof`. La jerarquía y la semántica (lanza, no devuelve booleano) son
+ * las mismas que usó P4 en `src/lib/proveedores/gestion.ts`, justamente para que
+ * unificar sea mecánico.
  */
 const JERARQUIA: Record<RolUsuario, number> = { lectura: 0, colaborador: 1, titular: 2 };
 

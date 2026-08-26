@@ -159,15 +159,18 @@ const JERARQUIA: Record<RolUsuario, number> = { lectura: 0, colaborador: 1, titu
 /**
  * El rol del actor alcanza, o no se hace nada.
  *
- * **TODO(P7): unificar.** El guard de roles canónico va a vivir en
- * `src/lib/plataforma/roles.ts` (tarea P7, RF-1201) con la tabla completa de
- * permisos —aprobar rubros, lanzar compulsas, adjudicar, gestionar usuarios—.
- * Esta copia local existe porque P4 no puede bloquearse esperando a P7: es la
- * **misma jerarquía** (`lectura < colaborador < titular`) y la misma semántica
- * (falla cerrado, lanza, no devuelve booleano). Cuando P7 aterrice, esta función
- * se borra y los cinco llamados de abajo apuntan al guard compartido; los tests
- * de `tests/integration/proveedores.test.ts` («roles (RF-1201)») son los que
- * tienen que seguir pasando sin tocarse.
+ * **Pendiente: unificar.** El guard canónico ya existe:
+ * `requireAccion` en `src/lib/plataforma/roles.ts`, con la tabla completa de
+ * permisos (RF-1201) —aprobar rubros, lanzar compulsas, adjudicar, gestionar
+ * usuarios—. Esta copia local nació porque P4 no podía esperarlo y sigue acá
+ * porque migrar los cinco llamados cambia la clase del error: hay **tres**
+ * `RolInsuficienteError` distintas en el repo (esta, la de `compulsa/flujo.ts` y
+ * la de `plataforma/roles.ts`) y los `instanceof` de las pantallas y los tests
+ * las distinguen. La jerarquía (`lectura < colaborador < titular`) y la
+ * semántica (falla cerrado, lanza, no devuelve booleano) son idénticas
+ * justamente para que unificar sea mecánico; los tests de
+ * `tests/integration/proveedores.test.ts` («roles (RF-1201)») son los que tienen
+ * que seguir pasando sin tocarse.
  */
 export function requireRolCore(actor: ActorProveedor, minimo: RolUsuario): void {
   if (JERARQUIA[actor.rol] < JERARQUIA[minimo]) throw new RolInsuficienteError(actor.rol, minimo);

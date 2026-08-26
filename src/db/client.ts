@@ -52,6 +52,28 @@ function carpetaMigraciones(): string {
   return path.join(process.cwd(), 'drizzle');
 }
 
+/**
+ * `max: 1` es **load-bearing**, no una configuración conservadora.
+ *
+ * Con una sola conexión los statements de todo el proceso quedan serializados,
+ * y hay tres lugares del dominio que hoy dependen de eso porque hacen
+ * read-modify-write sin `SELECT … FOR UPDATE`:
+ *
+ *  - **El índice de precios** (`acumularMuestra` en `flujo.ts`): lee
+ *    `price_index.muestras_json`, le suma la muestra y reescribe la fila. Dos
+ *    cotizaciones registradas a la vez sobre la misma `(clave, zona, mes)` se
+ *    pisarían la serie y perderían una muestra.
+ *  - **El último titular** (`usuarios.ts`): el `UPDATE` condicional es exacto
+ *    con los statements serializados; el TODO de ahí explica por qué no se usó
+ *    `db.transaction` + `FOR UPDATE` (PGlite tiene una sola conexión y el lock
+ *    no protegería nada) y qué hay que hacer al pasar a un pool.
+ *  - **La adjudicación** (`adjudicar.ts`): esa sí está cubierta por el UNIQUE
+ *    `adjudicaciones_compulsa_uq`, que serializa en la base y no depende del
+ *    pool. Queda acá para que se vea cuál es el patrón que sí sobrevive.
+ *
+ * Subir `max` sin cerrar los dos primeros con transacciones y `FOR UPDATE`
+ * cambia el comportamiento del producto, no su throughput.
+ */
 async function crearDbPostgres(url: string): Promise<Db> {
   const [{ drizzle }, { migrate }, postgres] = await Promise.all([
     import('drizzle-orm/postgres-js'),
