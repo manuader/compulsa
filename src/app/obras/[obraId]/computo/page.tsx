@@ -11,6 +11,7 @@ import { eq } from 'drizzle-orm';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 
+import { VerificacionComputo } from '@/app/obras/[obraId]/computo/verificacion-ui';
 import { PlanillaRubro } from '@/components/planilla/planilla-rubro';
 import type { ItemPlanilla } from '@/components/planilla/planilla-rubro';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
@@ -18,7 +19,9 @@ import { getDb } from '@/db/client';
 import { computoItems, computoRubros, hallazgos } from '@/db/schema';
 import { requireObra, requireUser } from '@/lib/auth/guards';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
+import { esClaveDeVerificacion } from '@/lib/pipeline/claves';
 import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
+import { esRolSuficiente } from '@/lib/plataforma/roles';
 import { PLANTILLAS } from '@/lib/rubros/index';
 import { ORIGENES, RUBROS, type EstadoRubro, type Origen, type RubroId } from '@/types/domain';
 
@@ -94,7 +97,7 @@ export default async function ComputoPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const [{ obraId }, query] = await Promise.all([params, searchParams]);
-  const { estudio } = await requireUser();
+  const { estudio, usuario } = await requireUser();
   const obra = await requireObra(obraId);
   const db = await getDb();
 
@@ -114,6 +117,10 @@ export default async function ComputoPage({
         bloqueante: hallazgos.bloqueante,
         estado: hallazgos.estado,
         checklistItem: hallazgos.checklistItem,
+        // RF-306: las consultas que dejó la última doble pasada se muestran
+        // arriba de la planilla, junto al botón que las genera.
+        clave: hallazgos.clave,
+        descripcion: hallazgos.descripcion,
       })
       .from(hallazgos)
       .where(eq(hallazgos.obraId, obra.id)),
@@ -170,8 +177,18 @@ export default async function ComputoPage({
   );
   const vistaActual: Vista = { rubro, origen, verAnulados };
 
+  const consultasDeVerificacion = consultas
+    .filter((fila) => fila.estado === 'abierto' && esClaveDeVerificacion(fila.clave))
+    .map((fila) => ({ clave: fila.clave, descripcion: fila.descripcion }));
+
   return (
     <div className="flex flex-col gap-4">
+      <VerificacionComputo
+        obraId={obra.id}
+        puedeVerificar={esRolSuficiente(usuario, 'colaborador')}
+        consultasAbiertas={consultasDeVerificacion}
+      />
+
       <nav aria-label="Rubros" className="flex flex-wrap gap-2">
         {RUBROS.map((candidato) => {
           const estado = estadoPorRubro.get(candidato) ?? 'borrador';

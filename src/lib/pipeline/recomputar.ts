@@ -188,8 +188,36 @@ function valoresDeItem(obraId: string, item: ItemComputo): Omit<NuevoComputoItem
   };
 }
 
+/**
+ * Una fila de `computo_items` leída como si fuera salida del motor.
+ *
+ * Existe para poder comparar **dos filas** con `diferenciasDeItem`, que compara
+ * fila contra ítem computado. Es lo que usa el diff de revisiones
+ * (`diffDeRevision` en `procesar.ts`): la foto de antes y la de después son las
+ * dos filas de la base, y la lógica de "qué cambió" tiene que ser una sola.
+ */
+export function comoItemComputo(fila: ComputoItem): ItemComputo {
+  return {
+    rubro: fila.rubro,
+    descripcion: fila.descripcion,
+    unidad: fila.unidad,
+    cantNeta: fila.cantNeta,
+    desperdicioPct: fila.desperdicioPct,
+    cantCompra: fila.cantCompra,
+    presentacion: fila.presentacion,
+    origen: fila.origen,
+    fuentes: fila.fuentesJson,
+    confianza: fila.confianza,
+    claveItem: fila.claveItem,
+    ...(fila.entidadId !== null ? { entidadRef: fila.entidadId } : {}),
+  };
+}
+
 /** Qué cambió entre la fila guardada y el ítem recién computado. */
-function diferenciasDeItem(fila: ComputoItem, item: ItemComputo): Record<string, unknown> | null {
+export function diferenciasDeItem(
+  fila: ComputoItem,
+  item: ItemComputo,
+): Record<string, unknown> | null {
   const diff: Record<string, unknown> = {};
   const comparar = (campo: string, antes: unknown, despues: unknown): void => {
     if (!igualJson(antes, despues)) diff[campo] = { antes, despues };

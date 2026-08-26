@@ -95,21 +95,60 @@ function cargarFixture(dir: URL, clave: string): AnalisisLamina | null {
 }
 
 /**
+ * Sufijo de los fixtures de la **segunda pasada** (RF-306, doble pasada).
+ *
+ * `obra-demo-p1-b.json` es "qué ve el provider la segunda vez que mira la misma
+ * lámina". Con el provider real la segunda lectura difiere sola (el modelo no es
+ * determinístico); con el mock hay que poder escribir esa diferencia, y esta es
+ * la forma: si el fixture `-b` existe se usa, y si no se cae al mismo de la
+ * primera pasada — que es exactamente el contrato pinneado ("mock usa fixture
+ * `-b` si existe, si no, la misma") y hace que verificar una obra sin fixtures
+ * `-b` no reporte ninguna diferencia.
+ */
+export const SUFIJO_SEGUNDA_PASADA = '-b';
+
+/** El fixture con sufijo si está; si no, el de siempre. */
+function cargarConSufijo(dir: URL, clave: string, sufijo: string): AnalisisLamina | null {
+  if (sufijo !== '') {
+    const conSufijo = cargarFixture(dir, `${clave}${sufijo}`);
+    if (conSufijo) return conSufijo;
+  }
+  return cargarFixture(dir, clave);
+}
+
+export interface OpcionesProviderMock {
+  /** `'-b'` para la segunda pasada de la verificación; vacío para la primera. */
+  sufijoClave?: string;
+}
+
+/**
  * `dirFixtures` existe para los tests (y para apuntar a otro set de fixtures);
  * por defecto usa `tests/fixtures/analysis/`.
  */
-export function crearProviderMock(dirFixtures: URL | string = DIR_FIXTURES_ANALISIS): AnalysisProvider {
+export function crearProviderMock(
+  dirFixtures: URL | string = DIR_FIXTURES_ANALISIS,
+  opciones: OpcionesProviderMock = {},
+): AnalysisProvider {
   const dir = comoDirectorio(dirFixtures);
+  const sufijo = opciones.sufijoClave ?? '';
 
   return {
     async leerRotulo(lamina): Promise<RotuloDetectado> {
-      const analisis = cargarFixture(dir, claveFixture(lamina.documentoNombre, lamina.numeroPagina));
+      const analisis = cargarConSufijo(
+        dir,
+        claveFixture(lamina.documentoNombre, lamina.numeroPagina),
+        sufijo,
+      );
       // Copia: el fixture queda cacheado y el pipeline no debería poder ensuciarlo.
       return analisis ? structuredClone(analisis.rotulo) : rotuloNulo();
     },
 
     async extraerEntidades(lamina): Promise<EntidadDetectada[]> {
-      const analisis = cargarFixture(dir, claveFixture(lamina.documentoNombre, lamina.numeroPagina));
+      const analisis = cargarConSufijo(
+        dir,
+        claveFixture(lamina.documentoNombre, lamina.numeroPagina),
+        sufijo,
+      );
       return analisis ? structuredClone(analisis.entidades) : [];
     },
   };

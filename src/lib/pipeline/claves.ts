@@ -30,17 +30,39 @@ export const PREFIJO_ESCALA = 'escala.';
  */
 export const PREFIJO_DEDUCCION = 'deduccion.';
 
+/**
+ * Prefijo reservado a la doble pasada (RF-306): `verificacion.<claveItem>`.
+ *
+ * Protegido igual que el de escala, y por el mismo motivo: estas consultas las
+ * emite `verificarComputo()` comparando dos extracciones, no el motor. Si el
+ * recompute las conciliara, la primera corrida posterior a una verificación las
+ * cerraría "porque ya no salen" y el arquitecto perdería el aviso de que dos
+ * lecturas de la misma lámina no coinciden. Las abre y las cierra la
+ * verificación siguiente.
+ */
+export const PREFIJO_VERIFICACION = 'verificacion.';
+
 export function claveEscala(laminaId: string): string {
   return `${PREFIJO_ESCALA}${laminaId}`;
+}
+
+export function claveVerificacion(claveItem: string): string {
+  return `${PREFIJO_VERIFICACION}${claveItem}`;
 }
 
 /**
  * `true` si la clave es de las que emite el recompute —`computarObra()` o el
  * motor de deducción—. Solo estas las concilia; las del pipeline (el bloqueo por
- * escala) las administra `procesarLamina`.
+ * escala y la doble pasada) las administran `procesarLamina` y
+ * `verificarComputo`.
  */
 export function esClaveDelMotor(clave: string): boolean {
-  return !clave.startsWith(PREFIJO_ESCALA);
+  return !clave.startsWith(PREFIJO_ESCALA) && !clave.startsWith(PREFIJO_VERIFICACION);
+}
+
+/** `true` si la consulta la levantó la doble pasada. La pantalla las agrupa. */
+export function esClaveDeVerificacion(clave: string): boolean {
+  return clave.startsWith(PREFIJO_VERIFICACION);
 }
 
 /** `true` si la consulta la levantó el motor de deducción, no el de cómputo. */
