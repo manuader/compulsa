@@ -139,6 +139,17 @@ export interface ContactoVista {
   banderas: BanderaVista[];
   /** Días de silencio, si pasaron 7 o más. */
   sinRespuestaDias: number | null;
+  /**
+   * Por qué este contacto ya no admite escrituras sobre sus cotizaciones, o
+   * `null` si sigue en juego.
+   *
+   * Con la compulsa adjudicada (o el contacto cerrado), cerrar una ronda o
+   * descartar una cotización movería el ahorro y la comparativa que quedaron
+   * firmados con la orden de compra. El núcleo lo rechaza igual
+   * (`exigirCompulsaEnJuego`); esconder los botones es para no ofrecer una
+   * acción que va a fallar.
+   */
+  motivoBloqueo: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +561,9 @@ export interface PanelContactoProps {
 }
 
 export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContactoProps) {
+  // Rol **y** compulsa en juego: después de adjudicar, tocar una cotización
+  // mueve el ahorro que ya se firmó, y el núcleo lo rechaza.
+  const puedeTocarCotizaciones = puedeEscribir && contacto.motivoBloqueo === null;
   const router = useRouter();
   const [pendiente, iniciar] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -680,6 +694,16 @@ export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContacto
           </p>
         ) : null}
 
+        {/* Cortesía, no autorización: el núcleo rechaza igual (`src/app/CLAUDE.md`
+            §«El rol se pide en el núcleo»). Ofrecer un «Aceptó» que va a fallar
+            —y que si funcionara movería el ahorro ya firmado— es mentirle al
+            usuario dos veces. */}
+        {puedeEscribir && contacto.motivoBloqueo ? (
+          <p className="rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 text-sm text-neutral-700">
+            {contacto.motivoBloqueo}
+          </p>
+        ) : null}
+
         {contacto.banderas.length > 0 ? (
           <ul className="flex flex-col gap-1 rounded-md border border-red-300 bg-red-50 px-3 py-2">
             {contacto.banderas.map((bandera) => (
@@ -725,7 +749,7 @@ export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContacto
             </div>
 
             {/* --- Cerrar la ronda que quedó esperando (RF-1003) ----------- */}
-            {puedeEscribir && cotizacion.negociacionPendiente && !cotizacion.descartada ? (
+            {puedeTocarCotizaciones && cotizacion.negociacionPendiente && !cotizacion.descartada ? (
               <div className="flex flex-col gap-2 rounded-md border border-sky-300 bg-sky-50 px-3 py-2">
                 <p className="text-sm text-sky-900">
                   Ronda {cotizacion.negociacionPendiente.ronda} mandada
@@ -809,7 +833,7 @@ export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContacto
               </div>
             ) : null}
 
-            {puedeEscribir && !cotizacion.descartada ? (
+            {puedeTocarCotizaciones && !cotizacion.descartada ? (
               <div className="flex flex-wrap items-center gap-2">
                 {cotizacion.tieneTotal ? (
                   <Button size="sm" variant="secondary" onClick={() => negociar(cotizacion.id)} disabled={pendiente}>
@@ -881,7 +905,7 @@ export function PanelContacto({ obraId, contacto, puedeEscribir }: PanelContacto
               </div>
             ) : null}
 
-            {puedeEscribir && descartandoDe === cotizacion.id ? (
+            {puedeTocarCotizaciones && descartandoDe === cotizacion.id ? (
               <span className="flex flex-wrap items-end gap-2">
                 <Input
                   label="Por qué se descarta"

@@ -77,6 +77,7 @@ import { CanalNoConfiguradoError } from '@/lib/outreach/canal';
 import {
   ContactoNoEncontradoError,
   CotizacionNoEncontradaError,
+  EstadoContactoInvalidoError,
   NegociacionNoEncontradaError,
   requireContactoCore,
   requireCotizacionCore,
@@ -297,6 +298,7 @@ function mensajeDeDominio(error: unknown): string | null {
     error instanceof NegociacionImposibleError ||
     error instanceof NegociacionYaResueltaError ||
     error instanceof CanalNoConfiguradoError ||
+    error instanceof EstadoContactoInvalidoError ||
     error instanceof ContactoNoEncontradoError ||
     error instanceof CotizacionNoEncontradaError ||
     error instanceof NegociacionNoEncontradaError ||

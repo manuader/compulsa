@@ -23,7 +23,7 @@
  * (mismo patrón que `tests/integration/export-route.test.ts`).
  */
 import ExcelJS from 'exceljs';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET } from '@/app/api/obras/[obraId]/compulsas/[compulsaId]/reporte/route';
@@ -69,6 +69,7 @@ import {
 import {
   CompulsaNoEncontradaError,
   CotizacionNoEncontradaError,
+  EstadoContactoInvalidoError,
   NegociacionNoEncontradaError,
 } from '@/lib/outreach/threads';
 import { RolInsuficienteError } from '@/lib/plataforma/roles';
@@ -738,6 +739,120 @@ describe('resolverNegociacion: la ronda deja de nacer y morir en «pendiente»',
 
     const [ronda] = await db.select().from(negociaciones).where(eq(negociaciones.id, negociacionId));
     expect(ronda.resultado).toBe('pendiente');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Después de adjudicar no se toca nada: el ahorro se recalcula al leer
+// ---------------------------------------------------------------------------
+
+/**
+ * El ahorro (RF-1104) no está guardado en ninguna tabla: `ahorroDeCompulsa` lo
+ * recalcula desde `cotizaciones.total` en vivo y las rondas `aceptada`. Eso
+ * está bien mientras la compulsa esté en juego y es una trampa apenas se
+ * adjudica, porque cualquier escritura posterior mueve un número que ya se
+ * firmó, se auditó y se le mostró al comitente.
+ *
+ * Ninguno de los dos casos necesita una carrera ni un payload malicioso:
+ * alcanza con adjudicar con una ronda abierta y que alguien después apriete el
+ * botón que la pantalla seguía mostrando.
+ */
+describe('una compulsa adjudicada no se toca más', () => {
+  beforeEach(antesDeNegociar);
+
+  it('resolver una ronda que quedó pendiente al adjudicar se rechaza y no mueve el ahorro', async () => {
+    // El titular adjudica con la ronda 1 todavía sin respuesta. Eso está
+    // permitido a propósito (ver `exigirCompulsaEnJuego`): el ahorro sale corto,
+    // que es el lado seguro. Lo que no se permite es arreglarlo después.
+    const negociacionId = await proponerRonda1();
+    await adjudicar();
+
+    const ahorroFirmado = await ahorroDeCompulsa(db, compulsaId);
+    // Mediana de [105, 110, 120] = 110, adjudicado 105, ronda sin resolver ⇒ 5.
+    expect(ahorroFirmado).toMatchObject({ totalAdjudicado: 105, mejoras: [], ahorro: 5 });
+
+    await expect(
+      resolverNegociacion(db, colaborador, negociacionId, {
+        resultado: 'aceptada',
+        nuevoTotal: 100,
+      }),
+    ).rejects.toBeInstanceOf(EstadoContactoInvalidoError);
+
+    // Nada se movió: ni el total de la ganadora, ni la ronda, ni el ahorro.
+    const [cotizacion] = await db.select().from(cotizaciones).where(eq(cotizaciones.id, cotA));
+    expect(cotizacion.total).toBe(105);
+    const [ronda] = await db.select().from(negociaciones).where(eq(negociaciones.id, negociacionId));
+    expect(ronda.resultado).toBe('pendiente');
+    expect(await ahorroDeCompulsa(db, compulsaId)).toEqual(ahorroFirmado);
+  });
+
+  it('descartar la cotización adjudicada se rechaza: dejaría la compulsa sin ganadora', async () => {
+    await adjudicar();
+
+    const antes = await ahorroDeCompulsa(db, compulsaId);
+    const columnasAntes = (await leerComparativa(db, estudioId, compulsaId, { ahora: AHORA }))
+      .comparativa.columnas.length;
+
+    await expect(
+      descartarCotizacion(db, colaborador, cotA, 'Me arrepentí.'),
+    ).rejects.toBeInstanceOf(EstadoContactoInvalidoError);
+
+    const [cotizacion] = await db.select().from(cotizaciones).where(eq(cotizaciones.id, cotA));
+    expect(cotizacion.estado).toBe('conciliada');
+    expect(await ahorroDeCompulsa(db, compulsaId)).toEqual(antes);
+    expect(
+      (await leerComparativa(db, estudioId, compulsaId, { ahora: AHORA })).comparativa.columnas,
+    ).toHaveLength(columnasAntes);
+  });
+
+  it('tampoco se toca una cotización perdedora: la comparativa adjudicada es el documento', async () => {
+    await adjudicar();
+
+    await expect(
+      descartarCotizacion(db, colaborador, cotC, 'Estaba carísima.'),
+    ).rejects.toBeInstanceOf(EstadoContactoInvalidoError);
+  });
+
+  it('el camino normal —resolver ANTES de adjudicar— sigue dando 15', async () => {
+    // El pin de siempre, para que el guard no haya cerrado la puerta buena.
+    const negociacionId = await proponerRonda1();
+    await resolverNegociacion(db, colaborador, negociacionId, {
+      resultado: 'aceptada',
+      nuevoTotal: 100,
+    });
+    await adjudicar();
+
+    expect(await ahorroDeCompulsa(db, compulsaId)).toEqual({
+      totalesComparables: [100, 110, 120],
+      totalAdjudicado: 100,
+      mejoras: [5],
+      ahorro: 15,
+    });
+  });
+
+  it('con el contacto cerrado a mano tampoco, aunque la compulsa siga abierta', async () => {
+    // `adjudicarCompulsa` cierra los contactos, pero también se cierran desde la
+    // conversación. El guard mira las dos cosas.
+    const negociacionId = await proponerRonda1();
+    await db
+      .update(contactosCompulsa)
+      .set({ estado: 'cerrado' })
+      .where(
+        inArray(
+          contactosCompulsa.id,
+          db.select({ id: cotizaciones.contactoId }).from(cotizaciones).where(eq(cotizaciones.id, cotA)),
+        ),
+      );
+
+    await expect(
+      resolverNegociacion(db, colaborador, negociacionId, { resultado: 'rechazada' }),
+    ).rejects.toBeInstanceOf(EstadoContactoInvalidoError);
+    await expect(
+      descartarCotizacion(db, colaborador, cotA, 'Recotizó.'),
+    ).rejects.toBeInstanceOf(EstadoContactoInvalidoError);
+
+    const [compulsa] = await db.select().from(compulsas).where(eq(compulsas.id, compulsaId));
+    expect(compulsa.estado).toBe('lanzada'); // no hizo falta adjudicar para bloquear
   });
 });
 

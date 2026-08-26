@@ -40,7 +40,7 @@
  *   corte a mitad deje datos incompletos pero no mentirosos (la compulsa existe
  *   sin recortes, no al revés).
  */
-import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
 
 import type { Db } from '@/db/client';
 import {
@@ -86,9 +86,11 @@ import { acumularMuestra } from '@/lib/indice/percentiles';
 import { proponerContraoferta, type MotivoNoProcede } from '@/lib/negociacion/motor';
 import { componerCuerpo, getCanal, type CanalOutreach } from '@/lib/outreach/canal';
 import {
+  EstadoContactoInvalidoError,
   requireContactoCore,
   requireCotizacionCore,
   requireNegociacionCore,
+  type ContextoContacto,
 } from '@/lib/outreach/threads';
 import { MIME_PDF } from '@/lib/pipeline/refs';
 import { puedeContactarsePorWhatsapp, requireProveedorCore } from '@/lib/proveedores/gestion';
@@ -372,6 +374,59 @@ const JERARQUIA: Record<RolUsuario, number> = { lectura: 0, colaborador: 1, titu
  */
 export function requireRolCore(actor: ActorCompulsa, minimo: RolUsuario): void {
   if (JERARQUIA[actor.rol] < JERARQUIA[minimo]) throw new RolInsuficienteError(actor.rol, minimo);
+}
+
+/**
+ * Una compulsa adjudicada no se toca más, y un contacto cerrado tampoco.
+ *
+ * ## Por qué es un guard y no una cortesía de la pantalla
+ *
+ * El ahorro (RF-1104) **no está guardado en ninguna tabla**: `ahorroDeCompulsa`
+ * lo recalcula al leer, a partir de `cotizaciones.total` en vivo y de las rondas
+ * `aceptada`. Eso está bien mientras la compulsa esté en juego y es una trampa
+ * apenas se adjudica, porque cualquier escritura posterior sobre esa cadena
+ * cambia un número que ya se firmó, se auditó y se le mostró al comitente:
+ *
+ *  - resolver una ronda que quedó pendiente **reescribe el total de la
+ *    cotización ganadora**, así que el ahorro reportado se mueve después del
+ *    hecho y deja de coincidir con el que quedó en la auditoría de
+ *    `compulsa_adjudicada`;
+ *  - descartar la cotización ganadora la saca de `leerComparativa` y de
+ *    `ahorroDeCompulsa` —los dos filtran por estado—, y deja la compulsa en
+ *    `adjudicada` con su fila de `adjudicaciones` intacta pero sin columna
+ *    ganadora y con ahorro `null`. Inconsistente, y sin un solo error.
+ *
+ * Ninguno de los dos necesita una carrera ni un payload malicioso: alcanza con
+ * adjudicar teniendo una ronda abierta y que alguien después apriete el botón
+ * que la pantalla seguía mostrando.
+ *
+ * ## Por qué `adjudicarCompulsa` NO exige que las rondas estén resueltas
+ *
+ * Se evaluó y se descartó. Una ronda que queda `pendiente` al adjudicar no
+ * corrompe nada: `ahorroDeCompulsa` solo suma las `aceptada`, así que el ahorro
+ * sale **corto**, que es el lado seguro para equivocarse —y es el
+ * comportamiento que ya pinnea el test «una negociación no aceptada no suma
+ * mejora»—. Bloquear la adjudicación por una ronda que el proveedor quizás nunca
+ * conteste sería peor: dejaría la compulsa trabada por un mensaje sin respuesta.
+ * La regla que sí importa es que el número no se mueva **después**, y de eso se
+ * encarga este guard. Consecuencia operativa, que la pantalla dice: para que una
+ * mejora cuente, hay que cerrar la ronda antes de adjudicar.
+ */
+function exigirCompulsaEnJuego(contexto: ContextoContacto, accion: string): void {
+  if (contexto.compulsa.estado === 'adjudicada') {
+    throw new EstadoContactoInvalidoError(
+      `Esta compulsa ya está adjudicada: ${accion} ahora cambiaría el ahorro y la comparativa ` +
+        'que quedaron firmados al emitir la orden de compra. Si el precio cambió de verdad, ' +
+        'eso se arregla con el proveedor, no acá.',
+    );
+  }
+  if (contexto.contacto.estado === 'cerrado') {
+    throw new EstadoContactoInvalidoError(
+      `El contacto con ${contexto.proveedor.nombre} está cerrado: ${accion} sobre un contacto ` +
+        'cerrado dejaría la compulsa diciendo una cosa y los números diciendo otra. ' +
+        'Reabrilo desde la conversación si hace falta seguir.',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1434,6 +1489,10 @@ export async function proponerNegociacion(
  *
  * Una ronda se resuelve **una sola vez**: reescribir el resultado dejaría la
  * mejora contada dos veces si el segundo `nuevoTotal` fuera más bajo.
+ *
+ * Y **no corre sobre una compulsa adjudicada ni sobre un contacto cerrado**:
+ * escribir el total de la ganadora después de la orden de compra mueve un ahorro
+ * que ya se firmó. Lo explica `exigirCompulsaEnJuego`.
  */
 export async function resolverNegociacion(
   db: Db,
@@ -1447,6 +1506,9 @@ export async function resolverNegociacion(
     actor.estudioId,
     negociacionId,
   );
+
+  // Antes que nada: una compulsa adjudicada no se toca (ver el guard).
+  exigirCompulsaEnJuego(contexto, 'cerrar una ronda de negociación');
 
   if (negociacion.resultado !== 'pendiente') {
     throw new NegociacionYaResueltaError(negociacion.id, negociacion.resultado as ResultadoRonda);
@@ -1485,8 +1547,20 @@ export async function resolverNegociacion(
         ...(nota ? { nota } : {}),
       },
     })
-    .where(eq(negociaciones.id, negociacion.id))
+    // El `resultado = 'pendiente'` va en el WHERE y no solo en el `if` de
+    // arriba: es lo que convierte el chequeo en atómico. Dos clicks simultáneos
+    // en «Aceptó» leen los dos una ronda pendiente, y sin esta condición los dos
+    // escribirían —last write wins— y el segundo pisaría el total con su propio
+    // número. Con ella, el que pierde no actualiza ninguna fila, `actualizada`
+    // viene `undefined` y sale por el mismo error que si hubiera llegado tarde.
+    // Es el patrón del último titular (`plataforma/usuarios.ts`), del lado del
+    // UPDATE.
+    .where(and(eq(negociaciones.id, negociacion.id), eq(negociaciones.resultado, 'pendiente')))
     .returning();
+
+  if (!actualizada) {
+    throw new NegociacionYaResueltaError(negociacion.id, cierre.resultado);
+  }
 
   let cotizacionFinal = cotizacion;
   if (cierre.resultado === 'aceptada' && totalNuevo !== totalAnterior) {
@@ -1544,6 +1618,12 @@ export async function resolverNegociacion(
  * lugares. Las filas siguen ahí —la conciliación, las repreguntas, el hilo— y el
  * motivo queda en la auditoría: `src/db/CLAUDE.md` §7, en datos de negocio no
  * hay deletes físicos.
+ *
+ * Que los lectores filtren por estado es justamente lo que la vuelve peligrosa
+ * **después** de adjudicar: descartar la ganadora le saca al cuadro su columna y
+ * al ahorro su total, con la orden de compra ya emitida. Por eso tampoco corre
+ * sobre una compulsa adjudicada ni sobre un contacto cerrado
+ * (`exigirCompulsaEnJuego`).
  */
 export async function descartarCotizacion(
   db: Db,
@@ -1553,6 +1633,11 @@ export async function descartarCotizacion(
 ): Promise<Cotizacion> {
   requireRolCore(actor, 'colaborador');
   const { cotizacion, contexto } = await requireCotizacionCore(db, actor.estudioId, cotizacionId);
+
+  // Descartar la ganadora después de adjudicar deja la compulsa `adjudicada`,
+  // con su orden de compra escrita, sin columna en la comparativa y con ahorro
+  // `null`. Ver el guard.
+  exigirCompulsaEnJuego(contexto, 'descartar una cotización');
 
   if (cotizacion.estado === 'descartada') throw new CotizacionYaDescartadaError(cotizacion.id);
 
@@ -1566,8 +1651,12 @@ export async function descartarCotizacion(
   const [descartada] = await db
     .update(cotizaciones)
     .set({ estado: 'descartada' })
-    .where(eq(cotizaciones.id, cotizacion.id))
+    // El estado va en el WHERE por lo mismo que en `resolverNegociacion`: el
+    // chequeo de arriba es para el mensaje, este es el que decide.
+    .where(and(eq(cotizaciones.id, cotizacion.id), ne(cotizaciones.estado, 'descartada')))
     .returning();
+
+  if (!descartada) throw new CotizacionYaDescartadaError(cotizacion.id);
 
   await auditar(actor, contexto.obra.id, 'cotizacion_descartada', `cotizaciones:${cotizacion.id}`, {
     contactoId: contexto.contacto.id,

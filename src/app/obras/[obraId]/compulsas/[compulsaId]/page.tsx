@@ -189,6 +189,29 @@ export default async function CompulsaPage({
   const condiciones = compulsa.condicionesJson;
   const mandato = compulsa.mandatoJson;
 
+  /**
+   * Por qué un contacto ya no admite escrituras sobre sus cotizaciones.
+   *
+   * Es el espejo de `exigirCompulsaEnJuego` (`@/lib/compulsa/flujo`), que es
+   * quien lo hace cumplir: acá solo se decide qué botones ofrecer y con qué
+   * explicación. Si los dos se separan, el peor caso es un botón que falla con
+   * el mensaje del núcleo — no una escritura que pasa.
+   */
+  const motivoBloqueoDe = (estadoContacto: string): string | null => {
+    if (compulsa.estado === 'adjudicada') {
+      return (
+        'Esta compulsa ya está adjudicada. Cerrar una ronda o descartar una cotización ahora ' +
+        'movería el ahorro y la comparativa que quedaron firmados con la orden de compra, así que ' +
+        'esas acciones están cerradas. (Para que una mejora de negociación cuente en el ahorro, ' +
+        'hay que cerrar la ronda antes de adjudicar.)'
+      );
+    }
+    if (estadoContacto === 'cerrado') {
+      return 'Este contacto está cerrado: para volver a tocar sus cotizaciones, reabrilo desde la conversación.';
+    }
+    return null;
+  };
+
   const contactos: ContactoVista[] = hilos.map((hilo, indice) => {
     const contacto = hilo.contexto.contacto;
     const banderas = banderasPorContacto[indice] ?? [];
@@ -206,6 +229,7 @@ export default async function CompulsaPage({
       estadoEtiqueta: ETIQUETA_CONTACTO[contacto.estado],
       pendientes: hilo.pendientes,
       sinRespuestaDias: diasDeSilencio.get(contacto.id) ?? null,
+      motivoBloqueo: motivoBloqueoDe(contacto.estado),
       banderas: banderas.map((bandera) => ({
         cotizacionId: bandera.cotizacionId,
         claveItem: bandera.claveItem,
