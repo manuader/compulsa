@@ -50,6 +50,9 @@ export const COLOR_ENTIDAD: Record<TipoEntidad, string> = {
   abertura: '#059669',
   artefacto: '#db2777',
   terminacion: '#0891b2',
+  // Las cotas son la referencia dimensional, no una cosa construida: gris cálido
+  // para que se lean como anotación y no compitan con muros y aberturas.
+  cota: '#a16207',
   otro: '#525252',
 };
 
@@ -60,6 +63,7 @@ export const ETIQUETA_TIPO_ENTIDAD: Record<TipoEntidad, string> = {
   abertura: 'Abertura',
   artefacto: 'Artefacto',
   terminacion: 'Terminación',
+  cota: 'Cota',
   otro: 'Otro',
 };
 
