@@ -10,8 +10,12 @@
  * nuevas conviven con ella. El `ALTER TYPE … ADD VALUE 'cota'` y el índice único
  * parcial se ejercitan acá abajo, contra la base ya migrada.
  */
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { and, eq } from 'drizzle-orm';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { setDbForTests, type Db } from '@/db/client';
 import {
@@ -38,6 +42,15 @@ import {
   recomputos,
   usuarios,
 } from '@/db/schema';
+import type { AnalysisProvider } from '@/lib/analysis/index';
+import {
+  procesarDocumento,
+  procesarLamina,
+  subirDocumento,
+  TTL_PROCESANDO_MS,
+} from '@/lib/pipeline/procesar';
+import type { StorageAdapter } from '@/lib/storage/index';
+import { crearStorageLocal } from '@/lib/storage/local';
 import {
   CONFIG_ESTUDIO_DEFAULT,
   zConfigEstudio,
@@ -809,6 +822,144 @@ describe('índice único parcial de computo_items', () => {
     expect(
       await db.select().from(computoItems).where(eq(computoItems.estado, 'activo')),
     ).toHaveLength(2);
+  });
+});
+
+describe('laminas.procesando_desde es el reloj del rescate por TTL', () => {
+  const PDFS = new URL('../fixtures/pdfs/', import.meta.url);
+  let raizStorage: string;
+  let storage: StorageAdapter;
+
+  beforeEach(async () => {
+    raizStorage = await mkdtemp(path.join(tmpdir(), 'compulsa-p1-'));
+    storage = crearStorageLocal(raizStorage);
+  });
+
+  afterEach(async () => {
+    await rm(raizStorage, { recursive: true, force: true });
+  });
+
+  /** Anota qué veía la fila de la lámina en el momento en que el provider corrió. */
+  function providerObservador(visto: Array<{ estado: string; procesandoDesde: Date | null }>) {
+    const provider: AnalysisProvider = {
+      async leerRotulo(entrada) {
+        const [fila] = await db.select().from(laminas).where(eq(laminas.id, entrada.laminaId));
+        visto.push({ estado: fila.estadoAnalisis, procesandoDesde: fila.procesandoDesde });
+        return {
+          titulo: 'Planta baja',
+          codigo: 'A-01',
+          disciplina: 'arquitectura',
+          tipoLamina: 'planta',
+          escala: '1:100',
+          escalaConfiable: true,
+          revision: null,
+          confianza: 1,
+        };
+      },
+      async extraerEntidades() {
+        return [];
+      },
+    };
+    return provider;
+  }
+
+  async function subirUnaLamina() {
+    const { usuario, obra } = await sembrarObra();
+    const bytes = await readFile(new URL('obra-demo.pdf', PDFS));
+    const archivo = new File([new Uint8Array(bytes)], 'obra-demo.pdf', {
+      type: 'application/pdf',
+    });
+    const documento = await subirDocumento(db, storage, obra.id, usuario.id, archivo);
+    return { obra, documento };
+  }
+
+  it('se sella al reclamar la lámina y se limpia al terminar', async () => {
+    const { documento } = await subirUnaLamina();
+    const visto: Array<{ estado: string; procesandoDesde: Date | null }> = [];
+
+    const antes = Date.now();
+    await procesarDocumento(documento.id, {
+      db,
+      storage,
+      provider: providerObservador(visto),
+      recomputar: async () => undefined,
+    });
+
+    // Mientras el análisis corría, la fila decía quién la tenía y desde cuándo.
+    expect(visto.length).toBeGreaterThan(0);
+    expect(visto[0].estado).toBe('procesando');
+    expect(visto[0].procesandoDesde).toBeInstanceOf(Date);
+    expect(visto[0].procesandoDesde!.getTime()).toBeGreaterThanOrEqual(antes - 1000);
+
+    // Y al terminar se suelta: `procesando_desde` no nulo significa "la tiene alguien".
+    const filas = await db.select().from(laminas).where(eq(laminas.documentoId, documento.id));
+    for (const fila of filas) {
+      expect(fila.estadoAnalisis).toBe('analizada');
+      expect(fila.procesandoDesde).toBeNull();
+    }
+  });
+
+  it('retoma la lámina colgada mirando procesando_desde, sin ir a la auditoría', async () => {
+    const { documento } = await subirUnaLamina();
+    const visto: Array<{ estado: string; procesandoDesde: Date | null }> = [];
+    await procesarDocumento(documento.id, {
+      db,
+      storage,
+      provider: providerObservador(visto),
+      recomputar: async () => undefined,
+    });
+    const [lamina] = await db.select().from(laminas).where(eq(laminas.documentoId, documento.id));
+
+    // Un proceso la tomó hace más del TTL y murió. El sello está en la columna:
+    // la auditoría no se toca, así que si el rescate siguiera leyendo de ahí
+    // vería un arranque reciente y no la soltaría nunca.
+    const colgadaDesde = new Date(Date.now() - TTL_PROCESANDO_MS - 60_000);
+    await db
+      .update(laminas)
+      .set({ estadoAnalisis: 'procesando', procesandoDesde: colgadaDesde })
+      .where(eq(laminas.id, lamina.id));
+
+    const visto2: Array<{ estado: string; procesandoDesde: Date | null }> = [];
+    await procesarLamina(lamina.id, {
+      db,
+      storage,
+      provider: providerObservador(visto2),
+      recomputar: async () => undefined,
+    });
+
+    expect(visto2).toHaveLength(1); // corrió: la retomó
+    const [despues] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(despues.estadoAnalisis).toBe('analizada');
+    expect(despues.procesandoDesde).toBeNull();
+  });
+
+  it('no le pisa la lámina a una corrida que la tomó recién', async () => {
+    const { documento } = await subirUnaLamina();
+    const visto: Array<{ estado: string; procesandoDesde: Date | null }> = [];
+    await procesarDocumento(documento.id, {
+      db,
+      storage,
+      provider: providerObservador(visto),
+      recomputar: async () => undefined,
+    });
+    const [lamina] = await db.select().from(laminas).where(eq(laminas.documentoId, documento.id));
+
+    await db
+      .update(laminas)
+      .set({ estadoAnalisis: 'procesando', procesandoDesde: new Date() })
+      .where(eq(laminas.id, lamina.id));
+
+    const visto2: Array<{ estado: string; procesandoDesde: Date | null }> = [];
+    await procesarLamina(lamina.id, {
+      db,
+      storage,
+      provider: providerObservador(visto2),
+      recomputar: async () => undefined,
+    });
+
+    expect(visto2).toHaveLength(0); // no corrió: la otra corrida manda
+    const [despues] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(despues.estadoAnalisis).toBe('procesando');
   });
 });
 

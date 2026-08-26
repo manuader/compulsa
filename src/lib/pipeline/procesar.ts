@@ -483,13 +483,23 @@ async function cerrarHallazgoEscala(db: Db, lamina: Lamina): Promise<void> {
   });
 }
 
-/** Cuándo arrancó el análisis que dejó la lámina en `procesando`, si lo sabemos. */
-async function inicioDelProcesamiento(db: Db, laminaId: string): Promise<Date | null> {
+/**
+ * Cuándo arrancó el análisis que dejó la lámina en `procesando`, si lo sabemos.
+ *
+ * El dato vive en `laminas.procesando_desde`, que la propia reclamación sella.
+ * El fallback a `auditoria` es para las filas que quedaron tomadas **antes** de
+ * que existiera la columna: para ellas el sello es `null` y el único reloj sigue
+ * siendo el registro de auditoría del arranque. Sin ese fallback, una lámina
+ * colgada desde antes de la migración no se retomaría nunca.
+ */
+async function inicioDelProcesamiento(db: Db, lamina: Lamina): Promise<Date | null> {
+  if (lamina.procesandoDesde !== null) return lamina.procesandoDesde;
+
   const [ultimo] = await db
     .select({ at: auditoria.at })
     .from(auditoria)
     .where(
-      and(eq(auditoria.targetRef, `laminas:${laminaId}`), eq(auditoria.accion, ACCION_PROCESANDO)),
+      and(eq(auditoria.targetRef, `laminas:${lamina.id}`), eq(auditoria.accion, ACCION_PROCESANDO)),
     )
     .orderBy(desc(auditoria.at))
     .limit(1);
@@ -507,17 +517,18 @@ async function inicioDelProcesamiento(db: Db, laminaId: string): Promise<Date | 
  * duplicadas y cantidades duplicadas en la planilla, en silencio.
  *
  * Si el estado quedó colgado de un proceso muerto, pasado `TTL_PROCESANDO_MS`
- * la corrida siguiente lo retoma (el arranque queda fechado en `auditoria`, que
- * es el único reloj que tenemos: `laminas` no tiene `updated_at`, y esa columna
- * es de la Tarea 2). Dos procesos podrían decidir el rescate a la vez, pero
- * hace falta que los dos lleguen dentro del mismo milisegundo *y* quince
- * minutos después del cuelgue; el caso frecuente —dos clicks seguidos— lo cubre
- * el guard de arriba.
+ * la corrida siguiente lo retoma. El arranque queda fechado en la propia fila
+ * (`procesando_desde`), que es el reloj del rescate: se sella acá y se limpia
+ * cuando el análisis termina, así que un `procesando_desde` no nulo significa
+ * exactamente "alguien la tiene tomada". Dos procesos podrían decidir el rescate
+ * a la vez, pero hace falta que los dos lleguen dentro del mismo milisegundo *y*
+ * quince minutos después del cuelgue; el caso frecuente —dos clicks seguidos— lo
+ * cubre el guard de arriba.
  */
 async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> {
   const [tomada] = await db
     .update(laminas)
-    .set({ estadoAnalisis: 'procesando', errorDetalle: null })
+    .set({ estadoAnalisis: 'procesando', errorDetalle: null, procesandoDesde: new Date() })
     .where(and(eq(laminas.id, laminaId), ne(laminas.estadoAnalisis, 'procesando')))
     .returning();
 
@@ -532,7 +543,7 @@ async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> 
   const [existente] = await db.select().from(laminas).where(eq(laminas.id, laminaId));
   if (!existente) throw new LaminaInexistenteError(laminaId);
 
-  const desde = await inicioDelProcesamiento(db, laminaId);
+  const desde = await inicioDelProcesamiento(db, existente);
   if (desde === null || Date.now() - desde.getTime() <= TTL_PROCESANDO_MS) {
     await auditarAgente(existente.obraId, 'lamina_procesamiento_omitido', `laminas:${laminaId}`, {
       motivo: 'Ya hay un análisis en curso para esta lámina.',
@@ -543,7 +554,7 @@ async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> 
 
   const [retomada] = await db
     .update(laminas)
-    .set({ estadoAnalisis: 'procesando', errorDetalle: null })
+    .set({ estadoAnalisis: 'procesando', errorDetalle: null, procesandoDesde: new Date() })
     .where(eq(laminas.id, laminaId))
     .returning();
   await auditarAgente(retomada.obraId, ACCION_PROCESANDO, `laminas:${laminaId}`, {
@@ -583,6 +594,17 @@ async function recomputarTolerante(entorno: Entorno, lamina: Lamina): Promise<bo
     return false;
   }
 }
+
+/**
+ * Suelta la lámina: va en TODA transición que la saca de `procesando`
+ * (`analizada`, `bloqueada_escala`, `error`).
+ *
+ * Sin esto, `procesando_desde` quedaría con la fecha del último análisis y el
+ * rescate por TTL leería el reloj de una corrida que ya terminó. La invariante
+ * que sostiene el rescate es justamente esta: `procesando_desde` no nulo ⇔
+ * alguien la tiene tomada.
+ */
+const SOLTAR = { procesandoDesde: null } as const;
 
 /** Corridas de `procesarLamina` en vuelo en este proceso, por lámina. */
 const enVuelo = new Map<string, Promise<void>>();
@@ -641,7 +663,7 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
       const { eliminadas } = await sincronizarEntidades(db, lamina, []);
       await db
         .update(laminas)
-        .set({ ...campos, estadoAnalisis: 'bloqueada_escala', errorDetalle: null })
+        .set({ ...campos, ...SOLTAR, estadoAnalisis: 'bloqueada_escala', errorDetalle: null })
         .where(eq(laminas.id, laminaId));
       await upsertHallazgoEscala(db, lamina);
       const recomputado = eliminadas === 0 || (await recomputarTolerante(entorno, lamina));
@@ -672,7 +694,7 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     const resumen = await sincronizarEntidades(db, lamina, validas);
     await db
       .update(laminas)
-      .set({ ...campos, estadoAnalisis: 'analizada', errorDetalle: null })
+      .set({ ...campos, ...SOLTAR, estadoAnalisis: 'analizada', errorDetalle: null })
       .where(eq(laminas.id, laminaId));
     await cerrarHallazgoEscala(db, lamina);
     const recomputado = await recomputarTolerante(entorno, lamina);
@@ -690,7 +712,7 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     const errorDetalle = detalleDeError(error);
     await db
       .update(laminas)
-      .set({ estadoAnalisis: 'error', errorDetalle })
+      .set({ ...SOLTAR, estadoAnalisis: 'error', errorDetalle })
       .where(eq(laminas.id, laminaId));
     await auditarAgente(lamina.obraId, 'lamina_error', `laminas:${laminaId}`, { errorDetalle });
   }
