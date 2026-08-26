@@ -33,6 +33,7 @@
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { confianzaMinima, fuentesDeEntidades } from '@/lib/computo/presentacion';
 import { formatearNumero, redondear2 } from '@/lib/computo/unidades';
+import { deducirCierreCotas } from '@/lib/deduccion/reglas/cierre-cotas';
 import { deducirContinuidad } from '@/lib/deduccion/reglas/continuidad';
 import { deducirIdemTipologia } from '@/lib/deduccion/reglas/idem-tipologia';
 import { deducirPlanillaPlano } from '@/lib/deduccion/reglas/planilla-plano';
@@ -223,6 +224,7 @@ const REGLAS: ReadonlyArray<{ regla: ReglaDeduccion; ejecutar: FnRegla }> = [
   { regla: 'planta_corte', ejecutar: deducirPlantaCorte },
   { regla: 'continuidad', ejecutar: deducirContinuidad },
   { regla: 'idem_tipologia', ejecutar: deducirIdemTipologia },
+  { regla: 'cierre_cotas', ejecutar: deducirCierreCotas },
 ];
 
 function crearContexto(laminas: readonly LaminaResumen[]): ContextoDeduccion {
