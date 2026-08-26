@@ -89,6 +89,7 @@ let db: Db;
 let raizStorage: string;
 let storage: StorageAdapter;
 let estudioId: string;
+let otroEstudioId: string;
 let obraId: string;
 let titular: ActorCompulsa;
 let colaborador: ActorCompulsa;
@@ -110,6 +111,7 @@ beforeEach(async () => {
     .values([{ nombre: 'Estudio Norte' }, { nombre: 'Estudio Sur' }])
     .returning();
   estudioId = norte.id;
+  otroEstudioId = sur.id;
 
   const [jefa, pasante, ajena] = await db
     .insert(usuarios)
@@ -447,14 +449,20 @@ describe('flujo manual completo sobre el rubro seco', () => {
     expect(segunda.requiereDecision).toBe(false);
     expect(segunda.cotizacion.total).toBe(414440);
 
-    // Las 7 repreguntas quedan en el orden del pedido, no en orden de uuid.
+    // Los 7 ítems que no cotizó quedan como borradores, uno por ítem. El orden
+    // entre ellos no se promete (comparten el `at`): lo que importa es que estén
+    // los siete y que cada uno nombre su ítem.
     const hiloFerreteria = await leerHilo(db, estudioId, contactoFerreteria.id);
     const borradoresFerreteria = hiloFerreteria.mensajes.filter(
       (m) => m.estado === 'pendiente_envio_manual',
     );
     expect(borradoresFerreteria).toHaveLength(7);
-    expect(borradoresFerreteria[0].texto).toContain('Banda acústica autoadhesiva de 70 mm');
-    expect(borradoresFerreteria[6].texto).toContain('Tornillos para placa de roca de yeso');
+    const preguntados = borradoresFerreteria.map((m) => m.texto).join('\n');
+    expect(preguntados).toContain('Banda acústica autoadhesiva de 70 mm');
+    expect(preguntados).toContain('Tornillos para placa de roca de yeso');
+    expect(preguntados).toContain('Solera para tabique de durlock');
+    // Lo que sí cotizó no se repregunta.
+    expect(preguntados).not.toContain('Masilla para juntas');
 
     const placasConDosMuestras = await db
       .select()
@@ -679,6 +687,49 @@ describe('ítems agregados (sin entidad única)', () => {
 });
 
 describe('aislamiento entre estudios', () => {
+  it('un proveedor ajeno no cierra la compulsa que ya estaba en curso', async () => {
+    await prepararRubroSeco();
+    const primera = await lanzarCompulsa(
+      db,
+      storage,
+      titular,
+      obraId,
+      'seco',
+      { proveedorIds: [corralon.id] },
+      deps,
+    );
+
+    // El cómputo cambia, así que este segundo lanzamiento sería una recompulsa
+    // legítima… si el proveedor existiera.
+    await db
+      .update(computoItems)
+      .set({ cantCompra: 41 })
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.claveItem, 'seco.placas')));
+
+    const [ajenoProveedor] = await db
+      .insert(proveedores)
+      .values({
+        estudioId: otroEstudioId,
+        nombre: 'Corralón del Sur',
+        rubros: ['seco'],
+        zona: 'La Plata',
+        origen: 'manual',
+      })
+      .returning();
+
+    await expect(
+      lanzarCompulsa(db, storage, titular, obraId, 'seco', { proveedorIds: [ajenoProveedor.id] }, deps),
+    ).rejects.toThrow(/No encontré ese proveedor/);
+
+    // La compulsa vigente sigue vigente: nada se cerró por un id que no era.
+    const [sigueEnCurso] = await db
+      .select()
+      .from(compulsas)
+      .where(eq(compulsas.id, primera.compulsa.id));
+    expect(sigueEnCurso.estado).toBe('lanzada');
+    expect(await db.select().from(compulsas)).toHaveLength(1);
+  });
+
   it('un contacto de otro estudio no existe para registrar una cotización', async () => {
     await prepararRubroSeco();
     const { contactos } = await lanzarCompulsa(

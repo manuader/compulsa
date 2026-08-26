@@ -481,16 +481,21 @@ function motivoDeExclusion(proveedor: Proveedor, canal: Canal): string | null {
  * Congela el cómputo aprobado del rubro, arma el pedido y deja un borrador por
  * proveedor listo para mandar.
  *
- * Pasos, en orden y por un motivo:
+ * Pasos, en orden y por un motivo: **todo lo que puede fallar va antes de la
+ * primera escritura**. Cerrar la compulsa anterior y descubrir después que un
+ * proveedor de la selección no existe dejaría al estudio sin compulsa vigente
+ * por un id mal tipeado.
  *
- * 1. rol titular y obra del estudio (si falla, no se tocó nada);
+ * 1. rol titular y obra del estudio;
  * 2. rubro `aprobado` y sus ítems activos;
- * 3. snapshot + hash, y contra el hash se decide si esto es una compulsa nueva
- *    o la versión N+1 de una que quedó vieja (RF-701);
- * 4. la compulsa se escribe **antes** que los recortes porque los recortes
+ * 3. snapshot + hash;
+ * 4. proveedores: existen, son de este estudio y se pueden contactar;
+ * 5. recién ahí, la versión (RF-701): si el hash cambió, N+1 y la anterior se
+ *    cierra;
+ * 6. la compulsa se escribe **antes** que los recortes porque los recortes
  *    cuelgan de su id; una lámina que no se puede leer del storage se saltea y
  *    queda contada en la auditoría, no frena el pedido;
- * 5. un mensaje saliente por contacto, en estado borrador
+ * 7. un mensaje saliente por contacto, en estado borrador
  *    (`pendiente_envio_manual`), con el texto y las refs de los recortes.
  */
 export async function lanzarCompulsa(
@@ -538,7 +543,22 @@ export async function lanzarCompulsa(
   const atributos = await atributosDeLosItems(db, obra.id, rubro, items);
   const snapshot = crearSnapshot(items, condiciones, atributos);
 
-  // --- 2. Versión (RF-701) ---------------------------------------------------
+  // --- 2. Proveedores contactables (§13) ------------------------------------
+  //
+  // Antes de tocar nada: si un proveedor no existe (o es de otro estudio) esto
+  // tiene que reventar **antes** de cerrar la compulsa anterior. Un id repetido
+  // en la selección es un contacto, no dos (el UNIQUE de la tabla lo prohíbe).
+  const excluidos: ProveedorExcluido[] = [];
+  const contactables: Proveedor[] = [];
+  for (const proveedorId of [...new Set(opciones.proveedorIds)]) {
+    const proveedor = await requireProveedorCore(db, actor.estudioId, proveedorId);
+    const motivo = motivoDeExclusion(proveedor, 'manual');
+    if (motivo === null) contactables.push(proveedor);
+    else excluidos.push({ proveedorId: proveedor.id, nombre: proveedor.nombre, motivo });
+  }
+  if (contactables.length === 0) throw new SinProveedoresContactablesError(excluidos);
+
+  // --- 3. Versión (RF-701) ---------------------------------------------------
   const [anterior] = await db
     .select()
     .from(compulsas)
@@ -570,17 +590,6 @@ export async function lanzarCompulsa(
       });
     }
   }
-
-  // --- 3. Proveedores contactables (§13) ------------------------------------
-  const excluidos: ProveedorExcluido[] = [];
-  const contactables: Proveedor[] = [];
-  for (const proveedorId of opciones.proveedorIds) {
-    const proveedor = await requireProveedorCore(db, actor.estudioId, proveedorId);
-    const motivo = motivoDeExclusion(proveedor, 'manual');
-    if (motivo === null) contactables.push(proveedor);
-    else excluidos.push({ proveedorId: proveedor.id, nombre: proveedor.nombre, motivo });
-  }
-  if (contactables.length === 0) throw new SinProveedoresContactablesError(excluidos);
 
   // --- 4. La compulsa --------------------------------------------------------
   const [compulsa] = await db
@@ -974,18 +983,23 @@ export async function conciliarCotizacion(
     .returning();
 
   // --- 2. Repreguntas como borrador saliente --------------------------------
-  // De a una y no en un solo `insert`: `now()` es el reloj de la transacción,
-  // así que un insert múltiple les pone el mismo `at` y el hilo las mostraría
-  // en orden de uuid. Salen en el orden del pedido, que es el que tiene sentido
-  // para quien las va a mandar.
-  for (const repregunta of resultado.repreguntas) {
-    await db.insert(mensajes).values({
-      contactoId: contexto.contacto.id,
-      direccion: 'saliente',
-      canal: contexto.contacto.canal,
-      cuerpo: repregunta.texto,
-      registradoPor: null,
-    });
+  //
+  // Van en un solo `insert` y por lo tanto comparten el `at` (es `now()`, el
+  // reloj de la transacción). **El orden entre ellas no está garantizado**:
+  // `mensajes` no tiene columna de orden y el desempate termina siendo por
+  // uuid. No es un problema para mandarlas —cada una se explica sola y cita su
+  // ítem—, pero si la pantalla necesita mostrarlas en el orden del pedido, el
+  // orden está en `conciliacion_items` (por `clave_item`), no acá.
+  if (resultado.repreguntas.length > 0) {
+    await db.insert(mensajes).values(
+      resultado.repreguntas.map((repregunta) => ({
+        contactoId: contexto.contacto.id,
+        direccion: 'saliente' as const,
+        canal: contexto.contacto.canal,
+        cuerpo: repregunta.texto,
+        registradoPor: null,
+      })),
+    );
   }
 
   // --- 3. Índice de precios (RF-1103) ---------------------------------------
