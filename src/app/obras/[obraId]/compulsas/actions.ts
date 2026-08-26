@@ -365,12 +365,18 @@ async function historicoDeCotizaciones(
  * cantidad y presentación de cada ítem, más las condiciones— y el hash lo decide
  * el server al lanzar, que es donde tiene que decidirse.
  *
- * Consecuencia conocida: si lo único que cambió es una especificación crítica
- * (el tabique pasó de durlock a mampostería sin cambiar cantidades), la pantalla
- * dice «ya hay una en curso» y lanzar igual crea la versión N+1. No se pierde
- * nada —el resultado es el correcto y el error del server sale inline—, pero el
- * aviso previo se queda corto. Cerrarlo del todo pide exportar esa regla desde
- * `flujo.ts`.
+ * Dos consecuencias conocidas, las dos en la misma dirección (el aviso se queda
+ * corto, nunca de más) y las dos inofensivas porque el server decide igual y su
+ * error sale inline:
+ *
+ *  1. si lo único que cambió es una especificación crítica (el tabique pasó de
+ *     durlock a mampostería sin mover cantidades), la pantalla dice «ya hay una
+ *     en curso» y lanzar igual crea la versión N+1;
+ *  2. las condiciones que se comparan son **las del estudio**, no las que el
+ *     usuario esté editando en el formulario de al lado — cambiarlas también
+ *     cambia el hash.
+ *
+ * Cerrar la primera pide exportar `atributosDeLosItems` desde `flujo.ts`.
  */
 export async function previewRubroCore(
   db: Db,
