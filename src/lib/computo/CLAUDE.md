@@ -14,7 +14,7 @@ El corazón del producto: motor de cómputo **puro** (sin I/O, sin DB, sin fetch
 - `unidades.ts` — conversiones y formateo (m, m², ml, l, kg, u). Redondeos SIEMPRE con 2 decimales para netos; enteros para unidades de compra.
 - `presentacion.ts` — `ceilAPresentacion(cantidad, presentacion)`: placas (2,88 m² la placa 1,20×2,40), latas de pintura (1/4/10/20 L, greedy de mayor a menor), barras (unidad), bolsas, u.
 - `engine.ts` — `computarRubro(entidades, plantilla, tipoObra): { items, hallazgos }`. Es la única entrada pública del motor.
-- `sanity.ts` — verificaciones cruzadas (m² piso ≈ m² cielorraso por ambiente ±10%; ml zócalo ≈ perímetro − vanos). Devuelven hallazgos tipo `inconsistencia`, no excepciones.
+- `sanity.ts` — verificaciones cruzadas. En F0 hay una: m² de piso ≈ m² de cielorraso del mismo ambiente (±10%). Devuelve hallazgos tipo `inconsistencia`, no excepciones. Pendiente para F1: `ml zócalo ≈ perímetro − vanos` (PRD §12) — no está implementada, no la des por hecha.
 - `../rubros/` — datos por rubro: plantilla (qué se computa y cómo) + checklist de completitud (qué debe estar documentado). Los checklists son **datos editables**, no lógica: agregás un campo al checklist, no un `if` al engine.
 - `../hallazgos/` — `clasificarHueco()` (taxonomía §11) y `puedeAprobarRubro()` (RF-404: false si hay hallazgos abiertos bloqueantes del rubro).
 

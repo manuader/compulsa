@@ -55,8 +55,8 @@ Alcanza para recorrer las cinco pantallas sin cargar nada.
 El árbol no compila ni descarga binarios nativos propios. `pdfjs-dist` declara `@napi-rs/canvas`
 (≈25 MB) como `optionalDependency` para rasterizar páginas; acá sólo se extrae texto, así que el
 `overrides` de `package.json` lo apunta a una versión inexistente y npm, al ser opcional, la saltea.
-No lo agregues: si algún día hace falta rasterizar, revisá primero la nota de `pdfjs-dist` en
-`.superpowers/sdd/2026-08-25-compulsa-f0/task-1-report.md`.
+No lo agregues sin necesidad: el día que haga falta rasterizar de verdad hay que sacar ese
+`overrides` y asumir el binario, y conviene medir antes si alcanza con el texto (`src/lib/pdf/`).
 
 ## Comandos
 
@@ -64,7 +64,7 @@ No lo agregues: si algún día hace falta rasterizar, revisá primero la nota de
 npm run dev          # dev server (PGlite local, migra al boot)
 npm run build        # build de producción
 npm start            # sirve el build
-npm test             # vitest (unit + integration) — 224 tests, sin red
+npm test             # vitest (unit + integration) — 252 tests, sin red
 npm run test:watch   # vitest en watch
 npm run golden       # harness de regresión de precisión contra el golden set
 npm run seed         # datos de demo (idempotente)
@@ -130,7 +130,7 @@ versionado de documentación (RF-105).
 ## Testing
 
 ```bash
-npm test        # 19 suites, 224 tests
+npm test        # 21 suites, 252 tests
 npm run golden  # regresión de precisión
 ```
 
