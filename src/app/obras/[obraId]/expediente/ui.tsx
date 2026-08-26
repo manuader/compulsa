@@ -16,6 +16,7 @@
  * Toda mutación va contra `src/app/api/` y termina en un `router.refresh()`:
  * la verdad la sigue teniendo el server, no un estado local que se desincroniza.
  */
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useRef, useState, useTransition, type DragEvent } from 'react';
 
@@ -154,6 +155,7 @@ export function Expediente({
         documentos.map((documento) => (
           <DocumentoCard
             key={documento.id}
+            obraId={obraId}
             documento={documento}
             onCambio={refrescar}
             refrescando={refrescando}
@@ -264,10 +266,12 @@ function Dropzone({ obraId, onSubido }: { obraId: string; onSubido: () => void }
 // ---------------------------------------------------------------------------
 
 function DocumentoCard({
+  obraId,
   documento,
   onCambio,
   refrescando,
 }: {
+  obraId: string;
   documento: DocumentoVista;
   onCambio: () => void;
   refrescando: boolean;
@@ -311,6 +315,7 @@ function DocumentoCard({
               {documento.laminas.map((lamina) => (
                 <FilaLamina
                   key={lamina.id}
+                  obraId={obraId}
                   lamina={lamina}
                   onCambio={onCambio}
                   refrescando={refrescando}
@@ -325,10 +330,12 @@ function DocumentoCard({
 }
 
 function FilaLamina({
+  obraId,
   lamina,
   onCambio,
   refrescando,
 }: {
+  obraId: string;
   lamina: LaminaVista;
   onCambio: () => void;
   refrescando: boolean;
@@ -366,9 +373,15 @@ function FilaLamina({
 
       <TableCell>
         <div className="flex flex-col gap-1">
-          <span className="font-medium text-neutral-900">
+          {/* El expediente es la lista de láminas: desde acá se abre el visor.
+              Sin este link la única puerta al visor era el acceso del tablero,
+              que lleva siempre a la primera lámina de la obra. */}
+          <Link
+            href={`/obras/${obraId}/laminas/${lamina.id}`}
+            className="font-medium text-neutral-900 underline decoration-neutral-300 underline-offset-2 hover:decoration-neutral-900"
+          >
             {lamina.titulo ?? 'Sin título en el rótulo'}
-          </span>
+          </Link>
           <span className="text-xs text-neutral-500">
             {lamina.codigo ?? 'Sin código'}
             {lamina.escala ? ` · ${lamina.escala}` : ' · sin escala'}
