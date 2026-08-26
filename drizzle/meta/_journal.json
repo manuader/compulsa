@@ -15,6 +15,13 @@
       "when": 1787748923749,
       "tag": "0001_special_baron_strucker",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787766434323,
+      "tag": "0002_demonic_puck",
+      "breakpoints": true
     }
   ]
 }

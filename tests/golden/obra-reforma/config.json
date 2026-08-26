@@ -1,0 +1,7 @@
+{
+  "nombre": "Casa Reforma — golden",
+  "tipoObra": "reforma",
+  "zona": "CABA",
+  "documentos": ["tests/fixtures/pdfs/obra-reforma.pdf"],
+  "validarDeducciones": true
+}

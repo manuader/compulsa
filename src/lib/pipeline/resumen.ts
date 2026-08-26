@@ -247,7 +247,10 @@ export function generarResumen(
     laminasObra.map((lamina) => lamina.tipo).filter((t): t is TipoLamina => t !== null),
   );
 
-  const { items } = computarObra(entidadesObra, obra.tipo);
+  // Las láminas viajan al motor por el tipo: el alcance del resumen tiene que
+  // dar los mismos ítems que la planilla (`recomputarObra`), y aberturas cuenta
+  // distinto según de qué lámina salió cada carpintería.
+  const { items } = computarObra(entidadesObra, obra.tipo, undefined, undefined, laminasObra);
   const ordenados = [...items].sort((a, b) => a.claveItem.localeCompare(b.claveItem, 'es-AR'));
   const alcance: RubroDelAlcance[] = RUBROS.map((rubro) => {
     const delRubro = ordenados.filter((item) => item.rubro === rubro);

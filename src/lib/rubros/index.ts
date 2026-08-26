@@ -6,7 +6,7 @@
  * archivo del rubro. Agregar un rubro = agregar un archivo acá + sus tests;
  * `engine.ts` no se toca.
  */
-import type { EntidadPersistida } from '@/lib/computo/engine';
+import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import { plantillaAberturas } from '@/lib/rubros/aberturas';
 import { plantillaGruesa } from '@/lib/rubros/gruesa';
 import { plantillaPintura } from '@/lib/rubros/pintura';
@@ -25,7 +25,16 @@ export interface PlantillaRubro {
   nombre: string;
   /** Desperdicio de referencia del rubro; cada ítem puede tener el suyo. */
   desperdicioDefaultPct: number;
-  computar(entidades: readonly EntidadPersistida[], tipoObra: TipoObra): ResultadoComputo;
+  /**
+   * `laminas` es **opcional**: una plantilla que no mira el tipo de lámina lo
+   * ignora, y las que sí lo miran (aberturas) se comportan como antes cuando no
+   * viene. El pipeline siempre lo pasa; los tests de rubro puro, no.
+   */
+  computar(
+    entidades: readonly EntidadPersistida[],
+    tipoObra: TipoObra,
+    laminas?: readonly LaminaDeComputo[],
+  ): ResultadoComputo;
 }
 
 /** Registro de plantillas: la única lista que conoce el engine. */

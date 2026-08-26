@@ -22,8 +22,12 @@ import { setDbForTests, type Db } from '@/db/client';
 import {
   auditoria,
   checklistsEstudio,
+  computoItems,
+  documentos,
+  entidades,
   estudios,
   invitaciones,
+  laminas,
   notificaciones,
   obras,
   sesiones,
@@ -39,7 +43,9 @@ import {
 import {
   CHECKLIST_DEFAULT,
   checklistEfectivo,
+  checklistEfectivoDeTodos,
   ajustarHallazgosAlChecklist,
+  contarBloqueantes,
   guardarItemChecklist,
   listarChecklist,
 } from '@/lib/plataforma/checklists';
@@ -51,6 +57,7 @@ import {
   marcarLeida,
   marcarTodasLeidas,
 } from '@/lib/plataforma/notificaciones';
+import { recomputarObra } from '@/lib/pipeline/recomputar';
 import { RolInsuficienteError, UsuarioInactivoError } from '@/lib/plataforma/roles';
 import {
   aceptarInvitacionCore,
@@ -894,6 +901,186 @@ describe('el checklist manda sobre el gate de aprobación', () => {
   });
 });
 
+/**
+ * El mismo ajuste, pero para los **contadores** del tablero ("N bloquean la
+ * aprobación") y de la bandeja ("N bloqueantes"), que hasta P11 contaban el
+ * `bloqueante` crudo de la fila: un estudio que desactivaba un chequeo veía el
+ * tablero frenando un rubro que el gate dejaba aprobar.
+ */
+describe('los contadores de bloqueantes miran el checklist del estudio', () => {
+  const CONSULTAS = [
+    {
+      rubro: 'seco' as const,
+      bloqueante: true,
+      estado: 'abierto' as const,
+      checklistItem: 'seco.altura_tabiques',
+    },
+    {
+      rubro: 'aberturas' as const,
+      bloqueante: true,
+      estado: 'abierto' as const,
+      checklistItem: 'aberturas.medidas_vano',
+    },
+    // Sin checklistItem y de obra: el bloqueo por escala no se puede desactivar.
+    { rubro: null, bloqueante: true, estado: 'abierto' as const, checklistItem: 'escala' },
+    // Respondida: no cuenta aunque siga marcada bloqueante.
+    {
+      rubro: 'seco' as const,
+      bloqueante: true,
+      estado: 'respondido' as const,
+      checklistItem: 'seco.largo_tabiques',
+    },
+  ];
+
+  it('el mapa de los cuatro rubros no pierde ningún ítem por colisión de claves', async () => {
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    const total = RUBROS.reduce((suma, rubro) => suma + CHECKLIST_DEFAULT[rubro].length, 0);
+    expect(efectivo.size).toBe(total);
+    expect(efectivo.get('seco.altura_tabiques')).toEqual({ activo: true, bloqueante: true });
+    expect(efectivo.get('aberturas.medidas_vano')).toEqual({ activo: true, bloqueante: true });
+  });
+
+  it('con el checklist de fábrica cuenta las tres abiertas y bloqueantes', async () => {
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(3);
+  });
+
+  it('desactivar un ítem de checklist baja el contador', async () => {
+    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(2);
+  });
+
+  it('marcar un ítem no bloqueante también lo baja, y la escala sigue frenando', async () => {
+    await guardarItemChecklist(db, titular, 'aberturas', 'aberturas.medidas_vano', {
+      bloqueante: false,
+    });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    // Queda solo la de escala, que no está en ningún checklist.
+    expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(1);
+  });
+
+  it('el checklist de otro estudio no afecta el contador de este (RNF-4)', async () => {
+    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    const ajeno = await checklistEfectivoDeTodos(db, otroEstudioId);
+
+    expect(contarBloqueantes(CONSULTAS, ajeno)).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La configuración llega al cómputo (TODO de P7 cerrado en P11)
+// ---------------------------------------------------------------------------
+
+/**
+ * El desperdicio configurable no servía de nada mientras el recompute usara
+ * `PLANTILLAS` directo: el formulario guardaba un número y ningún ítem se movía.
+ *
+ * El tabique del pin es **5,02 × 2,50 m a dos caras = 25,10 m² netos**, elegido
+ * a propósito: con 26 m² (el del fixture de la obra demo) el 12 % y el 15 % dan
+ * la misma compra —el bulto de 2,88 m² se come la diferencia— y un pin que no se
+ * mueve no protege nada.
+ *
+ *   12 % (plantilla) → 28,11 m² → 28,11 / 2,88 = 9,76 ⇒ 10 placas = 28,80 m²
+ *   15 % (config)    → 28,87 m² → 28,87 / 2,88 = 10,02 ⇒ 11 placas = 31,68 m²
+ */
+describe('la configuración del estudio llega al recompute', () => {
+  let obraId: string;
+
+  async function placas(): Promise<{ desperdicioPct: number; cantCompra: number } | undefined> {
+    const [fila] = await db
+      .select({ desperdicioPct: computoItems.desperdicioPct, cantCompra: computoItems.cantCompra })
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.claveItem, 'seco.placas')));
+    return fila;
+  }
+
+  beforeEach(async () => {
+    const [obra] = await db
+      .insert(obras)
+      .values({ estudioId, nombre: 'Casa Config', zona: 'CABA', tipo: 'nueva' })
+      .returning();
+    obraId = obra.id;
+
+    const [documento] = await db
+      .insert(documentos)
+      .values({
+        obraId,
+        nombreArchivo: 'planta.pdf',
+        tipo: 'plano',
+        archivoRef: 'config/planta.pdf',
+        mime: 'application/pdf',
+        hash: 'sha256-config',
+        subidoPor: titular.usuarioId,
+      })
+      .returning();
+    const [lamina] = await db
+      .insert(laminas)
+      .values({
+        documentoId: documento.id,
+        obraId,
+        numeroPagina: 1,
+        archivoRef: 'config/planta-p1.pdf',
+        tipo: 'planta',
+        estadoAnalisis: 'analizada',
+        escala: '1:100',
+        escalaConfiable: true,
+      })
+      .returning();
+
+    await db.insert(entidades).values({
+      obraId,
+      laminaId: lamina.id,
+      tipo: 'tabique',
+      nombre: 'T1',
+      atributosJson: { tipo: 'durlock', largoM: 5.02, alturaM: 2.5, caras: 2 },
+      estadoReforma: 'na',
+      fuentesJson: [{ laminaId: lamina.id, bbox: [0.1, 0.2, 0.02, 0.4], detalle: 'T1' }],
+      confianza: 0.9,
+    });
+  });
+
+  it('sin config, el desperdicio es el de la plantilla: 12 % ⇒ 10 placas', async () => {
+    await recomputarObra(obraId, { db });
+
+    expect(await placas()).toEqual({ desperdicioPct: 12, cantCompra: 28.8 });
+  });
+
+  it('con el override del estudio en 15 %, el mismo tabique compra 11 placas', async () => {
+    expect((await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } })).ok).toBe(true);
+    await recomputarObra(obraId, { db });
+
+    expect(await placas()).toEqual({ desperdicioPct: 15, cantCompra: 31.68 });
+  });
+
+  it('cambiar la config y recomputar mueve un ítem que ya estaba escrito', async () => {
+    await recomputarObra(obraId, { db });
+    expect((await placas())?.cantCompra).toBe(28.8);
+
+    await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } });
+    const resumen = await recomputarObra(obraId, { db });
+
+    expect(resumen.itemsActualizados).toBeGreaterThan(0);
+    expect(await placas()).toEqual({ desperdicioPct: 15, cantCompra: 31.68 });
+  });
+
+  it('el override por rubro no toca a los ítems que no se desperdician', async () => {
+    await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } });
+    await recomputarObra(obraId, { db });
+
+    const [tornillos] = await db
+      .select({ desperdicioPct: computoItems.desperdicioPct })
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.claveItem, 'seco.tornillos')));
+    expect(tornillos.desperdicioPct).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // La matriz completa, contra los cores de verdad
 // ---------------------------------------------------------------------------
@@ -1151,5 +1338,70 @@ describe('notificaciones', () => {
   it('una lista de destinatarios vacía no escribe nada', async () => {
     expect(await crearNotificacion(db, [], { titulo: 'Nadie', cuerpo: 'x' })).toBe(0);
     expect(await db.select().from(notificaciones)).toEqual([]);
+  });
+});
+
+/**
+ * La marca de "de esto ya avisé" vive en `notificaciones.clave_dedup` y la
+ * garantiza el UNIQUE `(usuario_id, clave_dedup)`, no una consulta previa: dos
+ * escrituras simultáneas dejan una sola fila. Va en su propia columna y no sobre
+ * `link` porque el link no es único por evento —tres proveedores cotizando la
+ * misma compulsa llevan al mismo lugar y son tres avisos distintos.
+ */
+describe('deduplicación de notificaciones por clave', () => {
+  let caroId: string;
+
+  beforeEach(async () => {
+    const [caro] = await db
+      .insert(usuarios)
+      .values({
+        estudioId,
+        email: 'caro@estudionorte.ar',
+        nombre: 'Caro Colaboradora',
+        passwordHash: 'x',
+        rol: 'colaborador',
+      })
+      .returning();
+    caroId = caro.id;
+  });
+
+  it('con la misma clave, el segundo aviso no se escribe y la cuenta lo dice', async () => {
+    const aviso = { titulo: 'Sin respuesta', cuerpo: 'x', claveDedup: 'compulsa.sin_respuesta.7' };
+
+    expect(await crearNotificacion(db, [caroId], aviso)).toBe(1);
+    expect(await crearNotificacion(db, [caroId], aviso)).toBe(0);
+    expect(await crearNotificacion(db, [caroId], { ...aviso, titulo: 'Otro título' })).toBe(0);
+
+    expect(await db.select().from(notificaciones)).toHaveLength(1);
+  });
+
+  it('dos escrituras simultáneas con la misma clave dejan una sola fila', async () => {
+    const aviso = { titulo: 'Sin respuesta', cuerpo: 'x', claveDedup: 'compulsa.sin_respuesta.8' };
+
+    const [una, otra] = await Promise.all([
+      crearNotificacion(db, [caroId], aviso),
+      crearNotificacion(db, [caroId], aviso),
+    ]);
+
+    expect(una + otra).toBe(1);
+    expect(await db.select().from(notificaciones)).toHaveLength(1);
+  });
+
+  it('la clave es por usuario: el mismo aviso le llega a cada uno', async () => {
+    const escritas = await crearNotificacion(db, [caroId, titular.usuarioId], {
+      titulo: 'Sin respuesta',
+      cuerpo: 'x',
+      claveDedup: 'compulsa.sin_respuesta.9',
+    });
+
+    expect(escritas).toBe(2);
+  });
+
+  it('sin clave no hay dedup: dos avisos al mismo link son dos avisos', async () => {
+    const link = '/obras/1/compulsas/2';
+    expect(await crearNotificacion(db, [caroId], { titulo: 'Cotizó A', cuerpo: 'x', link })).toBe(1);
+    expect(await crearNotificacion(db, [caroId], { titulo: 'Cotizó B', cuerpo: 'x', link })).toBe(1);
+
+    expect(await db.select().from(notificaciones)).toHaveLength(2);
   });
 });

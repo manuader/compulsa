@@ -45,6 +45,7 @@ import {
   CompulsaYaAdjudicadaError,
   adjudicarCompulsa,
   ahorroDeCompulsa,
+  ahorroDelEstudio,
   leerComparativa,
   resumenCompulsasObra,
   type ActorAdjudicacion,
@@ -539,6 +540,48 @@ describe('ahorro: (mediana − adjudicado) + mejoras aceptadas', () => {
 
     expect(resumen.total).toBe(1);
     expect(resumen.cotizaciones).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ahorro acumulado del estudio (la card de /estudio)
+// ---------------------------------------------------------------------------
+
+describe('ahorro acumulado por estudio', () => {
+  it('sin nada adjudicado no hay cifra: la pantalla muestra un guion', async () => {
+    expect(await ahorroDelEstudio(db, estudioId)).toEqual({
+      adjudicadas: 0,
+      obras: 0,
+      porMoneda: [],
+    });
+  });
+
+  it('acumula el ahorro de todas las obras del estudio', async () => {
+    await adjudicar();
+
+    expect(await ahorroDelEstudio(db, estudioId)).toEqual({
+      adjudicadas: 1,
+      obras: 1,
+      porMoneda: [{ moneda: 'ARS', ahorro: 15, adjudicadas: 1 }],
+    });
+  });
+
+  it('el estudio de al lado no ve nada de este (RNF-4)', async () => {
+    await adjudicar();
+
+    const [sur] = await db.select().from(estudios).where(eq(estudios.nombre, 'Estudio Sur'));
+    expect((await ahorroDelEstudio(db, sur.id)).porMoneda).toEqual([]);
+  });
+
+  it('pesos y dólares se muestran aparte: no hay tipo de cambio que inventar', async () => {
+    await adjudicar();
+    // La misma compulsa, mirada desde una obra en dólares: el acumulado tiene
+    // que abrir en dos cifras y no sumar 15 + 15.
+    await db.update(obras).set({ moneda: 'USD' }).where(eq(obras.id, obraId));
+
+    expect((await ahorroDelEstudio(db, estudioId)).porMoneda).toEqual([
+      { moneda: 'USD', ahorro: 15, adjudicadas: 1 },
+    ]);
   });
 });
 

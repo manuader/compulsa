@@ -1,11 +1,24 @@
 /**
  * Datos de demo: `npm run seed`.
  *
- * Deja el workspace con una obra de verdad —documentos subidos, láminas
- * analizadas, cómputo, un ítem tocado a mano y la bandeja con una consulta
- * respondida y otra abierta— para poder recorrer las pantallas sin cargar nada.
+ * Deja el workspace con **dos obras** de verdad y una compulsa en curso, para
+ * poder recorrer las pantallas sin cargar nada:
  *
- * Cuatro reglas de este archivo:
+ *  · **Casa Belgrano — reforma demo** (`obra-demo.pdf` + dos láminas sin
+ *    escala): cómputo completo, un ítem tocado a mano, una consulta de escala
+ *    respondida y otra abierta. Es la que muestra el pipeline y la bandeja.
+ *  · **Casa Reforma — demo** (`obra-reforma.pdf`): un muro a demoler, un
+ *    tabique existente que no computa y una ventana sin acotar en la planta que
+ *    la planilla de carpinterías sí acota. De ahí salen tres deducciones: una
+ *    validada (la altura del tabique, que es la que destraba el cómputo de
+ *    seco) y dos esperando en la bandeja. Sobre su rubro `seco` aprobado corre
+ *    la compulsa: cuatro proveedores en la agenda (uno con opt-out), dos
+ *    contactados, dos presupuestos conciliados —uno con una sustitución de
+ *    especificación y un ítem sin cotizar, que deja una repregunta en
+ *    borrador—, el índice de precios del mes poblado y una ronda de negociación
+ *    propuesta.
+ *
+ * Cinco reglas de este archivo:
  *
  *  1. **Idempotente.** Correrlo dos veces seguidas no agrega una fila en ninguna
  *     tabla, ni siquiera en `auditoria`: cada paso pregunta si ya está hecho
@@ -15,41 +28,71 @@
  *  2. **Base persistente.** Usa `getDb()` sin tocar `NODE_ENV`: en desarrollo eso
  *     es la PGlite de `data/pglite/`, que es la misma que levanta `npm run dev`.
  *     Si `DATABASE_URL` está seteada, siembra ahí.
- *  3. **Pipeline real, provider mock.** Los PDFs se suben y se procesan con el
- *     pipeline de verdad, pero el análisis se inyecta como mock a propósito: el
- *     seed tiene que ser determinístico y correr offline, y los fixtures de
- *     `obra-demo.pdf` son justamente lo que el mock sabe leer.
- *  4. **Todo lo que escribe el seed queda auditado**, con el mismo actor y el
- *     mismo diff que si lo hubiera hecho el arquitecto desde la pantalla: los
- *     núcleos de la planilla (`recalcularCompra`, `diffDeItem`) y de la bandeja
- *     (`responderHallazgo`) se reusan, no se reimplementan.
+ *  3. **Pipeline real, providers mock.** Los PDFs se suben y se procesan con el
+ *     pipeline de verdad y los presupuestos entran por el flujo de verdad, pero
+ *     el análisis y el parser se inyectan como mock **a propósito**: el seed
+ *     tiene que ser determinístico y correr offline aunque quien lo corra tenga
+ *     `ANTHROPIC_API_KEY` exportada.
+ *  4. **Núcleos, no reimplementaciones.** Todo pasa por el mismo código que las
+ *     pantallas: `responderHallazgo`, `validarDeduccion`, `aprobarRubroCore`,
+ *     `crearProveedor`, `lanzarCompulsa`, `registrarEnvio`,
+ *     `registrarCotizacion`, `proponerNegociacion`, `crearInvitacion`,
+ *     `crearNotificacion`.
+ *  5. **Todo lo que escribe el seed queda auditado**, con el mismo actor y el
+ *     mismo diff que si lo hubiera hecho el arquitecto.
  */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, count, eq, inArray } from 'drizzle-orm';
 
-import { diffDeItem, recalcularCompra } from '@/app/obras/[obraId]/computo/actions';
+import {
+  aprobarRubroCore,
+  diffDeItem,
+  recalcularCompra,
+} from '@/app/obras/[obraId]/computo/actions';
 import { getDb, type Db } from '@/db/client';
 import {
   auditoria,
+  compulsas,
   computoItems,
+  contactosCompulsa,
+  cotizaciones,
+  deducciones,
   documentos,
   entidades,
   estudios,
   hallazgos,
+  invitaciones,
   laminas,
+  negociaciones,
+  notificaciones,
   obras,
+  priceIndex,
+  proveedores,
   usuarios,
   type Obra,
+  type Proveedor,
   type Usuario,
 } from '@/db/schema';
 import { crearProviderMock } from '@/lib/analysis/mock';
+import { crearProviderPresupuestoMock } from '@/lib/analysis/presupuesto-mock';
 import { registrarAuditoria } from '@/lib/audit';
 import { hashearPassword } from '@/lib/auth/password';
 import { responderHallazgo } from '@/lib/bandeja/resolver';
+import {
+  lanzarCompulsa,
+  proponerNegociacion,
+  registrarCotizacion,
+  registrarEnvio,
+  type ActorCompulsa,
+} from '@/lib/compulsa/flujo';
+import { validarDeduccion, type ActorDeduccion } from '@/lib/deduccion/persistencia';
 import { claveEscala } from '@/lib/pipeline/claves';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
+import { crearNotificacion } from '@/lib/plataforma/notificaciones';
+import { crearInvitacion, type ActorPlataforma } from '@/lib/plataforma/usuarios';
+import { crearProveedor, marcarOptOut, type ActorProveedor } from '@/lib/proveedores/gestion';
 import { getStorage } from '@/lib/storage/index';
 
 // ---------------------------------------------------------------------------
@@ -68,7 +111,15 @@ const OBRA = {
   tipo: 'reforma',
 } as const;
 
+/** La segunda obra: la que tiene deducciones, compulsa y negociación. */
+const OBRA_COMPULSA = {
+  nombre: 'Casa Reforma — demo',
+  zona: 'Villa Urquiza, CABA',
+  tipo: 'reforma',
+} as const;
+
 const DIR_PDFS = path.join(process.cwd(), 'tests', 'fixtures', 'pdfs');
+const DIR_PRESUPUESTOS = path.join(process.cwd(), 'tests', 'fixtures', 'presupuestos');
 
 /**
  * Los documentos de la obra demo, en orden de subida.
@@ -84,10 +135,122 @@ const DIR_PDFS = path.join(process.cwd(), 'tests', 'fixtures', 'pdfs');
  */
 const DOC_OBRA = 'obra-demo.pdf';
 const DOC_SIN_ESCALA = 'sin-escala.pdf';
+const DOC_REFORMA = 'obra-reforma.pdf';
 
 const DOCUMENTOS: readonly { nombre: string; copias: number }[] = [
   { nombre: DOC_OBRA, copias: 1 },
   { nombre: DOC_SIN_ESCALA, copias: 2 },
+];
+
+const DOCUMENTOS_COMPULSA: readonly { nombre: string; copias: number }[] = [
+  { nombre: DOC_REFORMA, copias: 1 },
+];
+
+/**
+ * La deducción que el arquitecto firma en la demo: el ancho de la puerta P3,
+ * que la planta no acota y la planilla de carpinterías sí. Al validarla, el
+ * ítem `aberturas.P3` pasa a `origen: 'deducido'` y su consulta se cierra sola.
+ *
+ * Las otras dos —el ancho y el alto de la ventana V5— quedan en `propuesta`,
+ * que es lo que hace que `/obras/<id>/deducciones` tenga algo que mostrar y que
+ * la bandeja conserve una consulta bloqueante.
+ */
+const DEDUCCION_A_VALIDAR = { entidad: 'P3', campo: 'anchoM' } as const;
+
+/** Rubro de la compulsa de demo. Es el único que la obra deja aprobar. */
+const RUBRO_COMPULSA = 'seco' as const;
+
+/**
+ * La agenda de proveedores del estudio. El último tiene `opt_out`: es el caso
+ * del §13 que hay que poder ver en pantalla —un proveedor que pidió no ser
+ * contactado queda excluido del lanzamiento, con el motivo escrito.
+ */
+const PROVEEDORES: readonly {
+  nombre: string;
+  rubros: readonly ('seco' | 'aberturas' | 'pintura' | 'gruesa')[];
+  zona: string;
+  telefono?: string;
+  email?: string;
+  contacto?: string;
+  optOut?: boolean;
+}[] = [
+  {
+    nombre: 'Corralón San Martín',
+    rubros: ['seco', 'gruesa'],
+    zona: 'Villa Urquiza, CABA',
+    telefono: '11 4555-1020',
+    email: 'ventas@corralonsanmartin.com.ar',
+    contacto: 'Rubén Salgado',
+  },
+  {
+    nombre: 'Ferretería del Centro',
+    rubros: ['seco', 'pintura'],
+    zona: 'Villa Urquiza, CABA',
+    telefono: '11 4777-3040',
+    email: 'pedidos@ferreteriadelcentro.com.ar',
+    contacto: 'Silvia Paz',
+  },
+  {
+    nombre: 'Maderera Norte',
+    rubros: ['aberturas'],
+    zona: 'Vicente López, GBA',
+    telefono: '11 4711-8890',
+    email: 'info@madereranorte.com.ar',
+    contacto: 'Hernán Gómez',
+  },
+  {
+    nombre: 'Aberturas del Oeste',
+    rubros: ['aberturas', 'seco'],
+    zona: 'Ramos Mejía, GBA',
+    telefono: '11 4658-2211',
+    email: 'contacto@aberturasdeloeste.com.ar',
+    contacto: 'Lucía Ferrari',
+    optOut: true,
+  },
+];
+
+/** Quiénes reciben el pedido de la compulsa de demo, en orden. */
+const CONTACTADOS = ['Corralón San Martín', 'Ferretería del Centro'] as const;
+
+/**
+ * Los presupuestos que "mandan" los proveedores. Son texto plano en es-AR —lo
+ * que llega por mail o por WhatsApp— y los lee la heurística del provider mock,
+ * el mismo camino que usa el arquitecto que pega un presupuesto en la pantalla.
+ *
+ * El de Corralón San Martín tiene **una sustitución** (ofrece solera para
+ * tabique de ladrillo donde el pedido dice durlock) y **no cotiza la cinta**:
+ * de ahí salen la bandera roja de la comparativa y la repregunta en borrador.
+ */
+const PRESUPUESTOS: readonly { proveedor: string; archivo: string }[] = [
+  { proveedor: 'Corralón San Martín', archivo: 'corralon-san-martin.txt' },
+  { proveedor: 'Ferretería del Centro', archivo: 'ferreteria-del-centro.txt' },
+];
+
+/** Con quién se negocia: el más caro de los dos, y sin sustituciones. */
+const A_NEGOCIAR = 'Ferretería del Centro';
+
+/**
+ * Los avisos de muestra de la campanita. Llevan `claveDedup` porque el seed es
+ * idempotente: la segunda corrida no tiene que dejar una segunda copia, y el
+ * UNIQUE `(usuario_id, clave_dedup)` de `notificaciones` es exactamente eso.
+ */
+const AVISOS: readonly { titulo: string; cuerpo: string; link: string; claveDedup: string }[] = [
+  {
+    titulo: 'Bienvenido a Compulsa',
+    cuerpo:
+      'Este estudio viene con dos obras de ejemplo cargadas. Empezá por el expediente de Casa Belgrano ' +
+      'o mirá la compulsa de seco de Casa Reforma.',
+    link: '/obras',
+    claveDedup: 'seed.bienvenida',
+  },
+  {
+    titulo: 'Tenés 2 deducciones esperando tu visto bueno',
+    cuerpo:
+      'En Casa Reforma, el motor cruzó la planta con la planilla de carpinterías y propone el ancho y ' +
+      'el alto de V5. Ningún dato se escribe sin que lo valides.',
+    link: '/obras',
+    claveDedup: 'seed.deducciones',
+  },
 ];
 
 /** El ítem que el arquitecto corrige a mano en la planilla. */
@@ -146,16 +309,22 @@ async function asegurarUsuario(db: Db, estudioId: string): Promise<{ usuario: Us
   return { usuario: creado, creado: true };
 }
 
-async function asegurarObra(db: Db, estudioId: string): Promise<{ obra: Obra; creada: boolean }> {
+type DatosObra = { nombre: string; zona: string; tipo: Obra['tipo'] };
+
+async function asegurarObra(
+  db: Db,
+  estudioId: string,
+  datos: DatosObra,
+): Promise<{ obra: Obra; creada: boolean }> {
   const [previa] = await db
     .select()
     .from(obras)
-    .where(and(eq(obras.estudioId, estudioId), eq(obras.nombre, OBRA.nombre)));
+    .where(and(eq(obras.estudioId, estudioId), eq(obras.nombre, datos.nombre)));
   if (previa) return { obra: previa, creada: false };
 
   const [creada] = await db
     .insert(obras)
-    .values({ estudioId, nombre: OBRA.nombre, zona: OBRA.zona, tipo: OBRA.tipo })
+    .values({ estudioId, nombre: datos.nombre, zona: datos.zona, tipo: datos.tipo })
     .returning();
   await registrarAuditoria({
     obraId: creada.id,
@@ -163,17 +332,22 @@ async function asegurarObra(db: Db, estudioId: string): Promise<{ obra: Obra; cr
     actorNombre: USUARIO.email,
     accion: 'obra_creada',
     targetRef: `obras:${creada.id}`,
-    diff: { nombre: OBRA.nombre, zona: OBRA.zona, tipo: OBRA.tipo, origen: 'seed' },
+    diff: { ...datos, origen: 'seed' },
   });
   return { obra: creada, creada: true };
 }
 
 /**
- * Sube y procesa lo que falte de `DOCUMENTOS`. Lo ya subido no se vuelve a
+ * Sube y procesa lo que falte de la lista. Lo ya subido no se vuelve a
  * procesar: el reproceso es idempotente en datos pero no en `auditoria`, y la
  * promesa del seed es que la segunda corrida no agrega ni una fila.
  */
-async function asegurarDocumentos(db: Db, obra: Obra, usuario: Usuario): Promise<number> {
+async function asegurarDocumentos(
+  db: Db,
+  obra: Obra,
+  usuario: Usuario,
+  lista: readonly { nombre: string; copias: number }[],
+): Promise<number> {
   const storage = getStorage();
   // Explícito: el seed corre offline y determinístico aunque haya key exportada.
   const provider = crearProviderMock();
@@ -185,7 +359,7 @@ async function asegurarDocumentos(db: Db, obra: Obra, usuario: Usuario): Promise
   }
 
   let subidos = 0;
-  for (const { nombre, copias } of DOCUMENTOS) {
+  for (const { nombre, copias } of lista) {
     const yaEstan = porNombre.get(nombre) ?? 0;
     if (yaEstan >= copias) continue;
 
@@ -282,16 +456,239 @@ async function asegurarItemEditado(db: Db, obra: Obra, usuario: Usuario): Promis
 }
 
 // ---------------------------------------------------------------------------
+// Obra 2: deducciones, agenda de proveedores y compulsa en curso
+// ---------------------------------------------------------------------------
+
+/**
+ * Valida **una sola** deducción: la del ancho de P3, que es la que hace que la
+ * puerta se pueda computar. Las dos de V5 quedan `propuesta`, que es lo que
+ * hace que `/obras/<id>/deducciones` tenga algo para mostrar.
+ *
+ * Pasa por `validarDeduccion`, el mismo núcleo que el botón de la bandeja: el
+ * dato baja a la entidad con las fuentes de las dos láminas, el recompute deja
+ * el ítem con `origen: 'deducido'` y la consulta por el dato faltante se cierra
+ * sola.
+ */
+async function asegurarDeduccionValidada(
+  db: Db,
+  obra: Obra,
+  actor: ActorDeduccion,
+): Promise<boolean> {
+  const [fila] = await db
+    .select({ id: deducciones.id, estado: deducciones.estado })
+    .from(deducciones)
+    .innerJoin(entidades, eq(entidades.id, deducciones.entidadId))
+    .where(
+      and(
+        eq(deducciones.obraId, obra.id),
+        eq(deducciones.campo, DEDUCCION_A_VALIDAR.campo),
+        eq(entidades.nombre, DEDUCCION_A_VALIDAR.entidad),
+      ),
+    );
+  if (!fila || fila.estado !== 'propuesta') return false;
+
+  const resultado = await validarDeduccion({ obraId: obra.id, deduccionId: fila.id }, actor);
+  if (!resultado.ok) throw new Error(`No pude validar la deducción de P3: ${resultado.error}`);
+  return true;
+}
+
+/** La agenda del estudio, con el opt-out del §13 ya registrado. */
+async function asegurarProveedores(
+  db: Db,
+  estudioId: string,
+  actor: ActorProveedor,
+): Promise<{ creados: number; porNombre: Map<string, Proveedor> }> {
+  const existentes = await db
+    .select()
+    .from(proveedores)
+    .where(eq(proveedores.estudioId, estudioId));
+  const porNombre = new Map(existentes.map((fila) => [fila.nombre, fila]));
+
+  let creados = 0;
+  for (const datos of PROVEEDORES) {
+    if (porNombre.has(datos.nombre)) continue;
+
+    const { optOut, ...payload } = datos;
+    const alta = await crearProveedor(db, estudioId, payload, actor);
+    if (!alta.ok) {
+      throw new Error(
+        `No pude crear el proveedor «${datos.nombre}»: ${Object.values(alta.errores).join('; ')}`,
+      );
+    }
+    const proveedor = optOut
+      ? await marcarOptOut(db, estudioId, alta.proveedor.id, actor)
+      : alta.proveedor;
+    porNombre.set(proveedor.nombre, proveedor);
+    creados += 1;
+  }
+
+  return { creados, porNombre };
+}
+
+/**
+ * Aprueba el rubro y lanza la compulsa a los dos proveedores de la lista,
+ * registrando además el envío de los dos borradores (que es lo que en la vida
+ * real hace el arquitecto cuando manda el mail).
+ */
+async function asegurarCompulsa(
+  db: Db,
+  obra: Obra,
+  actor: ActorCompulsa,
+  agenda: ReadonlyMap<string, Proveedor>,
+): Promise<boolean> {
+  const [previa] = await db.select().from(compulsas).where(eq(compulsas.obraId, obra.id));
+  if (previa) return false;
+
+  const aprobacion = await aprobarRubroCore(
+    db,
+    { usuarioId: actor.usuarioId, email: actor.email, estudioId: actor.estudioId },
+    obra.id,
+    RUBRO_COMPULSA,
+  );
+  if (!aprobacion.ok) throw new Error(`No pude aprobar el rubro seco: ${aprobacion.error}`);
+
+  const proveedorIds = CONTACTADOS.map((nombre) => {
+    const proveedor = agenda.get(nombre);
+    if (!proveedor) throw new Error(`Falta el proveedor «${nombre}» en la agenda del estudio.`);
+    return proveedor.id;
+  });
+
+  const lanzamiento = await lanzarCompulsa(
+    db,
+    getStorage(),
+    actor,
+    obra.id,
+    RUBRO_COMPULSA,
+    { proveedorIds },
+  );
+
+  for (const contacto of lanzamiento.contactos) {
+    await registrarEnvio(db, actor, contacto.id);
+  }
+  return true;
+}
+
+/**
+ * Registra los dos presupuestos por el flujo real: el provider mock lee el
+ * texto es-AR del fixture con su heurística, la conciliación clasifica línea
+ * por línea, deja las repreguntas en borrador y alimenta el índice de precios.
+ */
+async function asegurarCotizaciones(
+  db: Db,
+  obra: Obra,
+  actor: ActorCompulsa,
+): Promise<{ registradas: number; repreguntas: number; muestras: number }> {
+  const contactos = await db
+    .select({ id: contactosCompulsa.id, proveedor: proveedores.nombre })
+    .from(contactosCompulsa)
+    .innerJoin(compulsas, eq(compulsas.id, contactosCompulsa.compulsaId))
+    .innerJoin(proveedores, eq(proveedores.id, contactosCompulsa.proveedorId))
+    .where(eq(compulsas.obraId, obra.id));
+  const porProveedor = new Map(contactos.map((fila) => [fila.proveedor, fila.id]));
+
+  const yaCotizaron = new Set(
+    (
+      await db
+        .select({ contactoId: cotizaciones.contactoId })
+        .from(cotizaciones)
+        .where(
+          inArray(
+            cotizaciones.contactoId,
+            contactos.map((fila) => fila.id),
+          ),
+        )
+    ).map((fila) => fila.contactoId),
+  );
+
+  // Explícito, igual que el provider de láminas: el seed no sale a la red.
+  const presupuesto = crearProviderPresupuestoMock();
+  let registradas = 0;
+  let repreguntas = 0;
+  let muestras = 0;
+
+  for (const { proveedor, archivo } of PRESUPUESTOS) {
+    const contactoId = porProveedor.get(proveedor);
+    if (contactoId === undefined || yaCotizaron.has(contactoId)) continue;
+
+    const texto = await readFile(path.join(DIR_PRESUPUESTOS, archivo), 'utf8');
+    const resultado = await registrarCotizacion(
+      db,
+      actor,
+      contactoId,
+      { nombre: archivo, texto },
+      { presupuesto },
+    );
+    registradas += 1;
+    repreguntas += resultado.repreguntasCreadas;
+    muestras += resultado.muestrasIndice;
+  }
+
+  return { registradas, repreguntas, muestras };
+}
+
+/**
+ * Propone la ronda 1 al más caro de los dos. El otro tiene una sustitución de
+ * especificación y el motor **no** negocia esas: escala al usuario (RF-1002).
+ */
+async function asegurarNegociacion(db: Db, obra: Obra, actor: ActorCompulsa): Promise<boolean> {
+  const [fila] = await db
+    .select({ id: cotizaciones.id })
+    .from(cotizaciones)
+    .innerJoin(contactosCompulsa, eq(contactosCompulsa.id, cotizaciones.contactoId))
+    .innerJoin(compulsas, eq(compulsas.id, contactosCompulsa.compulsaId))
+    .innerJoin(proveedores, eq(proveedores.id, contactosCompulsa.proveedorId))
+    .where(and(eq(compulsas.obraId, obra.id), eq(proveedores.nombre, A_NEGOCIAR)));
+  if (!fila) return false;
+
+  const [rondas] = await db
+    .select({ total: count() })
+    .from(negociaciones)
+    .where(eq(negociaciones.cotizacionId, fila.id));
+  if ((rondas?.total ?? 0) > 0) return false;
+
+  const resultado = await proponerNegociacion(db, actor, fila.id);
+  if (!resultado.procede) {
+    throw new Error(`La negociación de demo no salió: el motor la escaló por «${resultado.motivo}».`);
+  }
+  return true;
+}
+
+/** Una invitación de colaborador vigente, para poder probar el alta con código. */
+async function asegurarInvitacion(db: Db, actor: ActorPlataforma): Promise<string | null> {
+  const abiertas = await db
+    .select()
+    .from(invitaciones)
+    .where(eq(invitaciones.estudioId, actor.estudioId));
+  const vigente = abiertas.find(
+    (fila) => fila.usadaPor === null && fila.expiraAt.getTime() > Date.now(),
+  );
+  if (vigente) return null;
+
+  const invitacion = await crearInvitacion(db, actor, 'colaborador');
+  return invitacion.codigo;
+}
+
+/** Los avisos de la campanita. El `claveDedup` los hace idempotentes. */
+async function asegurarNotificaciones(db: Db, usuario: Usuario): Promise<number> {
+  let creadas = 0;
+  for (const aviso of AVISOS) {
+    creadas += await crearNotificacion(db, [usuario.id], aviso);
+  }
+  return creadas;
+}
+
+// ---------------------------------------------------------------------------
 // Resumen (y prueba de idempotencia: dos corridas tienen que imprimir lo mismo)
 // ---------------------------------------------------------------------------
 
 async function contar(db: Db, obraId: string): Promise<Record<string, number>> {
-  const [docs, lams, ents, items, halls, audits] = await Promise.all([
+  const [docs, lams, ents, items, halls, deducs, audits] = await Promise.all([
     db.select().from(documentos).where(eq(documentos.obraId, obraId)),
     db.select().from(laminas).where(eq(laminas.obraId, obraId)),
     db.select().from(entidades).where(eq(entidades.obraId, obraId)),
     db.select().from(computoItems).where(eq(computoItems.obraId, obraId)),
     db.select().from(hallazgos).where(eq(hallazgos.obraId, obraId)),
+    db.select().from(deducciones).where(eq(deducciones.obraId, obraId)),
     db.select().from(auditoria).where(eq(auditoria.obraId, obraId)),
   ]);
 
@@ -301,11 +698,70 @@ async function contar(db: Db, obraId: string): Promise<Record<string, number>> {
     entidades: ents.length,
     'ítems de cómputo': items.length,
     'ítems editados a mano': items.filter((i) => i.editadoPor !== null).length,
+    'ítems deducidos': items.filter((i) => i.origen === 'deducido').length,
     consultas: halls.length,
     'consultas abiertas': halls.filter((h) => h.estado === 'abierto').length,
     'consultas respondidas': halls.filter((h) => h.estado === 'respondido').length,
+    'deducciones propuestas': deducs.filter((d) => d.estado === 'propuesta').length,
+    'deducciones validadas': deducs.filter((d) => d.estado === 'validada').length,
     auditoría: audits.length,
   };
+}
+
+/** Lo que sembró la compulsa, que es de estudio y no de obra. */
+async function contarCompulsa(db: Db, obraId: string, estudioId: string): Promise<Record<string, number>> {
+  const filasCompulsas = await db.select().from(compulsas).where(eq(compulsas.obraId, obraId));
+  const ids = filasCompulsas.map((fila) => fila.id);
+
+  const contactos = ids.length
+    ? await db.select().from(contactosCompulsa).where(inArray(contactosCompulsa.compulsaId, ids))
+    : [];
+  const cotizaciones_ = contactos.length
+    ? await db
+        .select()
+        .from(cotizaciones)
+        .where(inArray(cotizaciones.contactoId, contactos.map((fila) => fila.id)))
+    : [];
+  const rondas = cotizaciones_.length
+    ? await db
+        .select()
+        .from(negociaciones)
+        .where(inArray(negociaciones.cotizacionId, cotizaciones_.map((fila) => fila.id)))
+    : [];
+
+  const [agenda] = await db
+    .select({ total: count() })
+    .from(proveedores)
+    .where(eq(proveedores.estudioId, estudioId));
+  const [indice] = await db
+    .select({ total: count() })
+    .from(priceIndex)
+    .where(eq(priceIndex.estudioId, estudioId));
+  const [avisos] = await db.select({ total: count() }).from(notificaciones);
+  const [invits] = await db
+    .select({ total: count() })
+    .from(invitaciones)
+    .where(eq(invitaciones.estudioId, estudioId));
+
+  return {
+    proveedores: agenda?.total ?? 0,
+    compulsas: filasCompulsas.length,
+    contactos: contactos.length,
+    cotizaciones: cotizaciones_.length,
+    'cotizaciones conciliadas': cotizaciones_.filter((f) => f.estado === 'conciliada').length,
+    negociaciones: rondas.length,
+    'índice de precios': indice?.total ?? 0,
+    invitaciones: invits?.total ?? 0,
+    notificaciones: avisos?.total ?? 0,
+  };
+}
+
+function imprimirTabla(titulo: string, filas: Record<string, number>): void {
+  console.log('');
+  console.log(titulo);
+  for (const [etiqueta, cantidad] of Object.entries(filas)) {
+    console.log(`  ${etiqueta.padEnd(26)}${String(cantidad).padStart(4)}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -313,20 +769,61 @@ async function main(): Promise<void> {
 
   const estudio = await asegurarEstudio(db);
   const { usuario, creado: usuarioCreado } = await asegurarUsuario(db, estudio.id);
-  const { obra, creada: obraCreada } = await asegurarObra(db, estudio.id);
-  const subidos = await asegurarDocumentos(db, obra, usuario);
+
+  // Los actores: el mismo usuario titular con la forma que pide cada núcleo.
+  const base = { usuarioId: usuario.id, email: usuario.email };
+  const actorCompulsa: ActorCompulsa = { ...base, rol: 'titular', estudioId: estudio.id };
+  const actorProveedor: ActorProveedor = { ...base, rol: 'titular' };
+  const actorDeduccion: ActorDeduccion = { ...base, rol: 'titular' };
+  const actorPlataforma: ActorPlataforma = {
+    ...base,
+    rol: 'titular',
+    activo: true,
+    estudioId: estudio.id,
+  };
+
+  // --- Obra 1: el expediente y la bandeja -----------------------------------
+  const { obra, creada: obraCreada } = await asegurarObra(db, estudio.id, OBRA);
+  const subidos = await asegurarDocumentos(db, obra, usuario, DOCUMENTOS);
   const respondida = await asegurarConsultaRespondida(db, obra, usuario);
   const editado = await asegurarItemEditado(db, obra, usuario);
+
+  // --- Obra 2: deducciones y compulsa ---------------------------------------
+  const { obra: obraCompulsa, creada: obraCompulsaCreada } = await asegurarObra(
+    db,
+    estudio.id,
+    OBRA_COMPULSA,
+  );
+  const subidosCompulsa = await asegurarDocumentos(db, obraCompulsa, usuario, DOCUMENTOS_COMPULSA);
+  const validada = await asegurarDeduccionValidada(db, obraCompulsa, actorDeduccion);
+  const agenda = await asegurarProveedores(db, estudio.id, actorProveedor);
+  const lanzada = await asegurarCompulsa(db, obraCompulsa, actorCompulsa, agenda.porNombre);
+  const cotizadas = await asegurarCotizaciones(db, obraCompulsa, actorCompulsa);
+  const negociada = await asegurarNegociacion(db, obraCompulsa, actorCompulsa);
+
+  // --- Plataforma -----------------------------------------------------------
+  const codigo = await asegurarInvitacion(db, actorPlataforma);
+  const avisos = await asegurarNotificaciones(db, usuario);
 
   const hechos = [
     estudio.creado ? `estudio «${ESTUDIO}»` : null,
     usuarioCreado ? `usuario ${USUARIO.email}` : null,
     obraCreada ? `obra «${OBRA.nombre}»` : null,
-    subidos > 0
-      ? `${subidos} ${subidos === 1 ? 'documento subido y procesado' : 'documentos subidos y procesados'}`
+    obraCompulsaCreada ? `obra «${OBRA_COMPULSA.nombre}»` : null,
+    subidos + subidosCompulsa > 0
+      ? `${subidos + subidosCompulsa} ${subidos + subidosCompulsa === 1 ? 'documento subido y procesado' : 'documentos subidos y procesados'}`
       : null,
     respondida ? '1 consulta de escala respondida' : null,
     editado ? `1 ítem editado a mano (${EDICION.claveItem})` : null,
+    validada ? `1 deducción validada (${DEDUCCION_A_VALIDAR.entidad}.${DEDUCCION_A_VALIDAR.campo})` : null,
+    agenda.creados > 0 ? `${agenda.creados} proveedores en la agenda (1 con opt-out)` : null,
+    lanzada ? `1 compulsa de ${RUBRO_COMPULSA} lanzada a ${CONTACTADOS.length} proveedores` : null,
+    cotizadas.registradas > 0
+      ? `${cotizadas.registradas} cotizaciones conciliadas, ${cotizadas.repreguntas} repregunta(s) en borrador y ${cotizadas.muestras} muestra(s) del índice`
+      : null,
+    negociada ? '1 ronda de negociación propuesta' : null,
+    codigo ? `1 invitación de colaborador vigente (código ${codigo})` : null,
+    avisos > 0 ? `${avisos} notificaciones de muestra` : null,
   ].filter((linea): linea is string => linea !== null);
 
   console.log('');
@@ -337,11 +834,12 @@ async function main(): Promise<void> {
     for (const hecho of hechos) console.log(`  · ${hecho}`);
   }
 
-  console.log('');
-  console.log(`Obra «${OBRA.nombre}» (${obra.id}):`);
-  for (const [etiqueta, cantidad] of Object.entries(await contar(db, obra.id))) {
-    console.log(`  ${etiqueta.padEnd(24)}${String(cantidad).padStart(4)}`);
-  }
+  imprimirTabla(`Obra «${OBRA.nombre}» (${obra.id}):`, await contar(db, obra.id));
+  imprimirTabla(
+    `Obra «${OBRA_COMPULSA.nombre}» (${obraCompulsa.id}):`,
+    await contar(db, obraCompulsa.id),
+  );
+  imprimirTabla('Compulsa y plataforma:', await contarCompulsa(db, obraCompulsa.id, estudio.id));
 
   console.log('');
   console.log(`Entrá con ${USUARIO.email} / ${USUARIO.password} y andá a /obras.`);

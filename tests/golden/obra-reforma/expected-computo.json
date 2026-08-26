@@ -1,0 +1,57 @@
+[
+  {
+    "claveItem": "aberturas.V5",
+    "cantCompra": 1,
+    "derivacion": "V5 está dibujada en la planta A-01 SIN medidas y listada en la planilla A-05 CON medidas (1,20 × 1,00 m). La deducción «planilla ↔ plano» las baja a la entidad de la planta (confianza 0,95 × 0,90 = 0,86) y el caso la valida. Es UNA sola ventana: la cantidad la pone la planta, la planilla solo especifica ⇒ 1 u neta, sin desperdicio, a medida: 1 u. El ítem sale con origen 'deducido' y cita las dos láminas."
+  },
+  {
+    "claveItem": "aberturas.P3",
+    "cantCompra": 1,
+    "derivacion": "P3 está medio acotada en la planta (alto 2,05 m) y completa en la planilla (0,80 × 2,05 m): la deducción trae solo el ancho. Una sola puerta ⇒ 1 u neta, sin desperdicio, a medida: 1 u, con origen 'deducido' porque sin el ancho deducido el ítem saldría distinto."
+  },
+  {
+    "claveItem": "seco.placas",
+    "cantCompra": 23.04,
+    "derivacion": "Solo computa T2 (nuevo): 4 m × 2,50 m × 2 caras = 20 m² netos. T9 es 'existente' y no aporta un metro. +12 % de desperdicio = 22,40 m²; 22,40 / 2,88 = 7,78 ⇒ 8 placas × 2,88 = 23,04 m²."
+  },
+  {
+    "claveItem": "seco.soleras",
+    "cantCompra": 10.4,
+    "derivacion": "Solera inferior + superior de T2: 2 × 4 m = 8 ml netos, sin desperdicio; 8 / 2,60 = 3,08 ⇒ 4 barras × 2,60 = 10,40 ml."
+  },
+  {
+    "claveItem": "seco.montantes",
+    "cantCompra": 11,
+    "derivacion": "Montantes cada 0,40 m sobre los 4 m de T2: ceil(4 / 0,40) + 1 = 10 + 1 = 11 u netas, sin desperdicio; la tira se cuenta por unidad ⇒ 11 u."
+  },
+  {
+    "claveItem": "seco.tornillos",
+    "cantCompra": 500,
+    "derivacion": "15 tornillos/m² × 20 m² = 300 u netas, sin desperdicio; 300 / 500 = 0,60 ⇒ 1 caja × 500 = 500 u."
+  },
+  {
+    "claveItem": "seco.masilla",
+    "cantCompra": 30,
+    "derivacion": "0,9 kg/m² × 20 m² = 18 kg netos, sin desperdicio; 18 / 15 = 1,20 ⇒ 2 baldes × 15 = 30 kg."
+  },
+  {
+    "claveItem": "seco.cinta",
+    "cantCompra": 90,
+    "derivacion": "2,3 ml/m² × 20 m² = 46 ml netos, sin desperdicio; 46 / 90 = 0,51 ⇒ 1 rollo × 90 = 90 ml."
+  },
+  {
+    "claveItem": "pintura.latex_paredes",
+    "cantCompra": 6,
+    "derivacion": "Cocina: perímetro 12 m × altura 2,50 m − 2 m² de vanos = 28 m². 2 manos a 10 m²/L = 5,60 L netos; +5 % = 5,88 L; latas 1×4 + 2×1 = 6 L."
+  },
+  {
+    "claveItem": "pintura.latex_cielorrasos",
+    "cantCompra": 2,
+    "derivacion": "Cielorraso de la Cocina = su superficie, 9 m². 2 manos a 10 m²/L = 1,80 L netos; +5 % = 1,89 L; latas 2×1 = 2 L."
+  },
+  {
+    "claveItem": "gruesa.demolicion",
+    "cantCompra": 10.4,
+    "derivacion": "M1 está marcado 'demoler': no aporta ladrillos, cemento, cal ni arena, solo m² de demolición. 4 m × 2,60 m = 10,40 m², sin desperdicio y contratada global ⇒ 10,40 m²."
+  }
+]

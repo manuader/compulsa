@@ -403,6 +403,72 @@ export async function resumenCompulsasObra(
   };
 }
 
+/** Lo ahorrado en una moneda: pesos y dólares no se suman entre sí. */
+export interface AhorroPorMoneda {
+  moneda: string;
+  ahorro: number;
+  /** Compulsas adjudicadas que aportaron a ese número. */
+  adjudicadas: number;
+}
+
+export interface AhorroDelEstudio {
+  /** Compulsas adjudicadas del estudio con ahorro calculable. */
+  adjudicadas: number;
+  /** Obras distintas que aportaron. */
+  obras: number;
+  /**
+   * Una entrada por moneda, ordenada por código. **Nunca se suman entre sí**:
+   * sumar pesos con dólares exigiría un tipo de cambio, y el sistema no inventa
+   * un número que nadie escribió (P4). Vacío ⇒ todavía no hay nada adjudicado.
+   */
+  porMoneda: AhorroPorMoneda[];
+}
+
+/**
+ * El ahorro acumulado de **todo el estudio** (RF-1104), para la pantalla
+ * `/estudio`.
+ *
+ * Se apoya en `ahorroDeCompulsa`, igual que el tablero de obra: el ahorro no
+ * está guardado en ninguna tabla y tener dos formas de calcularlo sería
+ * garantizar que un día no coincidan. Arranca por las compulsas **adjudicadas**
+ * del estudio (no por todas las obras), así que el costo es una consulta por
+ * compulsa cerrada y no una por obra.
+ */
+export async function ahorroDelEstudio(db: Db, estudioId: string): Promise<AhorroDelEstudio> {
+  const filas = await db
+    .select({ compulsaId: compulsas.id, obraId: obras.id, moneda: obras.moneda })
+    .from(compulsas)
+    .innerJoin(obras, eq(obras.id, compulsas.obraId))
+    .where(and(eq(obras.estudioId, estudioId), eq(compulsas.estado, 'adjudicada')));
+
+  const datos = await Promise.all(
+    filas.map(async (fila) => ({ fila, ahorro: await ahorroDeCompulsa(db, fila.compulsaId) })),
+  );
+  const conAhorro = datos.filter(
+    (entrada): entrada is { fila: (typeof filas)[number]; ahorro: DatosAhorro } =>
+      entrada.ahorro !== null,
+  );
+
+  const porMoneda = new Map<string, number[]>();
+  for (const { fila, ahorro } of conAhorro) {
+    const acumulados = porMoneda.get(fila.moneda);
+    if (acumulados) acumulados.push(ahorro.ahorro);
+    else porMoneda.set(fila.moneda, [ahorro.ahorro]);
+  }
+
+  return {
+    adjudicadas: conAhorro.length,
+    obras: new Set(conAhorro.map(({ fila }) => fila.obraId)).size,
+    porMoneda: [...porMoneda.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([moneda, ahorros]) => ({
+        moneda,
+        ahorro: acumularAhorros(ahorros),
+        adjudicadas: ahorros.length,
+      })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Adjudicar
 // ---------------------------------------------------------------------------

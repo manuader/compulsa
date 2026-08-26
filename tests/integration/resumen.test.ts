@@ -14,7 +14,9 @@ import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { setDbForTests, type Db } from '@/db/client';
-import { auditoria, estudios, laminas, obras, usuarios } from '@/db/schema';
+import { auditoria, estudios, hallazgos, laminas, obras, usuarios } from '@/db/schema';
+import { crearProviderMock } from '@/lib/analysis/mock';
+import { responderHallazgo } from '@/lib/bandeja/resolver';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import { leerResumen, persistirResumen, type ResumenObra } from '@/lib/pipeline/resumen';
 import type { StorageAdapter } from '@/lib/storage/index';
@@ -141,6 +143,44 @@ describe('resumen de obra-demo.pdf', () => {
     const segundo = await persistirResumen(db, obraId);
 
     expect(segundo).toEqual(primero);
+    expect(await auditoriasDeResumen()).toHaveLength(1);
+  });
+});
+
+describe('el resumen se refresca en cada recompute', () => {
+  it('responder la consulta de escala deja el resumen contando la obra nueva', async () => {
+    await subirYProcesar('sin-escala.pdf');
+
+    const antes = await resumenGuardado();
+    expect(antes.laminas.bloqueadas).toBe(1);
+    expect(antes.consultas.abiertas).toBe(1);
+    expect(antes.titular).toContain('1 lámina trabada');
+
+    const [lamina] = await db.select().from(laminas).where(eq(laminas.obraId, obraId));
+    const [hallazgo] = await db
+      .select()
+      .from(hallazgos)
+      .where(and(eq(hallazgos.obraId, obraId), eq(hallazgos.clave, `escala.${lamina.id}`)));
+
+    const resultado = await responderHallazgo(
+      { obraId, hallazgoId: hallazgo.id, valor: '1:20', nota: 'Verificado contra el tabique.' },
+      { usuarioId, email: 'arq@estudionorte.ar' },
+      { storage, provider: crearProviderMock() },
+    );
+    expect(resultado.ok).toBe(true);
+
+    // El recompute que dispara la respuesta rehace el resumen: sin esto, la
+    // pantalla del expediente seguiría diciendo "1 lámina trabada".
+    const despues = await resumenGuardado();
+    expect(despues.laminas.bloqueadas).toBe(0);
+    expect(despues.consultas.abiertas).toBe(0);
+    expect(despues.titular).not.toContain('trabada');
+    expect((await auditoriasDeResumen()).length).toBeGreaterThan(antes.consultas.abiertas);
+  });
+
+  it('procesar un documento publica UN solo resumen, no uno por lámina', async () => {
+    await subirYProcesar('obra-demo.pdf'); // tres láminas, tres recomputes
+
     expect(await auditoriasDeResumen()).toHaveLength(1);
   });
 });

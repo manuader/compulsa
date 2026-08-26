@@ -66,7 +66,11 @@ import {
   type NuevoHallazgo,
 } from '@/db/schema';
 import { registrarAuditoria } from '@/lib/audit';
-import { computarObra, type CamposDeducidos, type EntidadPersistida } from '@/lib/computo/engine';
+import {
+  computarObraConPlantillas,
+  type CamposDeducidos,
+  type EntidadPersistida,
+} from '@/lib/computo/engine';
 import { fuenteDeEntidad, unirFuentes } from '@/lib/computo/presentacion';
 import { redondear2 } from '@/lib/computo/unidades';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
@@ -80,6 +84,15 @@ import {
 import { hallazgoInconsistencia } from '@/lib/hallazgos/taxonomia';
 import { esClaveDelMotor } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
+// Ciclo con `resumen.ts` (él importa `aplicarDeduccionesValidadas`,
+// `comoEntidadPersistida`, `ACTOR_PIPELINE` y `ObraInexistenteError` de acá).
+// Es sano: ninguno de los dos usa nada del otro en tiempo de inicialización —
+// todo pasa adentro de funciones, que corren mucho después de que los dos
+// módulos terminaron de evaluarse. Mismo caso que `deduccion/motor.ts` ↔
+// `deduccion/reglas/*`.
+import { persistirResumen } from '@/lib/pipeline/resumen';
+import { leerConfig } from '@/lib/plataforma/config-estudio';
+import { plantillasConConfig } from '@/lib/rubros/overrides';
 import type { BBox, HallazgoDetectado, ItemComputo } from '@/types/domain';
 
 /** Nombre del actor de todas las escrituras del pipeline en `auditoria`. */
@@ -842,31 +855,46 @@ function auditar(
  *     mismo camino que el resto de los hallazgos (`deduccion.*` no es un
  *     namespace protegido, ver `claves.ts`): se emiten en esta misma pasada, así
  *     que el conciliador puede abrirlas y cerrarlas solo.
+ *  4. Se refresca el resumen ejecutivo (`persistirResumen`), que es una lectura
+ *     del estado que se acaba de sincronizar.
+ *
+ * `deps.resumen = false` saltea el paso 4, y lo usa **solo** `procesarLamina`:
+ * ahí el recompute corre una vez por lámina y `procesarDocumento` rehace el
+ * resumen una sola vez al final, con todas analizadas. Publicar N resúmenes a
+ * medio hacer sería ruido en `auditoria` y en la pantalla.
  */
 export async function recomputarObra(
   obraId: string,
-  deps: { db?: Db } = {},
+  deps: { db?: Db; resumen?: boolean } = {},
 ): Promise<ResumenRecompute> {
   const db = deps.db ?? (await getDb());
 
   const [obra] = await db.select().from(obras).where(eq(obras.id, obraId));
   if (!obra) throw new ObraInexistenteError(obraId);
 
-  const [filas, decididas, planos] = await Promise.all([
+  const [filas, decididas, planos, config] = await Promise.all([
     db.select().from(entidades).where(eq(entidades.obraId, obraId)),
     db.select().from(deducciones).where(eq(deducciones.obraId, obraId)),
     laminasResumen(db, obraId),
+    leerConfig(db, obra.estudioId),
   ]);
 
   const { entidades: persistidas, camposDeducidos, contradichas } = aplicarDeduccionesValidadas(
     filas.map(comoEntidadPersistida),
     decididas,
   );
-  const { items, hallazgos: detectados } = computarObra(
+  // Dos cosas que el motor no adivina y el pipeline sí sabe:
+  //  - `plantillasConConfig(config)`: el desperdicio por rubro es configurable
+  //    por estudio (P2 del PRD), y sin esto el formulario de configuración
+  //    guardaba un número que no cambiaba ningún ítem;
+  //  - `planos`: sin el tipo de cada lámina, la misma carpintería dibujada en la
+  //    planta y listada en la planilla se contaría dos veces
+  //    (ver `src/lib/rubros/aberturas.ts`).
+  const { items, hallazgos: detectados } = computarObraConPlantillas(
     persistidas,
     obra.tipo,
-    undefined,
-    camposDeducidos,
+    plantillasConConfig(config),
+    { camposDeducidos, laminas: planos },
   );
   // El motor deduce sobre el estado real de conocimiento de la obra: un dato ya
   // validado es un dato, y puede sostener la deducción siguiente.
@@ -897,6 +925,14 @@ export async function recomputarObra(
       ...resumen,
     });
   }
+
+  // El resumen ejecutivo (RF-205) es una lectura del mismo estado que se acaba
+  // de sincronizar: si no se refresca acá, responder una consulta o validar una
+  // deducción deja la pantalla del expediente contando una obra que ya no es.
+  // Va al final y con la misma base: `persistirResumen` es idempotente y no
+  // escribe ni audita si el resumen no cambió, así que no encarece el recompute
+  // que no movió nada.
+  if (deps.resumen !== false) await persistirResumen(db, obraId);
 
   return resumen;
 }
