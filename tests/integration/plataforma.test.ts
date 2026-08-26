@@ -43,7 +43,9 @@ import {
 import {
   CHECKLIST_DEFAULT,
   checklistEfectivo,
+  checklistEfectivoDeTodos,
   ajustarHallazgosAlChecklist,
+  contarBloqueantes,
   guardarItemChecklist,
   listarChecklist,
 } from '@/lib/plataforma/checklists';
@@ -896,6 +898,78 @@ describe('el checklist manda sobre el gate de aprobación', () => {
     const sinItem = [{ rubro: 'seco' as const, bloqueante: true, estado: 'abierto' as const }];
 
     expect(ajustarHallazgosAlChecklist(sinItem, efectivo)[0].bloqueante).toBe(true);
+  });
+});
+
+/**
+ * El mismo ajuste, pero para los **contadores** del tablero ("N bloquean la
+ * aprobación") y de la bandeja ("N bloqueantes"), que hasta P11 contaban el
+ * `bloqueante` crudo de la fila: un estudio que desactivaba un chequeo veía el
+ * tablero frenando un rubro que el gate dejaba aprobar.
+ */
+describe('los contadores de bloqueantes miran el checklist del estudio', () => {
+  const CONSULTAS = [
+    {
+      rubro: 'seco' as const,
+      bloqueante: true,
+      estado: 'abierto' as const,
+      checklistItem: 'seco.altura_tabiques',
+    },
+    {
+      rubro: 'aberturas' as const,
+      bloqueante: true,
+      estado: 'abierto' as const,
+      checklistItem: 'aberturas.medidas_vano',
+    },
+    // Sin checklistItem y de obra: el bloqueo por escala no se puede desactivar.
+    { rubro: null, bloqueante: true, estado: 'abierto' as const, checklistItem: 'escala' },
+    // Respondida: no cuenta aunque siga marcada bloqueante.
+    {
+      rubro: 'seco' as const,
+      bloqueante: true,
+      estado: 'respondido' as const,
+      checklistItem: 'seco.largo_tabiques',
+    },
+  ];
+
+  it('el mapa de los cuatro rubros no pierde ningún ítem por colisión de claves', async () => {
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    const total = RUBROS.reduce((suma, rubro) => suma + CHECKLIST_DEFAULT[rubro].length, 0);
+    expect(efectivo.size).toBe(total);
+    expect(efectivo.get('seco.altura_tabiques')).toEqual({ activo: true, bloqueante: true });
+    expect(efectivo.get('aberturas.medidas_vano')).toEqual({ activo: true, bloqueante: true });
+  });
+
+  it('con el checklist de fábrica cuenta las tres abiertas y bloqueantes', async () => {
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(3);
+  });
+
+  it('desactivar un ítem de checklist baja el contador', async () => {
+    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(2);
+  });
+
+  it('marcar un ítem no bloqueante también lo baja, y la escala sigue frenando', async () => {
+    await guardarItemChecklist(db, titular, 'aberturas', 'aberturas.medidas_vano', {
+      bloqueante: false,
+    });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    const efectivo = await checklistEfectivoDeTodos(db, estudioId);
+
+    // Queda solo la de escala, que no está en ningún checklist.
+    expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(1);
+  });
+
+  it('el checklist de otro estudio no afecta el contador de este (RNF-4)', async () => {
+    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    const ajeno = await checklistEfectivoDeTodos(db, otroEstudioId);
+
+    expect(contarBloqueantes(CONSULTAS, ajeno)).toBe(3);
   });
 });
 

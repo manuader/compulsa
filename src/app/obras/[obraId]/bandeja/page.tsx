@@ -16,6 +16,7 @@ import { getDb } from '@/db/client';
 import { entidades, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
 import { PREFIJO_ESCALA } from '@/lib/pipeline/claves';
+import { checklistEfectivoDeTodos, contarBloqueantes } from '@/lib/plataforma/checklists';
 import { PLANTILLAS } from '@/lib/rubros/index';
 import { RUBROS, type EstadoHallazgo } from '@/types/domain';
 
@@ -92,7 +93,7 @@ export default async function BandejaPage({
   const obra = await requireObra(obraId);
   const db = await getDb();
 
-  const [filas, planos, elementos] = await Promise.all([
+  const [filas, planos, elementos, checklist] = await Promise.all([
     db.select().from(hallazgos).where(eq(hallazgos.obraId, obra.id)).orderBy(hallazgos.clave),
     db
       .select({
@@ -107,6 +108,7 @@ export default async function BandejaPage({
       .select({ id: entidades.id, tipo: entidades.tipo, nombre: entidades.nombre })
       .from(entidades)
       .where(eq(entidades.obraId, obra.id)),
+    checklistEfectivoDeTodos(db, obra.estudioId),
   ]);
 
   const etiquetaLamina = new Map(planos.map((fila) => [fila.id, etiquetaDeLamina(fila)]));
@@ -115,7 +117,10 @@ export default async function BandejaPage({
   );
 
   const abiertas = filas.filter((fila) => fila.estado === 'abierto');
-  const bloqueantes = abiertas.filter((fila) => fila.bloqueante).length;
+  // El contador tiene que decir lo mismo que el gate: un ítem de checklist que
+  // el estudio desactivó (o marcó no bloqueante) deja de frenar la aprobación,
+  // aunque la fila siga guardada con `bloqueante = true` y siga en la bandeja.
+  const bloqueantes = contarBloqueantes(abiertas, checklist);
 
   const pedido = primerParametro(query.estado);
   const filtro: ValorFiltro = esFiltro(pedido) ? pedido : 'abiertas';

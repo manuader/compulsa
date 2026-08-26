@@ -17,6 +17,7 @@ import { computoItems, computoRubros, deducciones, documentos, hallazgos, lamina
 import { requireObra } from '@/lib/auth/guards';
 import { resumenCompulsasObra } from '@/lib/compulsa/adjudicar';
 import { formatearImporte } from '@/lib/compulsa/comparativa';
+import { checklistEfectivoDeTodos, contarBloqueantes } from '@/lib/plataforma/checklists';
 import { PLANTILLAS } from '@/lib/rubros';
 import { RUBROS, type EstadoRubro } from '@/types/domain';
 
@@ -118,9 +119,10 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
     primeras,
     itemsPorRubro,
     estadosFilas,
-    [consultas],
+    consultasAbiertas,
     [deduccionesPropuestas],
     compulsas,
+    checklist,
   ] = await Promise.all([
       db.select({ total: count() }).from(documentos).where(eq(documentos.obraId, obra.id)),
       db
@@ -151,10 +153,17 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
         .select({ rubro: computoRubros.rubro, estado: computoRubros.estado })
         .from(computoRubros)
         .where(eq(computoRubros.obraId, obra.id)),
+      // Las consultas abiertas vienen enteras (son unidades por obra, no miles):
+      // el contador de bloqueantes se calcula con el checklist del estudio
+      // aplicado, que es lo que decide el gate. Contar el `bloqueante` crudo
+      // haría que un estudio que desactivó un chequeo viera "1 bloquea la
+      // aprobación" con el rubro perfectamente aprobable.
       db
         .select({
-          abiertas: count(),
-          bloqueantes: sql<number>`count(*) filter (where ${hallazgos.bloqueante})`.mapWith(Number),
+          rubro: hallazgos.rubro,
+          bloqueante: hallazgos.bloqueante,
+          estado: hallazgos.estado,
+          checklistItem: hallazgos.checklistItem,
         })
         .from(hallazgos)
         .where(and(eq(hallazgos.obraId, obra.id), eq(hallazgos.estado, 'abierto'))),
@@ -167,7 +176,13 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
       // `@/lib/compulsa/adjudicar`). Con el orden de magnitud de una obra son
       // unidades de consultas, no cientos.
       resumenCompulsasObra(db, obra.id),
+      checklistEfectivoDeTodos(db, obra.estudioId),
     ]);
+
+  const consultas = {
+    abiertas: consultasAbiertas.length,
+    bloqueantes: contarBloqueantes(consultasAbiertas, checklist),
+  };
 
   const porEstado = new Map(laminasPorEstado.map((f) => [f.estado, f.total]));
   const totalLaminas = laminasPorEstado.reduce((acc, f) => acc + f.total, 0);

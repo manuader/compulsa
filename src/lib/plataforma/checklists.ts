@@ -40,7 +40,7 @@ import { checklistsEstudio, type ChecklistEstudio } from '@/db/schema';
 import { registrarAuditoria } from '@/lib/audit';
 import type { HallazgoParaGate } from '@/lib/hallazgos/gate';
 import { requireAccion, type UsuarioConRol } from '@/lib/plataforma/roles';
-import type { RubroId } from '@/types/domain';
+import { RUBROS, type RubroId } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Defaults: lo que emiten las plantillas
@@ -238,6 +238,25 @@ export async function checklistEfectivo(
   );
 }
 
+/**
+ * Los checklists de **los cuatro rubros** en un solo mapa.
+ *
+ * Es lo que necesita cualquier pantalla que cuente bloqueantes de la obra
+ * entera (el tablero, la bandeja) y no de un rubro: los `itemId` están
+ * namespaceados por rubro (`seco.altura_tabiques`), así que no chocan entre sí.
+ */
+export async function checklistEfectivoDeTodos(
+  db: Db,
+  estudioId: string,
+): Promise<Map<string, EstadoChecklist>> {
+  const listas = await Promise.all(RUBROS.map((rubro) => listarChecklist(db, estudioId, rubro)));
+  return new Map(
+    listas
+      .flat()
+      .map((item) => [item.itemId, { activo: item.activo, bloqueante: item.bloqueante }]),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Escritura
 // ---------------------------------------------------------------------------
@@ -337,4 +356,23 @@ export function ajustarHallazgosAlChecklist(
       estado: hallazgo.estado,
     };
   });
+}
+
+/**
+ * Cuántas consultas **abiertas** frenan hoy la aprobación, con el checklist del
+ * estudio aplicado.
+ *
+ * Es el número que muestran el tablero ("N bloquean la aprobación") y la bandeja
+ * ("N bloqueantes"), y tiene que ser el mismo que decide el gate: contar el
+ * `bloqueante` crudo de la fila haría que un estudio que desactivó
+ * `seco.altura_tabiques` viera "1 bloquea la aprobación" con el rubro
+ * perfectamente aprobable.
+ */
+export function contarBloqueantes(
+  hallazgos: readonly HallazgoConChecklist[],
+  efectivo: ReadonlyMap<string, EstadoChecklist>,
+): number {
+  return ajustarHallazgosAlChecklist(hallazgos, efectivo).filter(
+    (hallazgo) => hallazgo.bloqueante && hallazgo.estado === 'abierto',
+  ).length;
 }
