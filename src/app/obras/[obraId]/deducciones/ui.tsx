@@ -114,11 +114,34 @@ function porcentaje(confianza: number): string {
 const SIN_DESTACADOS: readonly BBox[] = [];
 
 /** Lo que el panel de la derecha está mostrando. */
-interface Seleccion {
+export interface Seleccion {
   deduccionId: string;
   laminaId: string;
   destacados: BBox[];
   etiqueta: string;
+}
+
+/**
+ * La selección que sigue siendo válida, o `null`.
+ *
+ * Validar o rechazar revalida la pantalla y la propuesta desaparece de la
+ * lista: dejar el plano abierto con «A-01 · PLANTA REFORMA · alto = 1,00 m» de
+ * una deducción que ya se validó es mostrar una decisión que ya se tomó. Es el
+ * mismo guard de "no fantasmas" que la bandeja (`miradaVigente`), y por el
+ * mismo motivo se filtra **en el render** y no se limpia el estado: volver al
+ * filtro de regla donde la deducción vive la vuelve a mostrar.
+ */
+export function seleccionVigente(
+  seleccion: Seleccion | null,
+  grupos: readonly GrupoElemento[],
+): Seleccion | null {
+  if (seleccion === null) return null;
+  const sigue = grupos.some((grupo) =>
+    grupo.vistas.some((vista) =>
+      vista.deducciones.some((deduccion) => deduccion.id === seleccion.deduccionId),
+    ),
+  );
+  return sigue ? seleccion : null;
 }
 
 interface FilaProps {
@@ -251,6 +274,10 @@ export interface BandejaDeduccionesProps {
 export function BandejaDeducciones({ obraId, grupos, filtrada }: BandejaDeduccionesProps) {
   const [seleccion, setSeleccion] = useState<Seleccion | null>(null);
 
+  // La deducción que el panel muestra tiene que seguir estando en la lista
+  // (`seleccionVigente`, pinneada en `tests/unit/deducciones-plano.test.ts`).
+  const enPanel = seleccionVigente(seleccion, grupos);
+
   /**
    * Elegir una lámina citada. Los destacados son los bbox de **esa** lámina: una
    * deducción de planilla ↔ plano cita dos, y el panel muestra una por vez.
@@ -327,7 +354,7 @@ export function BandejaDeducciones({ obraId, grupos, filtrada }: BandejaDeduccio
                         obraId={obraId}
                         deduccion={deduccion}
                         laminaActiva={
-                          seleccion?.deduccionId === deduccion.id ? seleccion.laminaId : null
+                          enPanel?.deduccionId === deduccion.id ? enPanel.laminaId : null
                         }
                         onVer={ver}
                       />
@@ -342,9 +369,9 @@ export function BandejaDeducciones({ obraId, grupos, filtrada }: BandejaDeduccio
 
       <div className="min-w-0 lg:sticky lg:top-4">
         <PanelVisor
-          laminaId={seleccion?.laminaId ?? null}
-          destacados={seleccion?.destacados ?? SIN_DESTACADOS}
-          etiqueta={seleccion?.etiqueta ?? null}
+          laminaId={enPanel?.laminaId ?? null}
+          destacados={enPanel?.destacados ?? SIN_DESTACADOS}
+          etiqueta={enPanel?.etiqueta ?? null}
           colapsable
         />
       </div>
