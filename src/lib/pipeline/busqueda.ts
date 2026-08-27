@@ -35,12 +35,21 @@
  *     `descartado` no entra a la lista, y el que se cierra **mientras** la
  *     corrida está en vuelo se descarta al momento de escribir: entre pedir el
  *     dato y guardarlo pasan segundos de red.
+ *  6. **Lo que no está no se vuelve a pagar.** Un objetivo que se buscó y
+ *     volvió vacío queda marcado (`hallazgos.busqueda_json`) con la **huella**
+ *     de la documentación sobre la que se buscó, y la corrida siguiente no lo
+ *     vuelve a pedir. La marca **caduca sola** cuando entra documentación
+ *     nueva: la huella cambia y el dato se busca otra vez. Sin esto, una
+ *     consulta que la documentación simplemente no puede responder le costaba
+ *     al usuario hasta ocho llamadas en cada `procesarDocumento`, para siempre.
  *
  * Las propuestas que deja acá sobreviven al recompute: la regla de merge de
  * `recomputar.ts` (decisión 8 del plan) no pisa una `busqueda_dirigida` cuando
  * el motor re-emite el hallazgo sin propuesta propia. Sin eso, el primer
  * recompute posterior tiraba lo que esta corrida pagó.
  */
+import { createHash } from 'node:crypto';
+
 import { and, eq, isNull } from 'drizzle-orm';
 
 import { getDb, type Db } from '@/db/client';
@@ -71,6 +80,7 @@ import {
   zValorPropuesto,
   type LaminaIndice,
   type LaminaInput,
+  type MarcaBusqueda,
   type ObraContexto,
   type ValorPropuesto,
 } from '@/types/domain';
@@ -88,6 +98,9 @@ export const ACCION_BUSQUEDA = 'busqueda_dirigida';
 
 /** Acción de auditoría de cada propuesta escrita. */
 export const ACCION_PROPUESTA = 'hallazgo_valor_propuesto';
+
+/** Acción de auditoría de cada marca de "lo busqué y no está en la documentación". */
+export const ACCION_SIN_RESULTADO = 'hallazgo_sin_resultado';
 
 // ---------------------------------------------------------------------------
 // Contratos
@@ -112,7 +125,12 @@ export interface DepsBusqueda {
  * buscando. Los dos quedan en la auditoría de la corrida.
  */
 export interface ResultadoBusqueda {
-  /** Hallazgos que efectivamente se salieron a buscar. */
+  /**
+   * Hallazgos que efectivamente se salieron a buscar. **No** cuenta los que ya
+   * tenían marca de "buscado y no está" sobre esta misma documentación: esos no
+   * se buscaron (decisión 6). Cuántos se saltearon queda en la auditoría de la
+   * corrida, `omitidosPorMarca`.
+   */
   objetivos: number;
   /** Láminas que se releyeron: una llamada al provider cada una. */
   laminasConsultadas: number;
@@ -263,6 +281,86 @@ export function laminasCandidatas(
   const otras = todas.filter((lamina) => !esPlanilla(lamina) && citadas.has(lamina.id));
 
   return [...planillas, ...otras].slice(0, cap);
+}
+
+// ---------------------------------------------------------------------------
+// Lo que ya se buscó y no estaba
+// ---------------------------------------------------------------------------
+
+/** Lo que de una lámina define si la documentación de la obra cambió. */
+type LaminaParaHuella = Pick<LaminaCandidata, 'id' | 'tipo' | 'estadoAnalisis' | 'textoExtraido'>;
+
+/**
+ * Huella de la documentación de la obra: **qué hay para leer y qué dice**.
+ *
+ * Es el reloj de la marca de "buscado y no está", y tiene que fallar para los
+ * dos lados a la vez:
+ *
+ *  - **un reproceso del mismo documento no la mueve** — las láminas son las
+ *    mismas, con el mismo texto y el mismo estado—, que es exactamente el caso
+ *    que había que dejar de pagar;
+ *  - **documentación nueva sí la mueve**: una lámina nueva (id nuevo), una que
+ *    pasó de `bloqueada_escala` a `analizada` (recién ahora es candidata a
+ *    releerse), una revisión que cambió el texto o el tipo de la lámina.
+ *
+ * Por eso entran esos cuatro campos y no una fecha: el dato no aparece porque
+ * pase el tiempo, aparece porque el arquitecto sube el plano que lo tiene. Y
+ * entra el **texto completo**, no su largo: una revisión que reemplaza una cota
+ * por otra deja el largo igual y tiene que caducar la marca igual.
+ *
+ * Es la huella de **toda la obra**, no la de las candidatas que se leyeron: una
+ * lámina nueva puede cambiar qué láminas son candidatas, y una marca que no
+ * mirara eso no caducaría cuando llega justo la planilla que faltaba.
+ */
+export function huellaDocumentacion(laminas: readonly LaminaParaHuella[]): string {
+  const filas = laminas
+    .map((l) => `${l.id}|${l.tipo ?? ''}|${l.estadoAnalisis}|${l.textoExtraido ?? ''}`)
+    .sort();
+
+  const hash = createHash('sha256');
+  // El separador va aparte del contenido: dos láminas no pueden "fusionarse" en
+  // una huella distinta por lo que digan sus textos.
+  for (const fila of filas) hash.update(fila).update(' ');
+  return hash.digest('hex');
+}
+
+/**
+ * `true` si la marca del hallazgo todavía vale para este objetivo: se buscaron
+ * **estos** campos sobre **esta misma** documentación y no estaban.
+ *
+ * Los campos importan además de la huella porque el objetivo puede haber
+ * crecido: si la consulta pedía el ancho y ahora pide ancho y alto, lo que se
+ * buscó no cubre lo que falta y hay que volver a salir.
+ */
+export function marcaVigente(
+  marca: MarcaBusqueda | null | undefined,
+  huella: string,
+  campos: readonly string[],
+): boolean {
+  if (!marca || marca.huella !== huella) return false;
+  const buscados = new Set(marca.campos);
+  return campos.every((campo) => buscados.has(campo));
+}
+
+/**
+ * Deja la marca en el hallazgo, **solo si sigue abierto**. Mismo `UPDATE`
+ * condicional que `escribirPropuesta`, y por el mismo motivo: entre que se
+ * pidió el dato y se escribe el resultado, el arquitecto puede haber cerrado la
+ * consulta desde la bandeja. Marcar una consulta cerrada no rompe nada, pero
+ * escribir sobre lo que él cerró es una regla del módulo, no una optimización.
+ */
+async function marcarSinResultado(
+  db: Db,
+  hallazgoId: string,
+  marca: MarcaBusqueda,
+): Promise<boolean> {
+  const filas = await db
+    .update(hallazgos)
+    .set({ busquedaJson: marca })
+    .where(and(eq(hallazgos.id, hallazgoId), eq(hallazgos.estado, 'abierto')))
+    .returning({ id: hallazgos.id });
+
+  return filas.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,9 +530,8 @@ export async function buscarDatosFaltantes(
     filasEntidades.map((fila) => [fila.id, comoEntidadPersistida(fila)] as const),
   );
 
-  const pedidos = armarPedidos(abiertos, porEntidad);
-  if (pedidos.length === 0) return resultado;
-  resultado.objetivos = pedidos.length;
+  const candidatos = armarPedidos(abiertos, porEntidad);
+  if (candidatos.length === 0) return resultado;
 
   const todasLasLaminas: LaminaCandidata[] = await db
     .select({
@@ -452,6 +549,17 @@ export async function buscarDatosFaltantes(
     .innerJoin(documentos, eq(documentos.id, laminas.documentoId))
     .where(eq(laminas.obraId, obraId))
     .orderBy(laminas.numeroPagina);
+
+  // Los que ya se buscaron sobre esta misma documentación no se vuelven a
+  // pagar. Si el arquitecto sube algo nuevo, la huella cambia y vuelven a
+  // entrar solos (decisión 6).
+  const huella = huellaDocumentacion(todasLasLaminas);
+  const pedidos = candidatos.filter(
+    (pedido) => !marcaVigente(pedido.hallazgo.busquedaJson, huella, pedido.objetivo.campos),
+  );
+  const omitidos = candidatos.length - pedidos.length;
+  if (pedidos.length === 0) return resultado;
+  resultado.objetivos = pedidos.length;
 
   const citadas = new Set<string>();
   for (const pedido of pedidos) {
@@ -533,11 +641,14 @@ export async function buscarDatosFaltantes(
   const invalidas: string[] = [];
   /** Consultas que el arquitecto cerró mientras la corrida estaba en vuelo. */
   const cerradasEnVuelo: string[] = [];
+  /** Objetivos que se buscaron y no estaban: se marcan para no re-pagarlos. */
+  const vacios: Pedido[] = [];
 
   for (const pedido of pedidos) {
     const armada = armarPropuesta(pedido.objetivo, mejores.get(pedido.objetivo.clave) ?? new Map());
     if (armada === null) {
       resultado.sinResultado += 1;
+      vacios.push(pedido);
       continue;
     }
 
@@ -581,12 +692,33 @@ export async function buscarDatosFaltantes(
     });
   }
 
+  // La marca va después de intentar todas las propuestas: si el provider se
+  // cayó a mitad de la corrida, nada de esto llegó a escribirse y la próxima
+  // vuelve a buscar, que es lo correcto — no se buscó, se rompió.
+  const marcadas: string[] = [];
+  const at = new Date().toISOString();
+  for (const pedido of vacios) {
+    const marca: MarcaBusqueda = { campos: pedido.objetivo.campos, huella, at };
+    if (!(await marcarSinResultado(db, pedido.hallazgo.id, marca))) {
+      cerradasEnVuelo.push(pedido.objetivo.clave);
+      continue;
+    }
+    marcadas.push(pedido.objetivo.clave);
+    await auditar(obraId, ACCION_SIN_RESULTADO, `hallazgos:${pedido.objetivo.clave}`, {
+      campos: marca.campos,
+      huella,
+      motivo: 'El dato no está en la documentación de la obra; no se vuelve a buscar hasta que entre una lámina nueva.',
+    });
+  }
+
   await auditar(obraId, ACCION_BUSQUEDA, `obras:${obraId}`, {
     objetivos: resultado.objetivos,
     laminasConsultadas: resultado.laminasConsultadas,
     propuestos: resultado.propuestos,
     sinResultado: resultado.sinResultado,
     claves: escritas,
+    ...(marcadas.length > 0 ? { marcadas } : {}),
+    ...(omitidos > 0 ? { omitidosPorMarca: omitidos } : {}),
     ...(invalidas.length > 0 ? { descartadasPorContrato: invalidas } : {}),
     ...(cerradasEnVuelo.length > 0 ? { cerradasEnVuelo } : {}),
   });

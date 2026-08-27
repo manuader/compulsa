@@ -1,0 +1,1 @@
+ALTER TABLE "hallazgos" ADD COLUMN "busqueda_json" jsonb;
