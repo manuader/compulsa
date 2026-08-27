@@ -13,6 +13,10 @@ import Link from 'next/link';
 import { useState, useTransition } from 'react';
 
 import { anularItemAction, editarItemAction } from '@/app/obras/[obraId]/computo/actions';
+import {
+  textoEscalaAsumida,
+  type EscalaAsumida,
+} from '@/components/planilla/escala-asumida';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,6 +41,12 @@ export interface ItemPlanilla {
   editado: boolean;
   /** Lámina de la primera fuente, para el link "Ver en plano". `null` si es manual. */
   laminaId: string | null;
+  /**
+   * La lámina sin escala verificada sobre la que se computó, o `null` si todas
+   * sus fuentes están verificadas. Lo cruza la página (`escalaAsumidaDelItem`):
+   * el número de esta fila puede estar tan afuera como lo esté la escala.
+   */
+  escalaAsumida: EscalaAsumida | null;
 }
 
 const ETIQUETA_ORIGEN: Record<Origen, string> = {
@@ -123,6 +133,17 @@ export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
               </span>
               {item.editado ? <Badge tone="info">Editado</Badge> : null}
               {item.anulado ? <Badge tone="neutral">Anulado</Badge> : null}
+              {/* El aviso va acá y no en la bandeja porque acá está el número
+                  que la escala asumida puede haber corrido. Lleva al visor de
+                  esa lámina, que es donde se confirma o se corrige. */}
+              {item.escalaAsumida ? (
+                <Link
+                  href={`/obras/${obraId}/laminas/${item.escalaAsumida.laminaId}`}
+                  title={textoEscalaAsumida(item.escalaAsumida)}
+                >
+                  <Badge tone="warn">Escala asumida</Badge>
+                </Link>
+              ) : null}
             </div>
           )}
           <p className="mt-0.5 text-xs text-neutral-400">{item.claveItem}</p>
