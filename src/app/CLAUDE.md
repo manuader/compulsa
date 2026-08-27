@@ -7,11 +7,13 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
 1. **es-AR, voseo, terminología del rubro** ("Subí la documentación", "Aprobar rubro", durlock, premarco, DVH). Nada de spanglish ni de "usted".
 2. **Server Components por defecto;** `"use client"` solo donde hay interactividad real (visor, grilla editable, formularios). Data fetching en el server con `getDb()`; mutaciones vía Server Actions o route handlers de `src/app/api/`.
 3. **Toda página de obra valida pertenencia:** helper `requireObra(obraId)` — sesión válida + obra del estudio del usuario; si no, `notFound()`. Nunca consultes una obra por id sin pasar por ahí (aislamiento RNF-4).
-4. **El visor y la planilla están acoplados por contrato, no por imports:** la fila de la planilla linkea a `/obras/[obraId]/laminas/[laminaId]?highlight=<bboxId>`; el visor lee `highlight` y resalta el bbox (RF-303: < 2 s). Ese query param es API pública interna — no lo renombres sin buscar sus usos.
-5. **Estados visibles:** una lámina siempre muestra su `estado_analisis` (pendiente / procesando / analizada / bloqueada por escala / error) y una lámina bloqueada explica qué necesita (medida de referencia). Nada de spinners eternos sin explicación.
-6. **Acciones destructivas o de aprobación piden confirmación** (aprobar rubro, descartar hallazgo) y quedan en `auditoria`.
-7. Formularios con validación Zod compartida entre cliente y server (`src/types/domain.ts` exporta los schemas). El server NUNCA confía en el payload.
-8. Tailwind directo, sin librería de componentes externa; primitivas propias en `src/components/ui/` (Button, Input, Select, Badge, Card, Table, Dialog). Reusalas — no dupliques estilos inline de botones.
+4. **El visor y la planilla están acoplados por contrato, no por imports:** la fila de la planilla linkea a `/obras/[obraId]/laminas/[laminaId]?highlight=<bboxId>`; el visor lee `highlight` y resalta el bbox (RF-303: < 2 s). Ese query param es API pública interna — no lo renombres sin buscar sus usos. Hoy `resolverDestacado` lo resuelve contra las fuentes del hallazgo (`hallazgos.laminasJson`); **se está ampliando** para resolverlo también contra `valorPropuesto.fuente`, porque una propuesta de la búsqueda dirigida puede vivir en una lámina que el hallazgo no cita y ahí el link abre el plano sin resaltar nada. Es una **ampliación** del contrato, no un cambio: lo que hoy resuelve, sigue resolviendo igual.
+5. **Donde hay que mirar el plano para contestar, el plano se embebe — no se navega.** La bandeja de consultas y la de deducciones son split view (`grid lg:grid-cols-2 lg:items-start`, lista a la izquierda y `<PanelVisor>` `lg:sticky` a la derecha, apilado abajo de `lg`); el `?highlight=` queda degradado a un "Abrir en página completa". El panel se alimenta solo por `GET /api/laminas/[laminaId]/marcas`. Confirmar un número que el sistema dice haber leído en algún lado, sin ver ese lado, es firmar a ciegas.
+   **`destacados` se le pasa como referencia estable** (guardada en el estado de la selección, nunca recalculada en el render, y el vacío es una constante de módulo): `Overlay` hace `scrollIntoView` en un `useEffect([destacados])` y un array nuevo por render scrollea de más con cada redibujo.
+6. **Estados visibles:** una lámina siempre muestra su `estado_analisis` (pendiente / procesando / analizada / bloqueada por escala / error) y una lámina bloqueada explica qué necesita (medida de referencia). Una lámina computada con la escala que el rótulo declara pero nadie verificó **lo dice** ("escala asumida") y ofrece confirmarla en un click, desde el expediente **y** desde la propia página del visor. Nada de spinners eternos sin explicación.
+7. **Acciones destructivas o de aprobación piden confirmación** (aprobar rubro, descartar hallazgo) y quedan en `auditoria`.
+8. Formularios con validación Zod compartida entre cliente y server (`src/types/domain.ts` exporta los schemas). El server NUNCA confía en el payload. **El `disabled` del botón es cortesía, nunca la integridad:** la regla de que una consulta se responde con todas sus medidas juntas vive en el core, porque cada `*Action` es un endpoint invocable sin pasar por la pantalla.
+9. Tailwind directo, sin librería de componentes externa; primitivas propias en `src/components/ui/` (Button, Input, Select, Badge, Card, Table, Dialog). Reusalas — no dupliques estilos inline de botones.
 
 ## Mapa de rutas
 
@@ -29,9 +31,12 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
        /laminas/[laminaId]          visor (pdf.js + overlay SVG de entidades/hallazgos)
        /computo                     planilla por rubro (grilla editable, aprobar rubro,
                                     export, «Verificar cómputo» RF-306)
-       /bandeja                     bandeja de consultas (hallazgos con acciones de un click)
+       /bandeja                     bandeja de consultas: la tarjeta trae el valor propuesto
+                                    con su fuente y se confirma de a una o en lote, con el
+                                    plano de esa consulta embebido al lado (split view)
        /deducciones                 bandeja de deducciones (propuestas del motor §11,
-                                    validar/rechazar, memoria .md y planilla derivada .xlsx)
+                                    validar/rechazar, memoria .md y planilla derivada .xlsx),
+                                    también con el plano al lado
        /compulsas                   las compulsas del rubro, con su versión y su hash
        /compulsas/nueva             wizard de armado (rubro aprobado → snapshot → shortlist)
        /compulsas/[compulsaId]      lo que se pidió, y proveedor por proveedor: timeline,
@@ -55,6 +60,10 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
 
 /api/archivos/[...ref]                              descarga de archivos del estudio
 /api/laminas/[laminaId]                             reclasificar / confirmar escala
+/api/laminas/[laminaId]/marcas                      GET: entidades, hallazgos y deducciones
+                                                    dibujables de una lámina — lo que come el
+                                                    <PanelVisor> embebido (lectura pura: no
+                                                    pide rol, pero sí sesión y estudio)
 /api/laminas/[laminaId]/procesar                    reproceso de una lámina
 /api/obras/[obraId]/documentos                      upload y borrado de documentos
 /api/obras/[obraId]/export                          XLSX del cómputo (consolidado o por rubro)

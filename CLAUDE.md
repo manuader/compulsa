@@ -10,7 +10,7 @@ Al terminar una sesión de trabajo: (1) escribí tu `docs/SESSION-<fecha>-<tema>
 
 ## Qué es esto (una línea por fase)
 
-- **F0 (hecho):** núcleo de cómputo — crear obra, subir PDFs, pipeline de análisis, planilla con provenance, bandeja de consultas, export XLSX, doble pasada (RF-306), Q&A del expediente (RF-106), resumen ejecutivo.
+- **F0 (hecho):** núcleo de cómputo — crear obra, subir PDFs, pipeline de análisis, planilla con provenance, bandeja de consultas, export XLSX, doble pasada (RF-306), Q&A del expediente (RF-106), resumen ejecutivo. Desde 2026-08-27 la bandeja **propone** en vez de preguntar: la escala que el rótulo declara se confirma con un click en lugar de tipearse (solo una lámina **sin** escala declarada bloquea), las planillas de carpinterías se extraen fila por fila, y una búsqueda dirigida relee las láminas candidatas antes de molestar al arquitecto.
 - **F1 (hecho):** compulsa integrada — agenda de proveedores con import CSV, snapshot con hash (RF-701), texto del pedido con recortes, canal manual, conciliación línea por línea con score, repreguntas, conversaciones, comparativa y adjudicación con orden de compra.
 - **F2 (hecho):** huecos y deducción — motor de reglas del §11, bandeja de deducciones con fuentes y confianza, memoria en Markdown y planilla de carpinterías derivada.
 - **F3 (hecho):** negociación con mandato y dos rondas, índice de precios del estudio y contador de ahorro por compulsa, obra y estudio.
@@ -39,6 +39,7 @@ npm run db:generate  # drizzle-kit generate (tras tocar src/db/schema.ts)
 1. **Idioma:** UI y textos de agentes en **es-AR** (vos, terminología local: durlock, corralón, DVH, premarco). Identificadores de dominio en español (siguen al PRD §10: `obras`, `laminas`, `computo_items`, `hallazgos`); código de infraestructura en inglés.
 2. **Provenance no negociable (P1):** ningún dato generado por el sistema entra a la base sin `fuentes_json` (lámina + bbox normalizado) u origen declarado. Un `computo_item` sin fuente es un bug, no un detalle.
 3. **Deducir, no inventar (P4):** el sistema jamás rellena un dato en silencio. Lo que no es explícito ni deducible con fuentes es un hallazgo en la bandeja. Nada estructural/de seguridad se auto-propone (RF-506).
+   **Proponer no es inventar, y es el default:** un dato que está escrito en alguna lámina se **lee y se propone** con su fuente y su confianza (`hallazgos.valor_propuesto_json`), y el arquitecto confirma con un click. Preguntar de cero lo que la documentación dice es tan malo como completarlo solo. Pero la propuesta **nunca escribe el dato**: entra a la entidad únicamente al confirmar.
 4. **Toda escritura de agente se audita:** usar `registrarAuditoria()` (`src/lib/audit.ts`) en cada mutación hecha por pipeline o agentes, con actor y diff.
 5. **TDD:** el dominio puro (`src/lib/computo`, `src/lib/rubros`, `src/lib/hallazgos`) se desarrolla test-first. Nada se declara terminado sin `npm test` y `npm run build` verdes, con la salida a la vista.
 6. **No tocar los originales:** los archivos subidos son inmutables; derivados (láminas separadas, anotaciones) son archivos/registros nuevos.
@@ -53,12 +54,12 @@ npm run db:generate  # drizzle-kit generate (tras tocar src/db/schema.ts)
 | Área | Qué es |
 |---|---|
 | `src/db/` | esquema Drizzle, cliente (PGlite/Postgres), migraciones |
-| `src/lib/computo/` | motor de cómputo puro: unidades, desperdicio, presentación comercial, sanity checks |
+| `src/lib/computo/` | motor de cómputo puro: unidades, desperdicio, presentación comercial, sanity checks, `tags.ts` (**módulo hoja, sin imports**: `normalizarTag` lo usan el motor y la regla de deducción, y traerlo de la regla arma un ciclo que rompe en runtime con `tsc` verde — ver HANDOFF §7.14) |
 | `src/lib/rubros/` | plantillas y checklists por rubro (aberturas, seco, pintura, gruesa) + `overrides.ts`, que aplica la config del estudio a las plantillas |
-| `src/lib/hallazgos/` | taxonomía de huecos (§11 PRD) y gate de aprobación |
-| `src/lib/analysis/` | providers de IA (mock/Claude): rótulos y entidades (`mock.ts`, `claude.ts`), presupuestos (`presupuesto-*.ts`) y Q&A (`qa-*.ts`) — los tres con fixture y caída a heurística determinística |
+| `src/lib/hallazgos/` | taxonomía de huecos (§11 PRD), gate de aprobación y `target.ts` — **el único lector válido de `hallazgos.target_ref`** (`camposDelTarget()`; un `targetRef.campo` directo en un diff es un bug de retrocompat) |
+| `src/lib/analysis/` | providers de IA (mock/Claude) en cuatro familias: rótulos y entidades (`mock.ts`, `claude.ts`), presupuestos (`presupuesto-*.ts`), Q&A (`qa-*.ts`) y búsqueda dirigida (`busqueda-*.ts`), más `prompt.ts` — puro y con tests, donde vive todo lo del prompt que se puede equivocar |
 | `src/lib/pdf/` | split de PDFs, extracción de texto, raster |
-| `src/lib/pipeline/` | orquestación por lámina/obra: `procesar.ts` (upload y análisis), `recomputar.ts` (recompute idempotente + deducciones), `verificacion.ts` (doble pasada RF-306), `resumen.ts` (resumen ejecutivo), `claves.ts` (namespaces de hallazgos) |
+| `src/lib/pipeline/` | orquestación por lámina/obra: `procesar.ts` (upload y análisis), `recomputar.ts` (recompute idempotente + deducciones), `busqueda.ts` (búsqueda dirigida: propone lo que encuentra, nunca lo escribe), `marcas.ts` (lo que se dibuja sobre una lámina, compartido entre el visor y los paneles embebidos), `verificacion.ts` (doble pasada RF-306), `resumen.ts` (resumen ejecutivo), `claves.ts` (namespaces de hallazgos) |
 | `src/lib/export/` | export XLSX del cómputo y planilla de carpinterías derivada |
 | `src/lib/bandeja/`, `src/lib/obras/` | resolución de consultas; alta, edición y archivado de obras |
 | `src/lib/auth/`, `src/lib/storage/`, `src/lib/audit.ts` | sesiones, archivos, auditoría |
