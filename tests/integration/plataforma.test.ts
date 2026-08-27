@@ -665,6 +665,7 @@ describe('configuración del estudio', () => {
     });
     expect(config.pesosRanking).toEqual({ total: 0.5, fidelidad: 0.3, plazo: 0.2 });
     expect(config.mepReferencia).toBeNull();
+    expect(config.instruccionesExtraccion).toEqual({ general: '', porRubro: {} });
   });
 
   it('guarda solo lo pisado: la columna queda parcial', async () => {
@@ -729,6 +730,53 @@ describe('configuración del estudio', () => {
     expect((await leerConfig(db, estudioId)).mepReferencia).toEqual({
       valor: 1450.5,
       fecha: '2026-08-26',
+    });
+  });
+
+  /**
+   * Las instrucciones de extracción son la sistematización de los prompts que
+   * el arquitecto hoy escribe a mano: se guardan como una sección más y viajan
+   * al análisis por `ObraContexto.instruccionesEstudio`.
+   */
+  it('guarda las instrucciones de extracción sin tocar el resto de la config', async () => {
+    await guardarConfig(db, titular, { desperdiciosPct: { seco: 15 } });
+
+    const resultado = await guardarConfig(db, titular, {
+      instruccionesExtraccion: {
+        general: 'Las cotas de nuestros planos están en centímetros.',
+        porRubro: { aberturas: 'Las medidas de las carpinterías están en la planilla DET00.' },
+      },
+    });
+    expect(resultado.ok).toBe(true);
+
+    const config = await leerConfig(db, estudioId);
+    expect(config.instruccionesExtraccion).toEqual({
+      general: 'Las cotas de nuestros planos están en centímetros.',
+      porRubro: { aberturas: 'Las medidas de las carpinterías están en la planilla DET00.' },
+    });
+    // El resto sigue como estaba: lo guardado antes y los defaults del PRD.
+    expect(config.desperdiciosPct).toEqual({ seco: 15 });
+    expect(config.mandatoDefault).toEqual({
+      objetivoMejoraPct: 5,
+      palancas: ['volumen', 'plazo_pago'],
+      maxRondas: 2,
+    });
+  });
+
+  it('audita las instrucciones de extracción con el antes y el después', async () => {
+    await guardarConfig(db, titular, {
+      instruccionesExtraccion: { general: 'Las cotas están en centímetros.', porRubro: {} },
+    });
+
+    const [fila] = await db
+      .select()
+      .from(auditoria)
+      .where(eq(auditoria.accion, 'config_estudio_actualizada'));
+    expect(fila.diffJson).toMatchObject({
+      instruccionesExtraccion: {
+        antes: null,
+        despues: { general: 'Las cotas están en centímetros.', porRubro: {} },
+      },
     });
   });
 

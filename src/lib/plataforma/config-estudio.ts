@@ -37,6 +37,7 @@ import { requireAccion, type UsuarioConRol } from '@/lib/plataforma/roles';
 import {
   zCondicionesRfq,
   zConfigEstudio,
+  zInstruccionesExtraccion,
   zMandato,
   type ConfigEstudio,
 } from '@/types/domain';
@@ -94,6 +95,10 @@ export const zCambiosConfig = z.object({
     })
     .nullable()
     .optional(),
+  // Texto libre: son las instrucciones que el estudio le escribe al analizador
+  // de láminas. No hay nada que validar más allá del shape — un rubro fuera de
+  // `RUBROS` sí lo rechaza `zInstruccionesExtraccion`.
+  instruccionesExtraccion: zInstruccionesExtraccion.optional(),
 });
 
 export type CambiosConfig = z.infer<typeof zCambiosConfig>;
@@ -175,7 +180,13 @@ export async function guardarConfig(
     }
   }
 
-  for (const seccion of ['condicionesDefault', 'mandatoDefault', 'pesosRanking', 'mepReferencia'] as const) {
+  for (const seccion of [
+    'condicionesDefault',
+    'mandatoDefault',
+    'pesosRanking',
+    'mepReferencia',
+    'instruccionesExtraccion',
+  ] as const) {
     const valor = cambios[seccion];
     if (valor === undefined) continue;
     if (igual(actual[seccion], valor)) continue;
