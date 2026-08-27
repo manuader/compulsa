@@ -154,6 +154,13 @@ export default async function DeduccionesPage({
       explicacion: explicarDeduccion(fila, codigos),
       confianza: fila.confianza,
       laminas: citar(fila.fuentesJson, etiquetaLamina),
+      // Los bbox que sostienen la deducción, para resaltarlos en el panel sin
+      // navegar. Es lo mismo que resuelve `?highlight=<deduccionId>` en la
+      // página del visor; el panel los filtra por la lámina que está mostrando.
+      fuentes: fila.fuentesJson.map((fuente) => ({
+        laminaId: fuente.laminaId,
+        bbox: fuente.bbox,
+      })),
     };
 
     const claveGrupo = `${entidad.tipo}::${entidad.nombre}`;

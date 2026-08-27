@@ -75,14 +75,18 @@ export function PanelVisor({ laminaId, destacados, etiqueta, colapsable = false 
       return;
     }
 
-    // Una respuesta vieja no puede pisar a la lámina que se está mirando ahora.
+    // Cambiar de lámina cancela el pedido anterior: una respuesta vieja no
+    // puede pisar a la que se está mirando ahora.
     let cancelado = false;
+    const corte = new AbortController();
 
     async function traer(id: string): Promise<void> {
       setEstado('cargando');
       setDetalleError('');
       try {
-        const respuesta = await fetch(`/api/laminas/${id}/marcas`);
+        const respuesta = await fetch(`/api/laminas/${encodeURIComponent(id)}/marcas`, {
+          signal: corte.signal,
+        });
         if (!respuesta.ok) {
           const cuerpo = (await respuesta.json().catch(() => null)) as { error?: string } | null;
           throw new Error(cuerpo?.error ?? 'No pude traer las marcas de la lámina.');
@@ -102,6 +106,7 @@ export function PanelVisor({ laminaId, destacados, etiqueta, colapsable = false 
     void traer(laminaId);
     return () => {
       cancelado = true;
+      corte.abort();
     };
   }, [laminaId, intento]);
 
