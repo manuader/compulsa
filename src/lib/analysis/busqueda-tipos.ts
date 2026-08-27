@@ -81,6 +81,20 @@ export interface DatoEncontrado {
  * qué orden (`src/lib/pipeline/busqueda.ts`): esto solo mira la que le dan.
  */
 export interface BusquedaProvider {
+  /**
+   * Quién contesta. Va **en la marca** de "buscado y no está"
+   * (`MarcaBusqueda.provider`) y es lo que la hace caducar cuando cambia el
+   * provider, no solo cuando cambia la documentación.
+   *
+   * Sin esto, una obra procesada sin `ANTHROPIC_API_KEY` —el mock, sin fixture,
+   * devolviendo `[]`— dejaba todos sus objetivos marcados "el dato no está en
+   * la documentación" con la huella real de la obra. Al poner la key, el
+   * provider de verdad no salía a buscar nunca: la huella no había cambiado.
+   * Una obra entera envenenada por haberla subido antes de configurar la key,
+   * y sin nada en la pantalla que lo explicara.
+   */
+  readonly nombre: string;
+
   buscarDatos(
     lamina: LaminaInput,
     objetivos: readonly ObjetivoBusqueda[],

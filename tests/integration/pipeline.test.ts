@@ -1261,6 +1261,8 @@ describe('lo que se buscó y no está no se vuelve a pagar', () => {
   /** La búsqueda que no encuentra nada, contando qué se le pidió. */
   function busquedaVacia(pedidos: string[][]) {
     const provider: BusquedaProvider = {
+      nombre: 'busqueda-test',
+
       async buscarDatos(_lamina, objetivos) {
         pedidos.push(objetivos.map((objetivo) => objetivo.clave));
         return [];
@@ -1351,6 +1353,8 @@ describe('lo que se buscó y no está no se vuelve a pagar', () => {
         buscarDatosFaltantes(id, {
           ...deps,
           provider: {
+            nombre: 'busqueda-test',
+
             async buscarDatos() {
               await db
                 .update(hallazgos)

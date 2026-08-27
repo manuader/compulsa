@@ -118,12 +118,20 @@ describe('provider mock con fixture', () => {
     });
   });
 
-  it('la planilla se lee como planilla y no aporta entidades', async () => {
+  it('la planilla se lee como planilla, sin escala y sin verificarla', async () => {
     const rotulo = await provider.leerRotulo(lamina('obra-demo.pdf', 3));
 
     expect(rotulo.tipoLamina).toBe('planilla');
+    // Una planilla no imprime escala en el rótulo, así que no hay nada que
+    // verificar contra cotas: `escalaConfiable` es `false`. El fixture decía
+    // `true` —una salida que el provider real NO puede emitir según su propio
+    // prompt, regla 4— y con eso la suite entera validaba un rótulo imposible
+    // (la trampa de tests/CLAUDE.md §6). Que la planilla se lea igual sin
+    // escala es cosa del pipeline, no del provider.
     expect(rotulo.escala).toBeNull();
-    expect(rotulo.escalaConfiable).toBe(true);
+    expect(rotulo.escalaConfiable).toBe(false);
+    // Esta planilla en particular no trae filas cargadas en su fixture; que una
+    // planilla con filas sí produzca aberturas lo prueba `obra-reforma-p2`.
     expect(await provider.extraerEntidades(lamina('obra-demo.pdf', 3), OBRA)).toEqual([]);
   });
 

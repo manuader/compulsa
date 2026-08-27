@@ -365,19 +365,31 @@ export function huellaDocumentacion(laminas: readonly LaminaParaHuella[]): strin
 }
 
 /**
- * `true` si la marca del hallazgo todavía vale para este objetivo: se buscaron
- * **estos** campos sobre **esta misma** documentación y no estaban.
+ * `true` si la marca del hallazgo todavía vale para este objetivo: **este mismo
+ * provider** buscó **estos** campos sobre **esta misma** documentación y no
+ * estaban.
  *
  * Los campos importan además de la huella porque el objetivo puede haber
  * crecido: si la consulta pedía el ancho y ahora pide ancho y alto, lo que se
  * buscó no cubre lo que falta y hay que volver a salir.
+ *
+ * Y el provider importa porque no todos buscan igual. El caso concreto: una
+ * obra subida **sin `ANTHROPIC_API_KEY`** la busca el mock, que sin fixture
+ * devuelve `[]` — o sea que marcaría todos los objetivos de la obra como "el
+ * dato no está en la documentación", con la huella real. Al configurar la key,
+ * el provider de verdad no saldría a buscar nunca: la huella no cambió. La obra
+ * quedaba envenenada por el orden en que se hicieron las cosas, sin nada en la
+ * pantalla que lo explicara. Una marca sin `provider` —las escritas antes de
+ * esto— no coincide con ninguno: se vuelve a buscar una vez, que es el lado
+ * seguro del error.
  */
 export function marcaVigente(
   marca: MarcaBusqueda | null | undefined,
   huella: string,
   campos: readonly string[],
+  provider: string,
 ): boolean {
-  if (!marca || marca.huella !== huella) return false;
+  if (!marca || marca.huella !== huella || marca.provider !== provider) return false;
   const buscados = new Set(marca.campos);
   return campos.every((campo) => buscados.has(campo));
 }
@@ -590,12 +602,18 @@ export async function buscarDatosFaltantes(
     .where(eq(laminas.obraId, obraId))
     .orderBy(laminas.numeroPagina);
 
+  // El provider se resuelve antes del filtro: la marca de "buscado y no está"
+  // vale por provider, no solo por documentación (ver `marcaVigente`).
+  const storage = deps.storage ?? getStorage();
+  const provider = deps.provider ?? getBusquedaProvider();
+
   // Los que ya se buscaron sobre esta misma documentación no se vuelven a
   // pagar. Si el arquitecto sube algo nuevo, la huella cambia y vuelven a
   // entrar solos (decisión 6).
   const huella = huellaDocumentacion(todasLasLaminas);
   const pedidos = candidatos.filter(
-    (pedido) => !marcaVigente(pedido.hallazgo.busquedaJson, huella, pedido.objetivo.campos),
+    (pedido) =>
+      !marcaVigente(pedido.hallazgo.busquedaJson, huella, pedido.objetivo.campos, provider.nombre),
   );
   const omitidos = candidatos.length - pedidos.length;
   if (pedidos.length === 0) return resultado;
@@ -607,9 +625,6 @@ export async function buscarDatosFaltantes(
   }
 
   const { laminas: candidatas, truncado } = laminasCandidatas(todasLasLaminas, citadas);
-
-  const storage = deps.storage ?? getStorage();
-  const provider = deps.provider ?? getBusquedaProvider();
 
   // El contexto de obra que ve el prompt. `indiceLaminas` sale de las láminas
   // que ya se leyeron: saber que existe una "DET00 — PLANILLA DE CARPINTERÍAS"
@@ -751,7 +766,12 @@ export async function buscarDatosFaltantes(
   const marcadas: string[] = [];
   const at = new Date().toISOString();
   for (const pedido of truncado ? [] : vacios) {
-    const marca: MarcaBusqueda = { campos: pedido.objetivo.campos, huella, at };
+    const marca: MarcaBusqueda = {
+      campos: pedido.objetivo.campos,
+      huella,
+      at,
+      provider: provider.nombre,
+    };
     if (!(await marcarSinResultado(db, pedido.hallazgo.id, marca))) {
       cerradasEnVuelo.push(pedido.objetivo.clave);
       continue;
@@ -760,6 +780,7 @@ export async function buscarDatosFaltantes(
     await auditar(obraId, ACCION_SIN_RESULTADO, `hallazgos:${pedido.objetivo.clave}`, {
       campos: marca.campos,
       huella,
+      provider: provider.nombre,
       motivo:
         'El dato no está en la documentación de la obra: no se vuelve a buscar hasta que entre ' +
         'documentación nueva.',

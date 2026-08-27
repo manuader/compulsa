@@ -409,7 +409,8 @@ export function FormulariosConfig({
           </summary>
           <div className="mt-3 flex flex-col gap-4">
             <p className="text-sm text-neutral-600">
-              Se suman a las de arriba cuando el análisis está mirando ese rubro. El estilo es el
+              Se suman a las de arriba en cada lámina, etiquetadas con el rubro
+              («Aberturas: …»), para que el análisis sepa a cuál aplica cada una. El estilo es el
               del dictado a un ayudante, paso por paso:{' '}
               <em>
                 «identificá los tramos horizontales de agua caliente en planta y su longitud en

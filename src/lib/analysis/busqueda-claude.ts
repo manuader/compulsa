@@ -87,6 +87,8 @@ export function crearProviderBusquedaClaude(): BusquedaProvider {
   const cliente = new Anthropic();
 
   return {
+    nombre: 'busqueda-claude',
+
     async buscarDatos(
       lamina: LaminaInput,
       objetivos: readonly ObjetivoBusqueda[],

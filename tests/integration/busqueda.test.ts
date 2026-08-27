@@ -39,6 +39,7 @@ import {
   ACCION_SIN_RESULTADO,
   buscarDatosFaltantes,
   escribirPropuesta,
+  huellaDocumentacion,
   laminasCandidatas,
   MAX_LAMINAS_POR_BUSQUEDA,
 } from '@/lib/pipeline/busqueda';
@@ -98,6 +99,8 @@ function todaLaAuditoria(): Promise<Array<{ accion: string; targetRef: string | 
 /** Provider que cuenta las llamadas sin encontrar nada: mide el cap y el corte. */
 function providerQueCuenta(llamadas: string[]): BusquedaProvider {
   return {
+    nombre: 'busqueda-test',
+
     async buscarDatos(lamina) {
       llamadas.push(`${lamina.documentoNombre}#${lamina.numeroPagina}`);
       return [];
@@ -269,6 +272,8 @@ describe('buscarDatosFaltantes', () => {
       db,
       storage,
       provider: {
+        nombre: 'busqueda-test',
+
         async buscarDatos(lamina, objetivos) {
           llamadas.push(objetivos.flatMap((o) => o.campos).join(','));
           return [];
@@ -385,6 +390,55 @@ describe('buscarDatosFaltantes', () => {
     });
   });
 
+  it('la marca de un provider no vale para otro: la obra subida sin API key no queda envenenada', async () => {
+    // El caso real: se sube la obra ANTES de configurar `ANTHROPIC_API_KEY`.
+    // La busca el mock, que sin fixture devuelve `[]`, y con eso quedaban todos
+    // los objetivos marcados "el dato no está en la documentación" con la
+    // huella REAL de la obra. Al poner la key, el provider de verdad no salía a
+    // buscar nunca: la huella no había cambiado. La obra quedaba envenenada por
+    // el orden en que se hicieron las cosas, y nada en la pantalla lo decía.
+    const mudo = (nombre: string): BusquedaProvider => ({
+      nombre,
+      async buscarDatos() {
+        return [];
+      },
+    });
+
+    const primera = await buscarDatosFaltantes(obraId, { db, storage, provider: mudo('sin-key') });
+    expect(primera.sinResultado).toBe(1);
+    expect((await hallazgoPorClave(CLAVE))?.busquedaJson).toMatchObject({ provider: 'sin-key' });
+
+    // Mismo provider, misma documentación: la marca vale y no se vuelve a pagar.
+    expect(
+      (await buscarDatosFaltantes(obraId, { db, storage, provider: mudo('sin-key') })).objetivos,
+    ).toBe(0);
+
+    // Otro provider: la marca no le sirve y sale a buscar.
+    const segunda = await buscarDatosFaltantes(obraId, { db, storage, provider: mudo('con-key') });
+    expect(segunda.objetivos).toBe(1);
+    expect((await hallazgoPorClave(CLAVE))?.busquedaJson).toMatchObject({ provider: 'con-key' });
+  });
+
+  it('una marca vieja sin provider no vale para nadie: se vuelve a buscar una vez', async () => {
+    // Retrocompat: las marcas escritas antes de este arreglo no traen
+    // `provider`. Que no coincidan con ninguno es el lado seguro del error —se
+    // paga una búsqueda de más, no se calla un dato que sí estaba.
+    const consulta = await hallazgoPorClave(CLAVE);
+    await db
+      .update(hallazgos)
+      .set({
+        busquedaJson: {
+          campos: ['anchoM', 'altoM'],
+          huella: huellaDocumentacion(await laminasDeLaObra()),
+          at: new Date().toISOString(),
+        },
+      })
+      .where(eq(hallazgos.id, consulta!.id));
+
+    const resultado = await buscarDatosFaltantes(obraId, { db, storage });
+    expect(resultado.objetivos).toBe(1);
+  });
+
   it('laminasCandidatas avisa cuándo cortó y cuándo no', () => {
     const planilla = (n: number) => ({
       id: `id-${n}`,
@@ -430,6 +484,8 @@ describe('buscarDatosFaltantes', () => {
       db,
       storage,
       provider: {
+        nombre: 'busqueda-test',
+
         async buscarDatos(_lamina, objetivos) {
           return objetivos.flatMap((objetivo) =>
             objetivo.campos.map((campo) => ({
@@ -461,6 +517,8 @@ describe('buscarDatosFaltantes', () => {
       db,
       storage,
       provider: {
+        nombre: 'busqueda-test',
+
         async buscarDatos(_lamina, objetivos) {
           // El arquitecto contesta desde la bandeja justo mientras se lee.
           await db

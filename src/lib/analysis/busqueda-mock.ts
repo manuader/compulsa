@@ -104,6 +104,8 @@ export function crearProviderBusquedaMock(
   const dir = comoDirectorio(dirFixtures);
 
   return {
+    nombre: 'busqueda-mock',
+
     async buscarDatos(
       lamina,
       objetivos: readonly ObjetivoBusqueda[],

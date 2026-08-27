@@ -146,6 +146,18 @@ export interface MarcaBusqueda {
   huella: string;
   /** Cuándo se buscó (ISO). Informativo: la caducidad la decide la huella. */
   at: string;
+  /**
+   * Quién buscó (`BusquedaProvider.nombre`). La marca de un provider **no vale
+   * para otro**: una obra procesada sin `ANTHROPIC_API_KEY` la busca el mock,
+   * que sin fixture devuelve `[]` y marcaría toda la obra como "no está en la
+   * documentación" con la huella real — y al configurar la key, el provider de
+   * verdad no saldría a buscar nunca, porque la huella no cambió.
+   *
+   * Opcional porque las marcas escritas antes de esto no lo traen: sin
+   * `provider` la marca no coincide con ninguno y el dato se vuelve a buscar
+   * una vez, que es el lado seguro del error.
+   */
+  provider?: string;
 }
 
 /**
@@ -219,9 +231,13 @@ export interface PesosRanking { total: number; fidelidad: number; plazo: number 
  * planilla DET00", "las cotas están en cm") pasa a ser configuración del
  * estudio y viaja con `ObraContexto.instruccionesEstudio` en cada llamada.
  *
- * `general` aplica a toda lámina; `porRubro` se suma cuando la extracción tiene
- * un rubro en foco. Ambos vacíos por default: sin configurar, el prompt es el
- * de siempre.
+ * Las dos viajan en **cada** llamada de extracción: `general` tal cual, y las de
+ * `porRubro` como una línea etiquetada con el nombre del rubro
+ * (`textoInstrucciones` en `src/lib/analysis/prompt.ts`), que es lo que le dice
+ * al modelo a qué aplica cada una. No hay ningún "rubro en foco" —el análisis
+ * lee la lámina entera, no un rubro por vez—, y la etiqueta es justamente lo
+ * que hace que eso no sea un problema. Ambos vacíos por default: sin
+ * configurar, el prompt es el de siempre.
  */
 export interface InstruccionesExtraccion {
   general: string;
