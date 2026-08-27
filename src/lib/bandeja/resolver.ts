@@ -59,6 +59,7 @@ import { getDb, type Db } from '@/db/client';
 import { entidades, hallazgos, laminas, type Hallazgo } from '@/db/schema';
 import type { AnalysisProvider } from '@/lib/analysis/index';
 import { registrarAuditoria } from '@/lib/audit';
+import { enumerar, etiquetaCampo } from '@/lib/deduccion/motor';
 import { camposDelTarget } from '@/lib/hallazgos/target';
 import { PREFIJO_ESCALA } from '@/lib/pipeline/claves';
 import { actualizarLamina } from '@/lib/pipeline/procesar';
@@ -189,6 +190,31 @@ export const ESCALA_NO_ES_SUPUESTO =
 /** Una clave que el hallazgo no pide es un error de la pantalla, no un dato. */
 function campoDesconocido(campo: string): string {
   return `Esta consulta no pide «${campo}»: refrescá la bandeja y volvé a intentar.`;
+}
+
+/**
+ * Responder de a medias cierra la consulta para siempre.
+ *
+ * `recomputarObra` no reabre un hallazgo cerrado (regla 3): si la respuesta
+ * trae el ancho y no el alto, el ancho entra, la consulta queda `respondido` y
+ * **el alto no se vuelve a pedir nunca** — sin ítem, sin consulta y sin nada
+ * en la auditoría que diga que quedó algo sin cargar. Es el mismo agujero que
+ * el "0", con otra cara: el campo que no viene en el payload y el que viene en
+ * cero terminan igual. Se responde con todo o no se responde.
+ */
+function faltanCampos(faltantes: readonly string[]): string {
+  const nombres = enumerar(faltantes.map((campo) => etiquetaCampo(campo)));
+  return faltantes.length === 1
+    ? `Falta ${nombres}: la consulta se responde con todas las medidas juntas, si no queda cerrada con el dato a medias.`
+    : `Faltan ${nombres}: la consulta se responde con todas las medidas juntas, si no queda cerrada con el dato a medias.`;
+}
+
+/** Los campos que el hallazgo pide y la respuesta no trae, en el orden pedido. */
+function camposSinResponder(
+  pedidos: readonly string[],
+  respondidos: Readonly<Record<string, unknown>>,
+): string[] {
+  return pedidos.filter((campo) => !(campo in respondidos));
 }
 
 function cargarHallazgo(db: Db, obraId: string, hallazgoId: string): Promise<Hallazgo | undefined> {
@@ -349,6 +375,11 @@ type LecturaDeCampos =
  * impedir (RF-404). Y frenan aunque los demás campos estén bien: escribir el
  * ancho y dejar el alto en cero deja la abertura igual de incomputable.
  *
+ * **Un campo que no viene en el payload termina igual que uno en cero**, y por
+ * eso se chequea aparte (`camposSinResponder`): la consulta se cerraría con la
+ * mitad del dato y `recomputarObra` no la reabre. Acá se miran los valores que
+ * llegaron; que estén todos es responsabilidad de quien llama.
+ *
  * Lo que no es número tampoco se escribe: el `tipo` de un tabique ("durlock")
  * se responde en palabras y el motor lo lee como medida, así que va a nota.
  */
@@ -454,6 +485,13 @@ export async function responderHallazgo(
       return { ok: true };
     }
 
+    // Con todo o con nada: un campo que no vino en el payload cierra la
+    // consulta igual que uno en cero, y el dato que falta no se vuelve a pedir.
+    // El `disabled` de la tarjeta no alcanza — esto es una server action y el
+    // cliente puede llamarla con el payload que quiera.
+    const faltantes = camposSinResponder(campos, leidos.valores);
+    if (faltantes.length > 0) return { ok: false, error: faltanCampos(faltantes) };
+
     const escrito = await escribirEnEntidad(db, obraId, hallazgo, leidos.valores, actor);
     await cerrar(
       db,
@@ -475,6 +513,14 @@ export async function responderHallazgo(
   // impedir (RF-404). Se rechaza y la consulta sigue abierta.
   if (target !== null && numero !== null && numero <= 0) {
     return { ok: false, error: MEDIDA_NO_POSITIVA };
+  }
+
+  // Un `valor` suelto responde UN campo. Si la consulta pide dos, no hay forma
+  // de saber cuál es —y escribir el primero la cerraría con el otro sin cargar,
+  // para siempre—: se pide la respuesta completa, que es lo que manda la
+  // tarjeta.
+  if (numero !== null && campos.length > 1) {
+    return { ok: false, error: faltanCampos(campos.slice(1)) };
   }
 
   const campo = campos[0];
@@ -791,19 +837,25 @@ export async function confirmarLote(
       continue;
     }
 
-    // Solo los campos que la consulta pide y que la propuesta sabe contestar:
-    // una propuesta parcial (el ancho sí, el alto no) confirma lo que tiene.
+    // **Una propuesta parcial no se confirma.** La búsqueda dirigida puede
+    // encontrar el ancho y no el alto: confirmar eso escribiría el ancho y
+    // cerraría la consulta para siempre —`recomputarObra` no reabre lo
+    // cerrado— con la abertura igual de incomputable y sin nada que diga que
+    // el alto quedó sin cargar. Se saltea y queda para que la complete una
+    // persona, que es la que puede ir a buscar el dato que falta.
+    const campos = camposDelTarget(fila.targetRef);
     const crudos: (readonly [string, string])[] = [];
-    for (const campo of camposDelTarget(fila.targetRef)) {
+    for (const campo of campos) {
       const propuesto = propuesta.valores[campo];
       if (propuesto === undefined) continue;
       const texto = typeof propuesto === 'number' ? String(propuesto) : propuesto.trim();
       if (texto !== '') crudos.push([campo, texto] as const);
     }
 
-    // Una propuesta que no es un número no se confirma en lote: entraría a la
-    // entidad como atributo sin que nadie la haya mirado (P4).
-    const leidos = crudos.length === 0 ? null : await leerCampos(crudos);
+    // Y una propuesta que no es un número tampoco: entraría a la entidad como
+    // atributo sin que nadie la haya mirado (P4).
+    const completa = campos.length > 0 && crudos.length === campos.length;
+    const leidos = completa ? await leerCampos(crudos) : null;
     if (leidos === null || leidos.tipo !== 'numeros') {
       salteadas += 1;
       continue;

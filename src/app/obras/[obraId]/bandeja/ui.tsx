@@ -222,6 +222,20 @@ function valoresIniciales(consulta: ConsultaVista): Record<string, string> {
 }
 
 /**
+ * `true` si la propuesta alcanza para cerrar la consulta sin dejar nada afuera.
+ *
+ * El server saltea las propuestas incompletas —confirmar el ancho sin el alto
+ * cerraría la consulta para siempre con la abertura igual de incomputable— así
+ * que el contador del botón tiene que contar lo mismo que se va a confirmar. Si
+ * no, dice «Confirmar seleccionadas (5)» y confirma tres.
+ */
+function propuestaCompleta(consulta: ConsultaVista): boolean {
+  const propuesto = consulta.valorPropuesto?.valores;
+  if (!propuesto) return false;
+  return clavesDeInput(consulta).every((clave) => (propuesto[clave] ?? '').trim() !== '');
+}
+
+/**
  * Identidad de la tarjeta **incluyendo lo que propone**.
  *
  * Los inputs se inicializan una sola vez, al montar. Si la propuesta llega
@@ -540,10 +554,11 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
   );
   const abiertasVisibles = abiertas.map((consulta) => consulta.id);
   const elegidas = seleccion.filter((id) => abiertasVisibles.includes(id));
-  // Confirmar es responder con la propuesta: las que no tienen nada propuesto
-  // el server las saltea, así que el botón se habilita con que haya UNA.
-  const conPropuesta = abiertas.filter(
-    (consulta) => consulta.valorPropuesto !== null && elegidas.includes(consulta.id),
+  // Confirmar es responder con la propuesta: el server saltea las que no traen
+  // nada propuesto y las que lo traen a medias, así que el contador cuenta
+  // exactamente eso — lo que el botón va a confirmar de verdad.
+  const confirmables = abiertas.filter(
+    (consulta) => elegidas.includes(consulta.id) && propuestaCompleta(consulta),
   ).length;
 
   function alternar(id: string, valor: boolean): void {
@@ -588,8 +603,8 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
       if (resultado.salteadas > 0) {
         setAviso(
           resultado.salteadas === 1
-            ? 'Una de las seleccionadas no tenía nada propuesto: sigue abierta, respondela a mano.'
-            : `${resultado.salteadas} de las seleccionadas no tenían nada propuesto: siguen abiertas, respondelas a mano.`,
+            ? 'Una de las seleccionadas no traía todo lo que la consulta pide: sigue abierta, respondela a mano.'
+            : `${resultado.salteadas} de las seleccionadas no traían todo lo que la consulta pide: siguen abiertas, respondelas a mano.`,
         );
       }
       setSeleccion([]);
@@ -643,14 +658,14 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
         <Button
           size="sm"
           onClick={() => setDialogo('confirmar')}
-          disabled={conPropuesta === 0 || pendiente}
+          disabled={confirmables === 0 || pendiente}
           title={
-            conPropuesta === 0
-              ? 'Ninguna de las seleccionadas trae un valor propuesto para confirmar'
+            confirmables === 0
+              ? 'Ninguna de las seleccionadas trae todo lo que hace falta para confirmarla'
               : undefined
           }
         >
-          Confirmar seleccionadas ({conPropuesta})
+          Confirmar seleccionadas ({confirmables})
         </Button>
         <Button
           size="sm"
@@ -715,12 +730,12 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
       >
         <div className="flex flex-col gap-3">
           <p className="text-sm text-neutral-700">
-            {conPropuesta === 1
+            {confirmables === 1
               ? 'Vas a dar por bueno el valor propuesto de 1 consulta.'
-              : `Vas a dar por buenos los valores propuestos de ${conPropuesta} consultas.`}{' '}
+              : `Vas a dar por buenos los valores propuestos de ${confirmables} consultas.`}{' '}
             Los datos entran a la documentación de la obra con tu usuario y el cómputo se rehace.
-            {elegidas.length > conPropuesta
-              ? ` Las otras ${elegidas.length - conPropuesta} de la selección no tienen nada propuesto: quedan abiertas.`
+            {elegidas.length > confirmables
+              ? ` Las otras ${elegidas.length - confirmables} de la selección no traen todo lo que la consulta pide: quedan abiertas para responderlas a mano.`
               : ''}
           </p>
           <Input
