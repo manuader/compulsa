@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { deducir, type LaminaResumen } from '@/lib/deduccion/motor';
+import { normalizarTag } from '@/lib/deduccion/reglas/planilla-plano';
 
 const LAMINAS: LaminaResumen[] = [
   { id: 'L-planta', tipo: 'planta', codigo: 'A-01' },
@@ -132,5 +133,51 @@ describe('deducción · planilla ↔ plano', () => {
     const dudosa = abertura({ id: 'dudosa', confianza: 0.6 });
 
     expect(deducir([dudosa, v2EnPlanilla], LAMINAS)).toEqual({ propuestas: [], inconsistencias: [] });
+  });
+});
+
+describe('normalizarTag', () => {
+  it('saca espacios (también los internos) y pasa a mayúsculas', () => {
+    expect(normalizarTag(' fp 01 ')).toBe('FP01');
+    expect(normalizarTag('v5')).toBe('V5');
+    expect(normalizarTag('V 5')).toBe('V5');
+    expect(normalizarTag('V5')).toBe('V5');
+  });
+
+  it('es idempotente y no toca un tag ya limpio', () => {
+    expect(normalizarTag(normalizarTag(' p 3 '))).toBe('P3');
+    expect(normalizarTag('DET00')).toBe('DET00');
+  });
+
+  it('no confunde tags distintos', () => {
+    expect(normalizarTag('V5')).not.toBe(normalizarTag('V6'));
+  });
+});
+
+describe('deducción · planilla ↔ plano: el tag se compara normalizado', () => {
+  it("la planilla que dice 'v5' completa la planta que dice 'V5'", () => {
+    const enPlanta = abertura({
+      id: 'planta-v5',
+      nombre: 'V5',
+      confianza: 0.9,
+      atributos: { tag: 'V5', tipologia: 'ventana' },
+    });
+    const enPlanilla = abertura({
+      id: 'planilla-v5',
+      laminaId: 'L-planilla',
+      nombre: 'v5',
+      bbox: [0.4, 0.3, 0.2, 0.04],
+      confianza: 0.9,
+      atributos: { tag: 'v5', tipologia: 'ventana', anchoM: 1.2, altoM: 1 },
+    });
+
+    const { propuestas } = deducir([enPlanta, enPlanilla], LAMINAS);
+    const paraLaPlanta = propuestas.filter((p) => p.entidadId === 'planta-v5');
+
+    expect(paraLaPlanta.map((p) => [p.campo, p.valor])).toEqual([
+      ['anchoM', 1.2],
+      ['altoM', 1],
+    ]);
+    expect(paraLaPlanta[0]!.regla).toBe('planilla_plano');
   });
 });

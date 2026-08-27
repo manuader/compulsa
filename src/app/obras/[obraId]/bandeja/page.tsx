@@ -15,6 +15,7 @@ import Link from 'next/link';
 import { getDb } from '@/db/client';
 import { entidades, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
+import { camposDelTarget } from '@/lib/hallazgos/target';
 import { PREFIJO_ESCALA } from '@/lib/pipeline/claves';
 import {
   checklistEfectivoDeTodos,
@@ -158,7 +159,7 @@ export default async function BandejaPage({
       descripcion: fila.descripcion,
       bloqueante: fila.bloqueante,
       estado: fila.estado,
-      campo: fila.targetRef?.campo ?? null,
+      campo: camposDelTarget(fila.targetRef)[0] ?? null,
       entidad: fila.targetRef ? (nombreEntidad.get(fila.targetRef.entidadId) ?? null) : null,
       esEscala: fila.clave.startsWith(PREFIJO_ESCALA),
       laminas: citadas,

@@ -72,7 +72,7 @@ export const plantillaSeco = {
               `El tabique ${entidad.nombre} figura como "${sistema}", no como durlock: no lo computo con la plantilla de construcción en seco. ` +
               'Corregí el sistema constructivo o computalo en el rubro que corresponda.',
             entidad,
-            campo: 'tipo',
+            campos: ['tipo'],
           }),
         );
         continue;
@@ -89,7 +89,7 @@ export const plantillaSeco = {
               `No encontré la altura del tabique ${entidad.nombre}. Sin altura no computo sus m² de placa: ` +
               'cargá la altura o indicá el corte donde está acotada.',
             entidad,
-            campo: 'alturaM',
+            campos: ['alturaM'],
           }),
         );
         continue;
@@ -106,7 +106,7 @@ export const plantillaSeco = {
               `No encontré el largo del tabique ${entidad.nombre}. Sin largo no computo sus m² de placa: ` +
               'cargá el dato o indicá la planta donde está acotado.',
             entidad,
-            campo: 'largoM',
+            campos: ['largoM'],
           }),
         );
         continue;

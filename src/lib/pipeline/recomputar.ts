@@ -93,7 +93,7 @@ import { igualJson } from '@/lib/pipeline/json';
 import { persistirResumen } from '@/lib/pipeline/resumen';
 import { leerConfig } from '@/lib/plataforma/config-estudio';
 import { plantillasConConfig } from '@/lib/rubros/overrides';
-import type { BBox, HallazgoDetectado, ItemComputo } from '@/types/domain';
+import type { BBox, HallazgoDetectado, ItemComputo, ValorPropuesto } from '@/types/domain';
 
 /** Nombre del actor de todas las escrituras del pipeline en `auditoria`. */
 export const ACTOR_PIPELINE = 'pipeline';
@@ -315,7 +315,33 @@ async function sincronizarItems(
 // Hallazgos
 // ---------------------------------------------------------------------------
 
-function valoresDeHallazgo(obraId: string, h: HallazgoDetectado): Omit<NuevoHallazgo, 'id'> {
+/**
+ * Qué propuesta queda en la fila tras un recompute.
+ *
+ * El motor gobierna las propuestas que él mismo produce (`lectura_baja_confianza`
+ * y `rotulo`): si deja de emitirlas, se van. Las de `busqueda_dirigida` las
+ * escribe otro proceso **por fuera del motor** (`src/lib/pipeline/busqueda.ts`),
+ * así que el motor no puede borrarlas por omisión: sin esta regla, el primer
+ * recompute después de una búsqueda tiraba todo lo que la búsqueda encontró y el
+ * usuario pagaba los créditos dos veces.
+ *
+ * Cuando el detectado **sí** trae propuesta, esa manda: es información más
+ * fresca sobre el mismo campo.
+ */
+function propuestaMergeada(
+  previa: ValorPropuesto | null | undefined,
+  h: HallazgoDetectado,
+): ValorPropuesto | null {
+  if (h.valorPropuesto !== undefined) return h.valorPropuesto;
+  if (previa && previa.origen === 'busqueda_dirigida') return previa;
+  return null;
+}
+
+function valoresDeHallazgo(
+  obraId: string,
+  h: HallazgoDetectado,
+  previa?: Hallazgo,
+): Omit<NuevoHallazgo, 'id'> {
   return {
     obraId,
     clave: h.clave,
@@ -325,6 +351,7 @@ function valoresDeHallazgo(obraId: string, h: HallazgoDetectado): Omit<NuevoHall
     checklistItem: h.checklistItem ?? null,
     laminasJson: h.fuentes,
     targetRef: h.targetRef ?? null,
+    valorPropuestoJson: propuestaMergeada(previa?.valorPropuestoJson, h),
     bloqueante: h.bloqueante,
   };
 }
@@ -345,6 +372,10 @@ function diferenciasDeHallazgo(
   comparar('bloqueante', fila.bloqueante, h.bloqueante);
   comparar('laminas', fila.laminasJson, h.fuentes);
   comparar('targetRef', fila.targetRef, h.targetRef ?? null);
+  // Contra el merge, no contra `h.valorPropuesto`: si no, una propuesta de la
+  // búsqueda dirigida conservada se vería como un diff en cada recompute y
+  // dispararía una auditoría fantasma por corrida.
+  comparar('valorPropuesto', fila.valorPropuestoJson, propuestaMergeada(fila.valorPropuestoJson, h));
 
   return Object.keys(diff).length > 0 ? diff : null;
 }
@@ -382,7 +413,7 @@ async function sincronizarHallazgos(
 
     await db
       .update(hallazgos)
-      .set(valoresDeHallazgo(obraId, detectado))
+      .set(valoresDeHallazgo(obraId, detectado, previo))
       .where(eq(hallazgos.id, previo.id));
     resumen.hallazgosActualizados += 1;
     await auditar(obraId, 'hallazgo_actualizado', `hallazgos:${detectado.clave}`, diff);

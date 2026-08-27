@@ -1,0 +1,32 @@
+{
+  "rotulo": {
+    "titulo": "PLANTA ALTA",
+    "codigo": "A-04",
+    "disciplina": "arquitectura",
+    "tipoLamina": "planta",
+    "escala": "1:20",
+    "escalaConfiable": false,
+    "revision": "0",
+    "confianza": 0.9
+  },
+  "entidades": [
+    {
+      "tipo": "tabique",
+      "nombre": "T5",
+      "bbox": [
+        0.3,
+        0.22,
+        0.02,
+        0.44
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 4,
+        "alturaM": 2.6,
+        "caras": 2
+      }
+    }
+  ]
+}

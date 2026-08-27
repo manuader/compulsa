@@ -69,7 +69,7 @@ export const plantillaGruesa = {
               `El muro ${entidad.nombre} figura como "${sistema}", no como mampostería: no lo computo con esta plantilla. ` +
               'Si es un elemento estructural, corresponde consultar al profesional competente antes de computarlo.',
             entidad,
-            campo: 'tipo',
+            campos: ['tipo'],
           }),
         );
         continue;
@@ -86,7 +86,7 @@ export const plantillaGruesa = {
               `No encontré la altura del muro ${entidad.nombre}. Sin altura no computo sus m²: ` +
               'cargá el dato o indicá el corte donde está acotada.',
             entidad,
-            campo: 'alturaM',
+            campos: ['alturaM'],
           }),
         );
         continue;
@@ -103,7 +103,7 @@ export const plantillaGruesa = {
               `No encontré el largo del muro ${entidad.nombre}. Sin largo no computo sus m²: ` +
               'cargá el dato o indicá la planta donde está acotado.',
             entidad,
-            campo: 'largoM',
+            campos: ['largoM'],
           }),
         );
         continue;

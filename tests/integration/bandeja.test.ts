@@ -193,7 +193,7 @@ describe('responderHallazgo sobre un faltante de medidas', () => {
     const abierto = await hallazgoPorClave('aberturas.medidas_vano.P1');
     expect(abierto?.estado).toBe('abierto');
     expect(abierto?.bloqueante).toBe(true);
-    expect(abierto?.targetRef).toEqual({ entidadId, campo: 'altoM' });
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['altoM'] });
     expect(await itemPorClave('aberturas.P1')).toBeUndefined();
 
     const antes = await gateDeAberturas();
@@ -280,7 +280,7 @@ describe('responderHallazgo sobre un faltante de medidas', () => {
     });
     await recomputarObra(obraId);
     const abierto = await hallazgoPorClave('aberturas.medidas_vano.P1');
-    expect(abierto?.targetRef).toEqual({ entidadId, campo: 'altoM' });
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['altoM'] });
 
     for (const valor of ['0', '0,00']) {
       expect(await responderHallazgo({ obraId, hallazgoId: abierto!.id, valor }, actor)).toEqual({
@@ -350,7 +350,7 @@ describe('marcarExistente', () => {
     await recomputarObra(obraId);
 
     const abierto = await hallazgoPorClave('pintura.altura_ambiente.Estar');
-    expect(abierto?.targetRef).toEqual({ entidadId, campo: 'alturaM' });
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['alturaM'] });
     expect((await itemPorClave('pintura.latex_cielorrasos'))?.cantNeta).toBe(4);
 
     const resultado = await marcarExistente({ obraId, hallazgoId: abierto!.id }, actor);
@@ -389,7 +389,7 @@ describe('marcarExistente', () => {
     // Solo T1 computa: 3 × 2,60 × 2 caras = 15,6 m².
     expect((await itemPorClave('seco.placas'))?.cantNeta).toBe(15.6);
     const abierto = await hallazgoPorClave('seco.altura_tabiques.T2');
-    expect(abierto?.targetRef).toEqual({ entidadId: t2, campo: 'alturaM' });
+    expect(abierto?.targetRef).toEqual({ entidadId: t2, campos: ['alturaM'] });
 
     expect(await marcarExistente({ obraId, hallazgoId: abierto!.id }, actor)).toEqual({ ok: true });
 

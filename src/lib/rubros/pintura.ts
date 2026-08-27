@@ -66,7 +66,7 @@ export const plantillaPintura = {
               `No encontré la altura de ${entidad.nombre}. Sin altura no computo los m² de pared: ` +
               'cargá el dato o indicá el corte donde está acotada.',
             entidad,
-            campo: 'alturaM',
+            campos: ['alturaM'],
           }),
         );
       } else if (perimetro === null) {
@@ -79,7 +79,7 @@ export const plantillaPintura = {
               `No encontré el perímetro de ${entidad.nombre}. Sin perímetro no computo los m² de pared: ` +
               'cargá el dato o indicá la planta donde está acotado.',
             entidad,
-            campo: 'perimetroM',
+            campos: ['perimetroM'],
           }),
         );
       } else {
@@ -114,7 +114,7 @@ export const plantillaPintura = {
               `No encontré la superficie de ${entidad.nombre}. Sin m² no computo la pintura del cielorraso: ` +
               'cargá el dato o indicá la planilla de locales.',
             entidad,
-            campo: 'superficieM2',
+            campos: ['superficieM2'],
           }),
         );
       } else {

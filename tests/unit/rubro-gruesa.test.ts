@@ -122,7 +122,7 @@ describe('plantilla gruesa: reforma y huecos', () => {
     expect(hallazgos[0]!.clave).toBe('gruesa.altura_muros.M4');
     expect(hallazgos[0]!.tipo).toBe('faltante');
     expect(hallazgos[0]!.bloqueante).toBe(true);
-    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'm4', campo: 'alturaM' });
+    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'm4', campos: ['alturaM'] });
   });
 
   it('un muro que no es de mampostería no se auto-computa (RF-506)', () => {

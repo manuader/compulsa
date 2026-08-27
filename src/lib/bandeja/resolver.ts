@@ -46,6 +46,7 @@ import { getDb, type Db } from '@/db/client';
 import { entidades, hallazgos, laminas, type Hallazgo } from '@/db/schema';
 import type { AnalysisProvider } from '@/lib/analysis/index';
 import { registrarAuditoria } from '@/lib/audit';
+import { camposDelTarget } from '@/lib/hallazgos/target';
 import { PREFIJO_ESCALA } from '@/lib/pipeline/claves';
 import { actualizarLamina } from '@/lib/pipeline/procesar';
 import { recomputarObra } from '@/lib/pipeline/recomputar';
@@ -269,17 +270,21 @@ export async function responderHallazgo(
     return { ok: false, error: MEDIDA_NO_POSITIVA };
   }
 
+  // `camposDelTarget()` es el único lector válido del `target_ref`: las filas
+  // viejas guardaron `campo` singular y las nuevas guardan `campos`.
+  const campo = camposDelTarget(target)[0];
+
   // Camino bueno: el dato entra a la entidad y el cómputo lo levanta.
-  if (target && numero !== null) {
+  if (target && campo !== undefined && numero !== null) {
     const entidad = await entidadDelTarget(db, obraId, target.entidadId);
     if (entidad) {
-      const antes = entidad.atributosJson[target.campo] ?? null;
+      const antes = entidad.atributosJson[campo] ?? null;
       await db
         .update(entidades)
-        .set({ atributosJson: { ...entidad.atributosJson, [target.campo]: numero } })
+        .set({ atributosJson: { ...entidad.atributosJson, [campo]: numero } })
         .where(eq(entidades.id, entidad.id));
       await auditar(obraId, actor, 'entidad_actualizada', `entidades:${entidad.id}`, {
-        [target.campo]: { antes, despues: numero },
+        [campo]: { antes, despues: numero },
       });
 
       await cerrar(
@@ -287,7 +292,7 @@ export async function responderHallazgo(
         hallazgo,
         actor,
         'respondido',
-        conNota({ tipo: 'valor', campo: target.campo, valor: numero }, notaLimpia),
+        conNota({ tipo: 'valor', campo, valor: numero }, notaLimpia),
       );
       await recomputarObra(obraId, { db });
       return { ok: true };
