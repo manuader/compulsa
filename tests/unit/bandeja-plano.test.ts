@@ -21,7 +21,9 @@ import {
   armarMirada,
   destacadosDeConsulta,
   laminasDeConsulta,
+  miradaVigente,
   type ConsultaVista,
+  type GrupoConsultas,
 } from '@/app/obras/[obraId]/bandeja/ui';
 import type { BBox } from '@/types/domain';
 
@@ -205,5 +207,46 @@ describe('armarMirada: lo que entra al estado del panel', () => {
 
   it('una consulta sin nada que mostrar no abre el panel', () => {
     expect(armarMirada(consulta({ laminas: [], fuentes: [] }), A01)).toBeNull();
+  });
+});
+
+/**
+ * El cuarto helper: el guard de "no fantasmas".
+ *
+ * Confirmar o descartar revalida la pantalla y la consulta desaparece del
+ * filtro «Abiertas». El panel de al lado la seguía mostrando —con su nombre y
+ * su plano— porque la `Mirada` vive en el estado del cliente: el arquitecto veía
+ * abierto el plano de una decisión que ya había tomado. El estado no se limpia
+ * a propósito (volver al filtro donde la consulta vive la vuelve a mostrar), así
+ * que la regla es de render y hasta acá estaba sin test.
+ */
+describe('miradaVigente: la consulta del panel sigue en la lista', () => {
+  const fila = conPropuestaEnPlanilla();
+  const mirada = armarMirada(fila, DET00)!;
+
+  function grupos(consultas: ConsultaVista[]): GrupoConsultas[] {
+    return [{ rubro: 'aberturas', titulo: 'Aberturas', consultas }];
+  }
+
+  it('la consulta que sigue en la lista mantiene el panel, con la MISMA referencia', () => {
+    const vigente = miradaVigente(mirada, grupos([fila]));
+    expect(vigente).toBe(mirada); // la referencia estable que `Overlay` necesita
+  });
+
+  it('la consulta que ya no está en el filtro cierra el panel', () => {
+    expect(miradaVigente(mirada, grupos([consulta({ id: 'otra' })]))).toBeNull();
+    expect(miradaVigente(mirada, [])).toBeNull();
+  });
+
+  it('sin nada elegido no hay panel que mantener', () => {
+    expect(miradaVigente(null, grupos([fila]))).toBeNull();
+  });
+
+  it('la busca en todos los grupos, no solo en el primero', () => {
+    const otros: GrupoConsultas[] = [
+      { rubro: 'seco', titulo: 'Construcción en seco', consultas: [] },
+      ...grupos([fila]),
+    ];
+    expect(miradaVigente(mirada, otros)).toBe(mirada);
   });
 });

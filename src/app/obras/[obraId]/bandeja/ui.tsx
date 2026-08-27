@@ -409,6 +409,26 @@ export function armarMirada(consulta: ConsultaVista, laminaId: string): Mirada |
 }
 
 /**
+ * La mirada que sigue siendo válida, o `null`.
+ *
+ * Confirmar o descartar revalida la pantalla y la consulta desaparece del
+ * filtro «Abiertas»: dejar el plano abierto con el nombre de algo que ya no
+ * está sería mostrar una decisión que ya se tomó. El estado **no** se limpia
+ * —volver al filtro donde la consulta vive la vuelve a mostrar—, se filtra acá,
+ * en el render, para no renderizar dos veces con un efecto.
+ */
+export function miradaVigente(
+  mirada: Mirada | null,
+  grupos: readonly GrupoConsultas[],
+): Mirada | null {
+  if (mirada === null) return null;
+  const sigue = grupos.some((grupo) =>
+    grupo.consultas.some((consulta) => consulta.id === mirada.consultaId),
+  );
+  return sigue ? mirada : null;
+}
+
+/**
  * El `destacados` de "no hay nada elegido", **una sola vez**.
  *
  * Un `?? []` acá abajo sería un array nuevo por render y volvería a disparar el
@@ -758,20 +778,9 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
     (consulta) => elegidas.includes(consulta.id) && propuestaCompleta(consulta),
   ).length;
 
-  /**
-   * La consulta que el panel muestra tiene que seguir estando en la lista.
-   *
-   * Confirmar o descartar revalida la pantalla y la consulta desaparece del
-   * filtro «Abiertas»: dejar el plano abierto con el nombre de algo que ya no
-   * está sería mostrar una decisión que ya se tomó. Se calcula acá y no se
-   * limpia con un efecto para no renderizar dos veces; el estado queda, así
-   * que volver al filtro donde la consulta vive la vuelve a mostrar.
-   */
-  const enPanel =
-    mirada !== null &&
-    grupos.some((grupo) => grupo.consultas.some((consulta) => consulta.id === mirada.consultaId))
-      ? mirada
-      : null;
+  // La consulta que el panel muestra tiene que seguir estando en la lista
+  // (`miradaVigente`, pinneada en `tests/unit/bandeja-plano.test.ts`).
+  const enPanel = miradaVigente(mirada, grupos);
 
   function alternar(id: string, valor: boolean): void {
     setSeleccion((previa) => (valor ? [...previa, id] : previa.filter((otro) => otro !== id)));

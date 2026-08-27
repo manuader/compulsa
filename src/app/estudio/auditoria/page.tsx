@@ -42,6 +42,13 @@ const FECHA = new Intl.DateTimeFormat('es-AR', {
  * que se filtra y se agrupa; esta tabla es la traducción para leerla. Una acción
  * que no esté acá se muestra humanizada (`hallazgo_reabierto` → "hallazgo
  * reabierto"): mejor un texto imperfecto que una fila que no se entiende.
+ *
+ * Ese ejemplo es literal: `hallazgo_reabierto` **ya no lo emite nadie** y por
+ * eso salió de la tabla. Reabrir una consulta cerrada era la excepción que
+ * necesitaba el bloqueo por escala, y desde "proponer en vez de bloquear" lo que
+ * el arquitecto cerró no se reabre (`upsertHallazgoEscala`). Las filas viejas
+ * que la tengan siguen siendo legibles, humanizadas, que es justo para lo que
+ * está el fallback.
  */
 const FRASE_ACCION: Record<string, string> = {
   analisis_llm: 'Analizó una lámina con el modelo',
@@ -59,7 +66,6 @@ const FRASE_ACCION: Record<string, string> = {
   hallazgo_abierto: 'Se abrió una consulta',
   hallazgo_actualizado: 'Cambió una consulta',
   hallazgo_descartado: 'Descartó una consulta',
-  hallazgo_reabierto: 'Se reabrió una consulta',
   hallazgo_respondido: 'Respondió una consulta',
   invitacion_creada: 'Generó una invitación',
   invitacion_usada: 'Se sumó al estudio con una invitación',
