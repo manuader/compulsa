@@ -4,11 +4,16 @@
  * Escribe lo que los tests dan por existente (y que está commiteado, para que la
  * suite no dependa de regenerarlo):
  *
- *   tests/fixtures/pdfs/obra-demo.pdf     3 páginas A4 apaisado (planta, corte, planilla)
- *   tests/fixtures/pdfs/obra-reforma.pdf  2 páginas (planta de reforma, planilla)
- *   tests/fixtures/pdfs/sin-escala.pdf    1 página sin escala declarada
- *   tests/fixtures/analysis/obra-demo-p1..p3.json     qué "ve" el provider mock
- *   tests/fixtures/analysis/obra-reforma-p1..p2.json  ídem, para el golden 2
+ *   tests/fixtures/pdfs/obra-demo.pdf        3 páginas A4 apaisado (planta, corte, planilla)
+ *   tests/fixtures/pdfs/obra-reforma.pdf     2 páginas (planta de reforma, planilla)
+ *   tests/fixtures/pdfs/sin-escala.pdf       1 página sin escala declarada
+ *   tests/fixtures/pdfs/escala-declarada.pdf 1 página con escala declarada NO verificada
+ *   tests/fixtures/pdfs/obra-busqueda.pdf    2 páginas (planta sin acotar + planilla vacía)
+ *   tests/fixtures/analysis/obra-demo-p1..p3.json      qué "ve" el provider mock
+ *   tests/fixtures/analysis/obra-reforma-p1..p2.json   ídem, para el golden 2
+ *   tests/fixtures/analysis/escala-declarada-p1.json   ídem, para la escala asumida
+ *   tests/fixtures/analysis/obra-busqueda-p1..p2.json  ídem, para la búsqueda dirigida
+ *   tests/fixtures/analysis/busqueda/obra-busqueda-p2.json  qué "encuentra" la búsqueda
  *
  * `sin-escala.pdf` NO tiene fixture de análisis a propósito: es el caso que
  * ejercita el bloqueo por escala del pipeline (RF-201).
@@ -36,6 +41,8 @@ const GRIS_CLARO = rgb(0.85, 0.85, 0.85);
 
 const DIR_PDFS = new URL('pdfs/', import.meta.url);
 const DIR_ANALISIS = new URL('analysis/', import.meta.url);
+/** Fixtures de la búsqueda dirigida: otra familia de providers, otra carpeta. */
+const DIR_BUSQUEDA = new URL('analysis/busqueda/', import.meta.url);
 
 // ---------------------------------------------------------------------------
 // Qué ve el provider mock en cada página de obra-demo.pdf.
@@ -305,6 +312,141 @@ const LAMINAS_REFORMA: Lamina[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// escala-declarada.pdf — la lámina que declara escala pero no la verifica
+//
+// Es el único fixture con `escala: '1:20'` + `escalaConfiable: false`, y por eso
+// es obligatorio: hasta acá ningún fixture ejercitaba ese caso, así que la
+// tercera salida del bloqueo por escala ("escala asumida": se analiza igual, se
+// computa, y queda un supuesto no bloqueante con la declarada como propuesta)
+// nacía sin red de tests.
+//
+// El tabique T5 de 4 × 2,60 m a 2 caras da 20,80 m² netos ⇒ con 12% de
+// desperdicio, 23,296 m² ⇒ 9 placas de 2,88 m² = **25,92 m²** de compra. Ese
+// número es el pin: si la lámina se bloqueara, no habría ítem ninguno.
+// ---------------------------------------------------------------------------
+
+const E1: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANTA ALTA',
+    codigo: 'A-04',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planta',
+    escala: '1:20',
+    // Declarada en el rótulo, pero sin cota verificable que la respalde.
+    escalaConfiable: false,
+    revision: '0',
+    confianza: 0.9,
+  },
+  entidades: [
+    {
+      tipo: 'tabique',
+      nombre: 'T5',
+      bbox: [0.3, 0.22, 0.02, 0.44],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'durlock', largoM: 4, alturaM: 2.6, caras: 2 },
+    },
+  ],
+};
+
+const LAMINAS_ESCALA_DECLARADA: Lamina[] = [
+  { clave: 'escala-declarada-p1', encabezado: 'PLANTA ALTA — 1:20', analisis: E1 },
+];
+
+// ---------------------------------------------------------------------------
+// obra-busqueda.pdf — la obra donde el dato existe pero no está estructurado
+//
+// Reproduce el caso real que motivó "proponer en vez de bloquear": la puerta
+// FP01 está dibujada en la planta **sin acotar**, y sus medidas están escritas
+// en la planilla de carpinterías, que el análisis lee como lámina pero de la
+// que **no** extrae entidades (`entidades: []`, tal como el prompt de F0 pedía).
+//
+// Con esto la deducción planilla↔plano no puede disparar —no hay una segunda
+// entidad FP01 de dónde copiar— y el único camino al dato es la búsqueda
+// dirigida sobre la lámina p2, cuyo fixture vive en `analysis/busqueda/`.
+// ---------------------------------------------------------------------------
+
+const B1: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANTA PB',
+    codigo: 'A-01',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planta',
+    escala: '1:100',
+    escalaConfiable: true,
+    revision: '0',
+    confianza: 0.9,
+  },
+  entidades: [
+    {
+      // Sin `anchoM` ni `altoM`: en la planta la puerta no está acotada.
+      tipo: 'abertura',
+      nombre: 'FP01',
+      bbox: [0.24, 0.5, 0.06, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tag: 'FP01', tipologia: 'puerta' },
+    },
+  ],
+};
+
+const B2: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANILLA DE CARPINTERÍAS',
+    codigo: 'DET00',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planilla',
+    escala: null,
+    escalaConfiable: true,
+    revision: '0',
+    confianza: 0.9,
+  },
+  // Vacío a propósito: la planilla se analiza pero no aporta entidades.
+  entidades: [],
+};
+
+const LAMINAS_BUSQUEDA: Lamina[] = [
+  { clave: 'obra-busqueda-p1', encabezado: 'PLANTA PB — 1:100', analisis: B1 },
+  { clave: 'obra-busqueda-p2', encabezado: 'PLANILLA DE CARPINTERÍAS — DET00', analisis: B2 },
+];
+
+// ---------------------------------------------------------------------------
+// Qué encuentra la búsqueda dirigida cuando le preguntan por FP01 en DET00.
+//
+// Este fixture NO es un `AnalisisLamina`: es la otra familia de providers (T3),
+// que recibe una lista de claves+campos a buscar y devuelve lo que encontró,
+// con el bbox de dónde lo leyó. Se guarda en `analysis/busqueda/<clave>.json`
+// para que no colisione con los fixtures de análisis de lámina, que viven un
+// nivel arriba y se resuelven por nombre.
+// ---------------------------------------------------------------------------
+
+interface HallazgoBuscado {
+  /** Clave del hallazgo que se estaba respondiendo. */
+  clave: string;
+  campo: string;
+  valor: number;
+  bbox: BBox;
+  confianza: number;
+}
+
+const BUSQUEDA_OBRA_BUSQUEDA_P2: HallazgoBuscado[] = [
+  {
+    clave: 'aberturas.medidas_vano.FP01',
+    campo: 'anchoM',
+    valor: 0.9,
+    bbox: [0.1, 0.3, 0.3, 0.04],
+    confianza: 0.85,
+  },
+  {
+    clave: 'aberturas.medidas_vano.FP01',
+    campo: 'altoM',
+    valor: 2.05,
+    bbox: [0.1, 0.3, 0.3, 0.04],
+    confianza: 0.85,
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Dibujo
 // ---------------------------------------------------------------------------
 
@@ -439,6 +581,7 @@ async function sinEscala(): Promise<Uint8Array> {
 async function main(): Promise<void> {
   mkdirSync(DIR_PDFS, { recursive: true });
   mkdirSync(DIR_ANALISIS, { recursive: true });
+  mkdirSync(DIR_BUSQUEDA, { recursive: true });
 
   const escritos: string[] = [];
 
@@ -446,6 +589,8 @@ async function main(): Promise<void> {
     ['obra-demo.pdf', await documentoDe(LAMINAS)],
     ['obra-reforma.pdf', await documentoDe(LAMINAS_REFORMA)],
     ['sin-escala.pdf', await sinEscala()],
+    ['escala-declarada.pdf', await documentoDe(LAMINAS_ESCALA_DECLARADA)],
+    ['obra-busqueda.pdf', await documentoDe(LAMINAS_BUSQUEDA)],
   ];
   for (const [nombre, bytes] of pdfs) {
     const destino = new URL(nombre, DIR_PDFS);
@@ -453,13 +598,18 @@ async function main(): Promise<void> {
     escritos.push(`${fileURLToPath(destino)} (${bytes.length} bytes)`);
   }
 
-  for (const lamina of [...LAMINAS, ...LAMINAS_REFORMA]) {
+  const todas = [...LAMINAS, ...LAMINAS_REFORMA, ...LAMINAS_ESCALA_DECLARADA, ...LAMINAS_BUSQUEDA];
+  for (const lamina of todas) {
     // Los fixtures son el contrato de los tests: si no validan, no se escriben.
     const analisis = zAnalisisLamina.parse(lamina.analisis);
     const destino = new URL(`${lamina.clave}.json`, DIR_ANALISIS);
     writeFileSync(destino, `${JSON.stringify(analisis, null, 2)}\n`, 'utf8');
     escritos.push(`${fileURLToPath(destino)} (${analisis.entidades.length} entidades)`);
   }
+
+  const busqueda = new URL('obra-busqueda-p2.json', DIR_BUSQUEDA);
+  writeFileSync(busqueda, `${JSON.stringify(BUSQUEDA_OBRA_BUSQUEDA_P2, null, 2)}\n`, 'utf8');
+  escritos.push(`${fileURLToPath(busqueda)} (${BUSQUEDA_OBRA_BUSQUEDA_P2.length} hallazgos)`);
 
   console.log('Fixtures generados:');
   for (const linea of escritos) console.log(`  ${linea}`);

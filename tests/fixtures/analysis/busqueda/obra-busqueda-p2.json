@@ -1,0 +1,26 @@
+[
+  {
+    "clave": "aberturas.medidas_vano.FP01",
+    "campo": "anchoM",
+    "valor": 0.9,
+    "bbox": [
+      0.1,
+      0.3,
+      0.3,
+      0.04
+    ],
+    "confianza": 0.85
+  },
+  {
+    "clave": "aberturas.medidas_vano.FP01",
+    "campo": "altoM",
+    "valor": 2.05,
+    "bbox": [
+      0.1,
+      0.3,
+      0.3,
+      0.04
+    ],
+    "confianza": 0.85
+  }
+]
