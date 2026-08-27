@@ -44,6 +44,7 @@ import {
   type ResultadoConfirmacionLote,
   type ResultadoLote,
 } from '@/lib/bandeja/resolver';
+import { buscarDatosFaltantes } from '@/lib/pipeline/busqueda';
 
 /**
  * La bandeja, la planilla y el tablero muestran las mismas consultas desde el
@@ -171,17 +172,15 @@ export async function confirmarLoteAction(
  * (P4)—. Gasta créditos, así que es un botón explícito, no algo que pase solo
  * al mirar la pantalla.
  *
- * TODO(merge): el núcleo es `buscarDatosFaltantes` de `@/lib/pipeline/busqueda`
- * y lo está escribiendo T3 en paralelo. Hasta que las dos ramas se junten, el
- * módulo no existe en este árbol: se resuelve en runtime y, si no está, la
- * pantalla lo dice en castellano en vez de romper. Al mergear, esto se cambia
- * por un `import` estático arriba y se borran el `try` y este comentario.
+ * El núcleo se importa **estático**, como cualquier otro de este archivo. Hubo
+ * una versión con `await import()` y comentarios `webpackIgnore`, puesta cuando
+ * el módulo todavía lo escribía otra rama: con esos comentarios el bundler deja
+ * el specifier crudo, Node no resuelve el alias `@/` y el `catch` convertía el
+ * `ERR_MODULE_NOT_FOUND` en "no disponible en esta versión". El botón estaba
+ * muerto en runtime con la suite entera en verde, porque un envoltorio sin
+ * lógica no tenía quién lo ejercitara. Ahora lo ejercita
+ * `tests/integration/bandeja-acciones.test.ts`.
  */
-const MODULO_BUSQUEDA = '@/lib/pipeline/busqueda';
-
-const BUSQUEDA_NO_DISPONIBLE =
-  'La búsqueda en la documentación todavía no está disponible en esta versión.';
-
 interface EntradaBusqueda {
   obraId: string;
 }
@@ -194,22 +193,11 @@ export async function buscarEnDocumentacionAction(
   if (esRechazo(ctx)) return { ok: false, error: ctx.error };
   const { obraId } = ctx;
 
-  let buscar: ((obraId: string) => Promise<unknown>) | null = null;
-  try {
-    const modulo = (await import(
-      /* webpackIgnore: true */ /* turbopackIgnore: true */ MODULO_BUSQUEDA
-    )) as { buscarDatosFaltantes?: (obraId: string) => Promise<unknown> };
-    buscar = modulo.buscarDatosFaltantes ?? null;
-  } catch {
-    buscar = null;
-  }
-  if (!buscar) return { ok: false, error: BUSQUEDA_NO_DISPONIBLE };
-
   // La búsqueda habla con la API de análisis: sin credenciales falla con un
   // error que nombra la variable que falta (CLAUDE.md §8), y eso es lo que
   // tiene que leer el arquitecto, no un 500.
   try {
-    await buscar(obraId);
+    await buscarDatosFaltantes(obraId);
   } catch (error) {
     return {
       ok: false,
