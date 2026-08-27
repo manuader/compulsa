@@ -1014,11 +1014,17 @@ async function cerrarHallazgoEscala(db: Db, lamina: Lamina): Promise<void> {
 
   if (!previo || previo.estado !== 'abierto') return;
 
+  // `respondido`, no `descartado`: la consulta se cerró porque alguien aportó
+  // el dato —el arquitecto confirmando la escala desde el visor o el
+  // expediente, o el propio análisis verificándola contra las cotas—, no
+  // porque se decidiera ignorarla. La bandeja muestra ese estado tal cual, y
+  // "Descartada" sobre una escala que el arquitecto acaba de confirmar es la
+  // auditoría contando otra historia que la que pasó.
   await db
     .update(hallazgos)
-    .set({ estado: 'descartado', respuestaJson: { ...RESPUESTA_ESCALA_CONFIRMADA } })
+    .set({ estado: 'respondido', respuestaJson: { ...RESPUESTA_ESCALA_CONFIRMADA } })
     .where(eq(hallazgos.id, previo.id));
-  await auditarAgente(lamina.obraId, 'hallazgo_descartado', `hallazgos:${clave}`, {
+  await auditarAgente(lamina.obraId, 'hallazgo_respondido', `hallazgos:${clave}`, {
     ...RESPUESTA_ESCALA_CONFIRMADA,
   });
 }

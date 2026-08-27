@@ -329,7 +329,7 @@ describe('bloqueo por escala y desbloqueo manual', () => {
       .select()
       .from(hallazgos)
       .where(and(eq(hallazgos.obraId, obraId), eq(hallazgos.clave, `escala.${lamina.id}`)));
-    expect(hallazgo.estado).toBe('descartado');
+    expect(hallazgo.estado).toBe('respondido');
   });
 
   it('el recompute de otra lámina no cierra el hallazgo de escala', async () => {
@@ -861,7 +861,7 @@ describe('confirmar la escala asumida', () => {
     expect(despues.escalaConfiable).toBe(true);
     expect(despues.escala).toBe('1:20');
     expect(despues.estadoAnalisis).toBe('analizada');
-    expect((await hallazgoPorClave(`escala.${lamina.id}`)).estado).toBe('descartado');
+    expect((await hallazgoPorClave(`escala.${lamina.id}`)).estado).toBe('respondido');
 
     // El cómputo no se movió y quedó registrado quién confirmó.
     expect((await itemsActivos()).find((i) => i.claveItem === 'seco.placas')?.cantCompra).toBe(
@@ -890,7 +890,7 @@ describe('confirmar la escala asumida', () => {
     expect(despues.escala).toBe('1:25');
     expect(despues.escalaConfiable).toBe(true);
     expect(despues.estadoAnalisis).toBe('analizada');
-    expect((await hallazgoPorClave(`escala.${lamina.id}`)).estado).toBe('descartado');
+    expect((await hallazgoPorClave(`escala.${lamina.id}`)).estado).toBe('respondido');
   });
 
   it('confirmar la escala de una lámina que no llegó a analizarse sí la manda a analizar', async () => {
