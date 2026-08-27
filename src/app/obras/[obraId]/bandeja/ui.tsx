@@ -621,13 +621,17 @@ function TarjetaConsulta({
                 </button>
               );
             })}
-            {/* Va a una lámina **citada**, no a la de la propuesta: el visor
-                resuelve `?highlight=` contra las fuentes del hallazgo y en la
-                lámina donde la búsqueda leyó el dato no tiene ninguna, así que
-                abriría el plano sin resaltar nada. */}
-            {consulta.laminas.length > 0 ? (
+            {/* Va a la primera de `mirables` —la de la propuesta si hay— o sea
+                la misma que muestra el panel de al lado: el link a pantalla
+                completa abre lo que el arquitecto está mirando, no otra cosa.
+                Antes iba a una lámina **citada** a propósito, porque
+                `resolverDestacado` resolvía `?highlight=` solo contra
+                `hallazgos.laminas_json` y en la lámina de la propuesta no
+                encontraba nada que resaltar. Hoy resuelve también contra
+                `valorPropuesto.fuente` (`marcas.ts`, `fuentesDeConsulta`). */}
+            {mirables.length > 0 ? (
               <Link
-                href={`/obras/${obraId}/laminas/${consulta.laminas[0]!.laminaId}?highlight=${consulta.id}`}
+                href={`/obras/${obraId}/laminas/${mirables[0]!.laminaId}?highlight=${consulta.id}`}
                 className="text-neutral-600 underline hover:text-neutral-900"
               >
                 Abrir en página completa

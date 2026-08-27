@@ -90,7 +90,7 @@ No lo agregues sin necesidad: el día que haga falta rasterizar de verdad hay qu
 npm run dev          # dev server (PGlite local, migra al boot)
 npm run build        # build de producción
 npm start            # sirve el build
-npm test             # vitest (unit + integration) — 1077 tests, sin red
+npm test             # vitest (unit + integration) — 1127 tests, sin red
 npm run test:watch   # vitest en watch
 npm run golden       # harness de regresión de precisión contra el golden set
 npm run seed         # datos de demo (idempotente)
@@ -261,7 +261,7 @@ el día que se implementen.
 ## Testing
 
 ```bash
-npm test        # 67 suites, 1077 tests
+npm test        # 71 suites, 1127 tests
 npm run golden  # regresión de precisión sobre el golden set (2 obras)
 ```
 
