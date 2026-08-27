@@ -119,6 +119,36 @@ export interface ValorPropuesto {
 }
 
 /**
+ * "Ya busqué esto en la documentación y el dato no estaba."
+ *
+ * Es lo contrario de `ValorPropuesto` y por eso vive en su propia columna
+ * (`hallazgos.busqueda_json`) y no adentro de la propuesta: una propuesta dice
+ * qué proponer, y esto dice que **no hay nada que proponer**. Meterlo en
+ * `valor_propuesto_json` obligaría a todo lector de propuestas —la tarjeta de
+ * la bandeja, el merge del recompute, `zValorPropuesto`— a distinguir una
+ * propuesta real de una marca de vacío.
+ *
+ * Existe por plata: sin esto, cada `procesarDocumento` vuelve a pagar hasta
+ * ocho llamadas al modelo por una consulta que la documentación simplemente no
+ * puede responder, para siempre.
+ *
+ * **Cómo caduca.** No por reloj —el dato no aparece porque pase el tiempo—
+ * sino por `huella`: la marca vale mientras la documentación de la obra sea la
+ * misma que se leyó. Si el arquitecto sube una lámina nueva, o una que estaba
+ * bloqueada pasa a analizada, la huella cambia, la marca deja de aplicar y el
+ * dato se vuelve a buscar. Un reproceso del mismo documento no la cambia, que
+ * es justo el caso que había que dejar de pagar.
+ */
+export interface MarcaBusqueda {
+  /** Los campos que se buscaron y volvieron vacíos. */
+  campos: string[];
+  /** Huella de la documentación sobre la que se buscó. Ver `huellaDocumentacion`. */
+  huella: string;
+  /** Cuándo se buscó (ISO). Informativo: la caducidad la decide la huella. */
+  at: string;
+}
+
+/**
  * A qué campos de qué entidad apunta un hallazgo. Se escribe siempre en plural.
  *
  * **Nunca lo leas directo**: `camposDelTarget()` (`src/lib/hallazgos/target.ts`)

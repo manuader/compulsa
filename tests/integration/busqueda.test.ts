@@ -61,9 +61,12 @@ async function subirYProcesar(nombre: string): Promise<void> {
   const bytes = await readFile(new URL(nombre, PDFS));
   const archivo = new File([new Uint8Array(bytes)], nombre, { type: 'application/pdf' });
   const documento = await subirDocumento(db, storage, obraId, usuarioId, archivo);
-  // Sin `buscar` en `deps`: el hook automático es de T2. Acá la búsqueda se
-  // dispara explícita, que es lo que este archivo testea.
-  await procesarDocumento(documento.id, { db, storage });
+  // `buscar` en no-op: el hook automático de `procesarDocumento` (T2) corre la
+  // búsqueda al final de cada documento, y este archivo testea la función
+  // suelta. Con el hook puesto, el punto de partida de cada caso ya vendría con
+  // la propuesta escrita y no se podría probar ni la primera corrida ni la
+  // idempotencia. El hook tiene sus propios tests en `pipeline.test.ts`.
+  await procesarDocumento(documento.id, { db, storage, buscar: async () => undefined });
 }
 
 function hallazgoPorClave(clave: string): Promise<Hallazgo | undefined> {

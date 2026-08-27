@@ -49,6 +49,7 @@ import {
   type ItemRfq,
   type LineaPresupuesto,
   type Mandato,
+  type MarcaBusqueda,
   type RolUsuario,
   type TargetRefPersistido,
   type ValorPropuesto,
@@ -353,6 +354,14 @@ export const hallazgos = pgTable(
      * (P4). `null` ⇒ la consulta es una pregunta, no una propuesta.
      */
     valorPropuestoJson: jsonb('valor_propuesto_json').$type<ValorPropuesto>(),
+    /**
+     * "Ya salí a buscar esto en la documentación y no estaba", con la huella de
+     * la documentación sobre la que se buscó. Es lo que evita que cada
+     * `procesarDocumento` vuelva a pagarle al modelo por una consulta sin
+     * respuesta posible, y caduca sola cuando entra documentación nueva
+     * (`MarcaBusqueda`). `null` ⇒ nunca se buscó.
+     */
+    busquedaJson: jsonb('busqueda_json').$type<MarcaBusqueda>(),
     bloqueante: boolean('bloqueante').notNull(),
     estado: estadoHallazgoEnum('estado').notNull().default('abierto'),
     respuestaJson: jsonb('respuesta_json').$type<Record<string, unknown>>(),

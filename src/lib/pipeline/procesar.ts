@@ -9,10 +9,15 @@
  *  1. **Idempotente y re-ejecutable.** Volver a correr el pipeline sobre el
  *     mismo documento no duplica láminas, ni entidades, ni ítems: todo se
  *     matchea por clave estable (página, `tipo|nombre` de entidad, `clave_item`).
- *  2. **Sin escala no se computa (RF-201).** Una lámina cuya escala no se pudo
- *     verificar queda `bloqueada_escala` con un hallazgo bloqueante y **no** se
- *     le extraen entidades: medir sobre una escala desconocida sería inventar
- *     (P4). El arquitecto la desbloquea a mano y el análisis se re-dispara.
+ *  2. **Sin escala DECLARADA no se computa (RF-201 + decisión 1).** Medir sobre
+ *     una escala desconocida sería inventar (P4), así que una lámina que no
+ *     declara ninguna escala queda `bloqueada_escala`, con un hallazgo
+ *     bloqueante y sin entidades, hasta que el arquitecto la desbloquee. Pero
+ *     una lámina que **sí** declara escala en el rótulo y que el modelo no pudo
+ *     verificar contra las cotas ya no se bloquea: se analiza y se computa con
+ *     la escala declarada, y lo que queda abierto es un **supuesto** —no
+ *     bloqueante— con esa escala propuesta para confirmar de un click. Ver
+ *     `modoEscala`.
  *  3. **Nunca una excepción suelta.** El error de una lámina queda en su
  *     `estado_analisis = 'error'` con `error_detalle`, no tira abajo el resto
  *     del documento.
@@ -43,11 +48,14 @@ import {
   type Entidad,
   type Lamina,
   type NuevaEntidad,
+  type Obra,
 } from '@/db/schema';
 import { getAnalysisProvider, type AnalysisProvider } from '@/lib/analysis/index';
+import { textoInstrucciones } from '@/lib/analysis/prompt';
 import { registrarAuditoria } from '@/lib/audit';
 import { separarPaginas } from '@/lib/pdf/split';
 import { extraerTexto } from '@/lib/pdf/texto';
+import { buscarDatosFaltantes } from '@/lib/pipeline/busqueda';
 import { claveEscala } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
 import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
@@ -59,16 +67,20 @@ import {
   diferenciasDeItem,
   recomputarObra,
 } from '@/lib/pipeline/recomputar';
-import { persistirResumen } from '@/lib/pipeline/resumen';
+import { leerResumen, persistirResumen } from '@/lib/pipeline/resumen';
+import { leerConfig } from '@/lib/plataforma/config-estudio';
 import { getStorage, type StorageAdapter } from '@/lib/storage/index';
 import { DISCIPLINAS, TIPOS_LAMINA } from '@/types/domain';
 import type {
   BBox,
   EntidadDetectada,
   LaminaInput,
+  ObraContexto,
   RotuloDetectado,
   RubroId,
+  TipoHallazgo,
   Unidad,
+  ValorPropuesto,
 } from '@/types/domain';
 
 /** 60 MB: un legajo de plantas grande entra; un video, no. */
@@ -77,15 +89,35 @@ export const TAMANO_MAXIMO_BYTES = 60 * 1024 * 1024;
 /** Todo PDF arranca con esta firma. El `Content-Type` del cliente no se cree. */
 const FIRMA_PDF = '%PDF-';
 
-/** Texto del hallazgo de bloqueo por escala (RF-201). */
+/** Texto del hallazgo de bloqueo por escala (RF-201): la lámina no declara ninguna. */
 export const DESCRIPCION_ESCALA_BLOQUEADA =
   'La lámina no tiene escala confiable; indicá la escala o una medida de referencia.';
+
+/**
+ * Texto del supuesto de escala asumida (decisión 1).
+ *
+ * Dice las tres cosas que el arquitecto necesita saber para decidir en un
+ * segundo: **qué leí**, **que no lo pude verificar** y **que igual computé con
+ * eso**. El reclamo que lo originó fue literal: "podía confirmarlo sin mí, para
+ * algo estoy pagando los créditos". Pedirle que tipee de cero una escala que el
+ * rótulo declara y que el sistema ya leyó es trabajo que el sistema le está
+ * pasando a él.
+ */
+export function descripcionEscalaAsumida(escala: string): string {
+  return (
+    `Leí la escala ${escala} en el rótulo pero no la pude verificar contra cotas. ` +
+    'Analicé la lámina asumiendo esa escala: confirmala o corregila.'
+  );
+}
 
 /** Respuesta con la que el desbloqueo manual cierra el hallazgo de escala. */
 export const RESPUESTA_ESCALA_CONFIRMADA = { auto: 'escala confirmada a mano' } as const;
 
 /** Acción con la que queda registrado el arranque del análisis de una lámina. */
 export const ACCION_PROCESANDO = 'lamina_procesando';
+
+/** Acción con la que queda registrado que la búsqueda dirigida no pudo correr. */
+export const ACCION_BUSQUEDA_FALLIDA = 'busqueda_fallida';
 
 /**
  * Cuánto puede una lámina quedarse en `procesando` antes de darla por
@@ -155,6 +187,15 @@ export interface DepsPipeline {
    * serían ruido en `auditoria` y en la pantalla.
    */
   resumen?: boolean;
+  /**
+   * La búsqueda dirigida (C2) que corre al final de `procesarDocumento`, con
+   * toda la obra analizada y la bandeja ya abierta. Default:
+   * `buscarDatosFaltantes`.
+   *
+   * Es la misma clase de costura que `recomputar`: existe para poder contar las
+   * llamadas y ejercitar el camino de "la búsqueda se cayó" sin salir a la red.
+   */
+  buscar?: (obraId: string, deps: { db: Db; storage: StorageAdapter }) => Promise<unknown>;
 }
 
 interface Entorno {
@@ -163,6 +204,7 @@ interface Entorno {
   provider: AnalysisProvider;
   recomputar: NonNullable<DepsPipeline['recomputar']>;
   resumen: boolean;
+  buscar: NonNullable<DepsPipeline['buscar']>;
 }
 
 async function resolver(deps: DepsPipeline): Promise<Entorno> {
@@ -172,6 +214,7 @@ async function resolver(deps: DepsPipeline): Promise<Entorno> {
     provider: deps.provider ?? getAnalysisProvider(),
     recomputar: deps.recomputar ?? recomputarObra,
     resumen: deps.resumen ?? true,
+    buscar: deps.buscar ?? buscarDatosFaltantes,
   };
 }
 
@@ -496,6 +539,11 @@ export async function procesarDocumento(
   // documento analizadas y el cómputo ya sincronizado. Hacerlo por lámina sería
   // publicar N resúmenes a medio hacer.
   await resumirTolerante(db, obra.id);
+
+  // C2: y recién ahora, con la bandeja abierta, se sale a buscar en la
+  // documentación lo que la bandeja está preguntando. Va último a propósito:
+  // antes del recompute no existe la lista de lo que falta.
+  await buscarTolerante(entorno, obra.id);
 }
 
 /**
@@ -517,6 +565,30 @@ async function resumirTolerante(db: Db, obraId: string): Promise<void> {
   }
 }
 
+/**
+ * Corre la búsqueda dirigida sin arrastrar al documento si falla.
+ *
+ * Mismo criterio que `resumirTolerante` y `recomputarTolerante`, y acá pesa más
+ * que en ninguno: la búsqueda sale a la red a releer láminas y es lo **último**
+ * que pasa en la subida. Un timeout del provider no puede convertir un
+ * documento que se analizó y se computó bien en un upload fallido. Lo que se
+ * pierde si falla es una propuesta —la consulta sigue en la bandeja como
+ * pregunta, que es el estado honesto— y el fallo queda en `auditoria`.
+ *
+ * La reparación es volver a correrla: el botón de la bandeja la dispara a mano
+ * y `buscarDatosFaltantes` es idempotente.
+ */
+async function buscarTolerante(entorno: Entorno, obraId: string): Promise<void> {
+  try {
+    await entorno.buscar(obraId, { db: entorno.db, storage: entorno.storage });
+  } catch (error) {
+    await auditarAgente(obraId, ACCION_BUSQUEDA_FALLIDA, `obras:${obraId}`, {
+      errorDetalle: detalleDeError(error),
+      motivo: 'El documento se analizó y se computó bien; la búsqueda dirigida no corrió.',
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Lámina → rótulo, entidades y recompute
 // ---------------------------------------------------------------------------
@@ -532,6 +604,13 @@ type CamposRotulo = Pick<
  * (que puede ser el que cargó el arquitecto). Y `escalaConfiable` es de una
  * sola vía — una escala confirmada a mano no la "des-confirma" un re-análisis,
  * que es lo que hace que el desbloqueo de RF-201 sobreviva a un reproceso.
+ *
+ * **La escala ya confirmada tampoco la pisa el rótulo**, por el mismo motivo:
+ * el supuesto de escala asumida se cierra con "confirmala o **corregila**", y
+ * si el re-análisis volviera a escribir el `1:20` mal impreso del rótulo encima
+ * del `1:25` que el arquitecto corrigió, la corrección duraría hasta el próximo
+ * reproceso y él no se enteraría. Con `escala_confiable = false` manda el
+ * rótulo, como siempre: ahí nadie confirmó nada todavía.
  */
 export function fusionarRotulo(lamina: Lamina, rotulo: RotuloDetectado): CamposRotulo {
   return {
@@ -539,10 +618,34 @@ export function fusionarRotulo(lamina: Lamina, rotulo: RotuloDetectado): CamposR
     titulo: rotulo.titulo ?? lamina.titulo,
     disciplina: rotulo.disciplina ?? lamina.disciplina,
     tipo: rotulo.tipoLamina ?? lamina.tipo,
-    escala: rotulo.escala ?? lamina.escala,
+    escala: lamina.escalaConfiable
+      ? (lamina.escala ?? rotulo.escala)
+      : (rotulo.escala ?? lamina.escala),
     escalaConfiable: rotulo.escalaConfiable || lamina.escalaConfiable,
     revision: rotulo.revision ?? lamina.revision,
   };
+}
+
+/**
+ * Las tres salidas de escala de una lámina (decisión 1 del plan).
+ *
+ *  - `confiable`: el modelo verificó la escala declarada contra las cotas (o el
+ *    arquitecto la confirmó a mano). Se analiza y no queda ninguna consulta.
+ *  - `asumida`: el rótulo **declara** una escala que no se pudo verificar. Se
+ *    analiza y se computa igual, con esa escala asumida, y queda un supuesto no
+ *    bloqueante con la escala propuesta. Antes esto bloqueaba la lámina y le
+ *    hacía tipear a mano un dato que el sistema ya había leído.
+ *  - `bloqueada`: no hay ninguna escala declarada. Acá sí no hay nada que
+ *    asumir: medir sería inventar (P4) y la lámina queda trabada (RF-201).
+ *
+ * Una escala en blanco (`'   '`) es lo mismo que no tenerla: no se puede
+ * proponer confirmar la nada.
+ */
+export type ModoEscala = 'confiable' | 'asumida' | 'bloqueada';
+
+export function modoEscala(campos: Pick<CamposRotulo, 'escala' | 'escalaConfiable'>): ModoEscala {
+  if (campos.escalaConfiable) return 'confiable';
+  return campos.escala !== null && campos.escala.trim() !== '' ? 'asumida' : 'bloqueada';
 }
 
 /** Sin bbox no hay entidad (`src/lib/analysis/CLAUDE.md` §1): el pipeline la descarta. */
@@ -641,8 +744,76 @@ async function sincronizarEntidades(
   return { creadas, actualizadas, eliminadas: sobrantes.length };
 }
 
-async function upsertHallazgoEscala(db: Db, lamina: Lamina): Promise<void> {
+/** Lo que distingue a las dos consultas de escala: la de bloqueo y el supuesto. */
+interface CamposEscala {
+  tipo: TipoHallazgo;
+  descripcion: string;
+  bloqueante: boolean;
+  valorPropuestoJson: ValorPropuesto | null;
+}
+
+/**
+ * La consulta que le corresponde a cada modo.
+ *
+ * `targetRef` es `null` en los dos: la escala no es un campo de ninguna entidad
+ * y confirmarla no se escribe en `atributos_json` sino en la lámina. Por eso la
+ * propuesta viaja igual (`valores.escala`) pero el que la confirma es el botón
+ * «Confirmar escala» y no `confirmarSupuesto` (decisión 7).
+ */
+function camposDeEscala(
+  modo: 'asumida' | 'bloqueada',
+  escala: string | null,
+  confianza: number | null,
+): CamposEscala {
+  if (modo === 'bloqueada' || escala === null) {
+    return {
+      tipo: 'faltante',
+      descripcion: DESCRIPCION_ESCALA_BLOQUEADA,
+      bloqueante: true,
+      valorPropuestoJson: null,
+    };
+  }
+
+  return {
+    tipo: 'supuesto',
+    descripcion: descripcionEscalaAsumida(escala),
+    // NO bloqueante: la lámina se computó. Es la mitad del cambio — si siguiera
+    // bloqueando, el rubro seguiría sin poder aprobarse por una escala que el
+    // sistema ya leyó.
+    bloqueante: false,
+    valorPropuestoJson: {
+      valores: { escala },
+      origen: 'rotulo',
+      ...(confianza !== null ? { confianza } : {}),
+    },
+  };
+}
+
+/**
+ * Abre —o pone al día— la consulta de escala de la lámina.
+ *
+ * Cubre las dos transiciones que aparecen al reprocesar: una lámina bloqueada
+ * cuya revisión nueva sí declara escala pasa de consulta bloqueante a supuesto,
+ * y al revés. Las dos se resuelven **sobre la fila abierta**, que es la que el
+ * arquitecto está mirando: la clave `escala.<laminaId>` es única por obra.
+ *
+ * **Lo que el arquitecto cerró no se reabre.** Antes, una consulta cerrada se
+ * volvía a abrir "porque la lámina sigue sin escala confiable", y con la escala
+ * asumida eso sería insistir en cada reproceso con un supuesto que él ya
+ * descartó a propósito. El camino que justificaba reabrir no existe:
+ * `escala_confiable` es de una sola vía (`fusionarRotulo`), así que una consulta
+ * que el pipeline cerró solo jamás vuelve a hacer falta, y la única forma de
+ * tener una cerrada con la lámina sin confirmar es que él la haya descartado.
+ */
+async function upsertHallazgoEscala(
+  db: Db,
+  lamina: Lamina,
+  modo: 'asumida' | 'bloqueada',
+  escala: string | null,
+  confianza: number | null,
+): Promise<void> {
   const clave = claveEscala(lamina.id);
+  const campos = camposDeEscala(modo, escala, confianza);
   const [previo] = await db
     .select()
     .from(hallazgos)
@@ -652,30 +823,37 @@ async function upsertHallazgoEscala(db: Db, lamina: Lamina): Promise<void> {
     await db.insert(hallazgos).values({
       obraId: lamina.obraId,
       clave,
-      tipo: 'faltante',
       rubro: null,
-      descripcion: DESCRIPCION_ESCALA_BLOQUEADA,
       checklistItem: 'escala',
       // La consulta es sobre la lámina entera: la fuente es la lámina completa.
       laminasJson: [{ laminaId: lamina.id, bbox: [0, 0, 1, 1], detalle: 'Lámina completa' }],
       targetRef: null,
-      bloqueante: true,
+      ...campos,
     });
     await auditarAgente(lamina.obraId, 'hallazgo_abierto', `hallazgos:${clave}`, {
-      tipo: 'faltante',
-      bloqueante: true,
+      tipo: campos.tipo,
+      bloqueante: campos.bloqueante,
+      modo,
     });
     return;
   }
 
-  // La lámina volvió a quedar sin escala confiable: la consulta vuelve a estar viva.
-  if (previo.estado === 'abierto') return;
-  await db
-    .update(hallazgos)
-    .set({ estado: 'abierto', respuestaJson: null, resueltoPor: null })
-    .where(eq(hallazgos.id, previo.id));
-  await auditarAgente(lamina.obraId, 'hallazgo_reabierto', `hallazgos:${clave}`, {
-    motivo: 'La lámina volvió a quedar sin escala confiable.',
+  if (previo.estado !== 'abierto') return;
+
+  // Sin cambios no se escribe: un reproceso idéntico no puede dejar un diff
+  // fantasma en `auditoria` ni mover el `updated_at` de la consulta.
+  const igual =
+    previo.tipo === campos.tipo &&
+    previo.bloqueante === campos.bloqueante &&
+    previo.descripcion === campos.descripcion &&
+    igualJson(previo.valorPropuestoJson, campos.valorPropuestoJson);
+  if (igual) return;
+
+  await db.update(hallazgos).set(campos).where(eq(hallazgos.id, previo.id));
+  await auditarAgente(lamina.obraId, 'hallazgo_actualizado', `hallazgos:${clave}`, {
+    tipo: { antes: previo.tipo, despues: campos.tipo },
+    bloqueante: { antes: previo.bloqueante, despues: campos.bloqueante },
+    modo,
   });
 }
 
@@ -848,6 +1026,49 @@ export function procesarLamina(laminaId: string, deps: DepsPipeline = {}): Promi
   return corrida;
 }
 
+/**
+ * El contexto de obra que ve el prompt de análisis (T1: `armarContextoObra`).
+ *
+ * Hasta acá el pipeline mandaba `{obraId, tipoObra}` y nada más: el tipo de
+ * obra, el resumen, el índice de láminas y las instrucciones del estudio no
+ * llegaban nunca al modelo. Peor todavía, el rótulo se pedía **sin** ctx y el
+ * caché del provider es por lámina, así que esa primera llamada era la que
+ * quedaba cacheada y la segunda —la que sí traía contexto— no se hacía.
+ *
+ * Las tres piezas nuevas y por qué:
+ *
+ *  - **`resumen`** (titular del resumen ejecutivo): de qué se trata la obra.
+ *    Null-safe a propósito — la primera lámina de la primera subida se analiza
+ *    cuando todavía no hay resumen, y eso no es un error.
+ *  - **`indiceLaminas`**: las **otras** láminas del expediente, que es como el
+ *    prompt las presenta ("no copies a esta lámina un dato que está escrito en
+ *    otra"). Meter la lámina que se está leyendo en su propio índice sería
+ *    decirle al modelo que mire en otro lado lo que tiene delante.
+ *  - **`instruccionesEstudio`**: la sistematización de los prompts que el
+ *    arquitecto hoy escribe a mano en un chat ("las cotas de nuestros planos
+ *    están en centímetros"). `textoInstrucciones` devuelve `null` si el estudio
+ *    no escribió nada, y entonces el campo no viaja y el prompt queda como antes.
+ */
+async function contextoDeObra(db: Db, obra: Obra, laminaId: string): Promise<ObraContexto> {
+  const otras = await db
+    .select({ codigo: laminas.codigo, titulo: laminas.titulo, tipo: laminas.tipo })
+    .from(laminas)
+    .where(and(eq(laminas.obraId, obra.id), ne(laminas.id, laminaId)))
+    .orderBy(laminas.numeroPagina);
+
+  const { instruccionesExtraccion } = await leerConfig(db, obra.estudioId);
+  const instrucciones = textoInstrucciones(instruccionesExtraccion);
+  const titular = leerResumen(obra)?.titular;
+
+  return {
+    obraId: obra.id,
+    tipoObra: obra.tipo,
+    ...(typeof titular === 'string' && titular.trim() !== '' ? { resumen: titular } : {}),
+    indiceLaminas: otras,
+    ...(instrucciones !== null ? { instruccionesEstudio: instrucciones } : {}),
+  };
+}
+
 async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<void> {
   const entorno = await resolver(deps);
   const { db, storage, provider } = entorno;
@@ -872,7 +1093,12 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
       textoExtraido: await extraerTexto(pdfBytes),
     };
 
-    const campos = fusionarRotulo(lamina, await provider.leerRotulo(entrada));
+    // El ctx se arma ANTES de la primera llamada: el caché del provider es por
+    // lámina y sirve la promesa de la primera, así que pedir el rótulo sin
+    // contexto dejaba al modelo sin contexto para todo el resto de la lámina.
+    const ctx = await contextoDeObra(db, obra, laminaId);
+    const rotulo = await provider.leerRotulo(entrada, ctx);
+    const campos = fusionarRotulo(lamina, rotulo);
     // El texto del PDF se guarda en la lámina (RF-106): es lo que después lee el
     // Q&A del expediente para contestar con citas. Se persiste en las dos
     // salidas —analizada y bloqueada por escala— porque una lámina sin escala
@@ -880,8 +1106,14 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     // computa. Vacío ⇒ `null`, que es "no hay texto que citar" y no "no leí".
     const textoExtraido = entrada.textoExtraido?.trim() ? entrada.textoExtraido : null;
 
-    if (!campos.escalaConfiable) {
-      // RF-201: sin escala verificada no se mide nada. Si la lámina traía
+    const modo = modoEscala(campos);
+    // La escala que el rótulo leyó es la que se propone; la que ya estaba en la
+    // lámina puede ser la que cargó el arquitecto, y esa no tiene "confianza de
+    // lectura" que declarar.
+    const confianzaEscala = rotulo.escala !== null ? rotulo.confianza : null;
+
+    if (modo === 'bloqueada') {
+      // RF-201: sin escala declarada no se mide nada. Si la lámina traía
       // entidades de una corrida anterior, se van con ella.
       const { eliminadas } = await sincronizarEntidades(db, lamina, []);
       await db
@@ -894,7 +1126,7 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
           errorDetalle: null,
         })
         .where(eq(laminas.id, laminaId));
-      await upsertHallazgoEscala(db, lamina);
+      await upsertHallazgoEscala(db, lamina, 'bloqueada', campos.escala, confianzaEscala);
       const recomputado = eliminadas === 0 || (await recomputarTolerante(entorno, lamina));
       await auditarAgente(lamina.obraId, 'lamina_bloqueada_escala', `laminas:${laminaId}`, {
         escala: campos.escala,
@@ -904,10 +1136,7 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
       return;
     }
 
-    const detectadas = await provider.extraerEntidades(entrada, {
-      obraId: obra.id,
-      tipoObra: obra.tipo,
-    });
+    const detectadas = await provider.extraerEntidades(entrada, ctx);
     const validas = detectadas.filter((entidad) => tieneBBoxUtil(entidad.bbox));
     const descartadas = detectadas.length - validas.length;
     if (descartadas > 0) {
@@ -925,13 +1154,22 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
       .update(laminas)
       .set({ ...campos, ...SOLTAR, textoExtraido, estadoAnalisis: 'analizada', errorDetalle: null })
       .where(eq(laminas.id, laminaId));
-    await cerrarHallazgoEscala(db, lamina);
+
+    // Las dos salidas que sí computan. La diferencia es qué queda en la bandeja:
+    // con la escala verificada, nada; con la escala asumida, un supuesto no
+    // bloqueante que se confirma de un click con lo que ya se leyó.
+    if (modo === 'asumida') {
+      await upsertHallazgoEscala(db, lamina, 'asumida', campos.escala, confianzaEscala);
+    } else {
+      await cerrarHallazgoEscala(db, lamina);
+    }
     const recomputado = await recomputarTolerante(entorno, lamina);
 
     await auditarAgente(lamina.obraId, 'lamina_analizada', `laminas:${laminaId}`, {
       codigo: campos.codigo,
       titulo: campos.titulo,
       escala: campos.escala,
+      escalaAsumida: modo === 'asumida',
       entidades: validas.length,
       ...resumen,
       descartadas,
@@ -980,8 +1218,22 @@ export interface ActorUsuario {
 }
 
 /**
- * Aplica la clasificación manual y, si el arquitecto confirmó la escala de una
- * lámina bloqueada, vuelve a dispararle el análisis.
+ * Aplica la clasificación manual y, **solo si hace falta**, vuelve a
+ * dispararle el análisis a la lámina.
+ *
+ * Cuándo hace falta, y por qué solo entonces:
+ *
+ *  - **la lámina no está analizada y ahora hay escala confirmada**: no tiene
+ *    entidades porque nunca se le extrajeron. Sin re-análisis no hay cómputo
+ *    (RF-201); el caso vivo es `bloqueada_escala`;
+ *  - **la escala cambió de valor**: todo lo que se midió se midió con la
+ *    anterior. Los números están mal hasta que se rehagan.
+ *
+ * Y cuándo **no**: confirmar la escala asumida de una lámina ya analizada. Ahí
+ * el cómputo ya se hizo con esa misma escala; volver a llamar al modelo sería
+ * pagarle al usuario los créditos de una extracción que va a dar exactamente lo
+ * mismo — que es la queja que originó todo esto, al revés. Se marca el flag, se
+ * cierra la consulta y listo.
  */
 export async function actualizarLamina(
   db: Db,
@@ -999,7 +1251,14 @@ export async function actualizarLamina(
   if (cambios.escala !== undefined) set.escala = cambios.escala;
   if (cambios.escalaConfiable === true) set.escalaConfiable = true;
 
-  const desbloquea = cambios.escalaConfiable === true && !previa.escalaConfiable;
+  const confirmaEscala = cambios.escalaConfiable === true && !previa.escalaConfiable;
+  // Confirmar la escala de una lámina que NO está analizada la manda a
+  // analizar: `bloqueada_escala` es el caso vivo, pero una que quedó en `error`
+  // o `pendiente` tampoco tiene entidades, y cerrarle la consulta sin
+  // reprocesar la dejaría fuera del cómputo sin nada que lo explique.
+  const faltaAnalizar = confirmaEscala && previa.estadoAnalisis !== 'analizada';
+  const escalaCambio = cambios.escala !== undefined && cambios.escala !== previa.escala;
+  const reprocesa = faltaAnalizar || escalaCambio;
 
   if (Object.keys(set).length > 0) {
     await db.update(laminas).set(set).where(eq(laminas.id, laminaId));
@@ -1007,13 +1266,22 @@ export async function actualizarLamina(
       obraId: previa.obraId,
       actorTipo: 'usuario',
       actorNombre: actor.email,
-      accion: desbloquea ? 'lamina_escala_confirmada' : 'lamina_clasificada',
+      accion: confirmaEscala ? 'lamina_escala_confirmada' : 'lamina_clasificada',
       targetRef: `laminas:${laminaId}`,
-      diff: { ...set },
+      diff: { ...set, reprocesa },
     });
   }
 
-  if (desbloquea) await procesarLamina(laminaId, { db, ...deps });
+  if (reprocesa) {
+    await procesarLamina(laminaId, { db, ...deps });
+  } else if (confirmaEscala) {
+    // Sin re-análisis nadie más cierra la consulta: es la misma función que
+    // usa el pipeline cuando la escala se verifica sola, así que la consulta
+    // queda cerrada igual y con la misma auditoría. (Desde la bandeja la
+    // consulta ya viene cerrada y esto es un no-op: `responderEscala` cierra
+    // primero para que el pipeline no le pise la respuesta.)
+    await cerrarHallazgoEscala(db, previa);
+  }
 
   const [actualizada] = await db.select().from(laminas).where(eq(laminas.id, laminaId));
   return actualizada;
