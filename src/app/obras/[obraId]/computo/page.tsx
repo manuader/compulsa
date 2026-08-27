@@ -12,11 +12,12 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { VerificacionComputo } from '@/app/obras/[obraId]/computo/verificacion-ui';
+import { escalaAsumidaDelItem, type LaminaDeFuente } from '@/components/planilla/escala-asumida';
 import { PlanillaRubro } from '@/components/planilla/planilla-rubro';
 import type { ItemPlanilla } from '@/components/planilla/planilla-rubro';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { getDb } from '@/db/client';
-import { computoItems, computoRubros, hallazgos } from '@/db/schema';
+import { computoItems, computoRubros, hallazgos, laminas } from '@/db/schema';
 import { requireObra, requireUser } from '@/lib/auth/guards';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
 import { esClaveDeVerificacion } from '@/lib/pipeline/claves';
@@ -101,7 +102,7 @@ export default async function ComputoPage({
   const obra = await requireObra(obraId);
   const db = await getDb();
 
-  const [filas, estados, consultas] = await Promise.all([
+  const [filas, estados, consultas, planos] = await Promise.all([
     db
       .select()
       .from(computoItems)
@@ -124,7 +125,34 @@ export default async function ComputoPage({
       })
       .from(hallazgos)
       .where(eq(hallazgos.obraId, obra.id)),
+    // Las láminas con su escala: cruzadas con las `fuentes_json` del ítem son
+    // las que dicen si el número salió de una escala verificada contra cotas o
+    // de una asumida (decisión 1). No hace falta ninguna columna nueva.
+    db
+      .select({
+        id: laminas.id,
+        codigo: laminas.codigo,
+        numeroPagina: laminas.numeroPagina,
+        escala: laminas.escala,
+        escalaConfiable: laminas.escalaConfiable,
+      })
+      .from(laminas)
+      .where(eq(laminas.obraId, obra.id)),
   ]);
+
+  // Para el aviso alcanza con el código de la lámina ("A-04"): el tooltip tiene
+  // que entrar en una fila de la planilla, no repetir el rótulo entero.
+  const escalaPorLamina = new Map<string, LaminaDeFuente>(
+    planos.map((fila) => [
+      fila.id,
+      {
+        laminaId: fila.id,
+        etiqueta: fila.codigo ?? `Página ${fila.numeroPagina}`,
+        escala: fila.escala,
+        escalaConfiable: fila.escalaConfiable,
+      },
+    ]),
+  );
 
   const estadoPorRubro = new Map<RubroId, EstadoRubro>(
     estados.map((fila) => [fila.rubro, fila.estado]),
@@ -167,6 +195,7 @@ export default async function ComputoPage({
       anulado: fila.estado === 'anulado',
       editado: fila.editadoPor !== null,
       laminaId: fila.fuentesJson[0]?.laminaId ?? null,
+      escalaAsumida: escalaAsumidaDelItem(fila.fuentesJson, escalaPorLamina),
     }));
 
   // El mismo gate que aplica `aprobarRubroAction`, checklist del estudio

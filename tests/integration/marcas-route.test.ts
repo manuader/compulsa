@@ -24,9 +24,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { GET } from '@/app/api/laminas/[laminaId]/marcas/route';
 import { setDbForTests, type Db } from '@/db/client';
-import { documentos, estudios, laminas, obras, usuarios } from '@/db/schema';
+import { documentos, estudios, hallazgos, laminas, obras, usuarios } from '@/db/schema';
 import { crearSesion } from '@/lib/auth/session';
-import type { MarcasDeLamina } from '@/lib/pipeline/marcas';
+import { resolverDestacado, type MarcasDeLamina } from '@/lib/pipeline/marcas';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import { crearStorageLocal } from '@/lib/storage/index';
 
@@ -49,7 +49,11 @@ const UUID_INEXISTENTE = '00000000-0000-4000-8000-000000000000';
 let db: Db;
 let raizStorage: string;
 let laminaId: string;
+/** La planilla de carpinterías de obra-demo (página 3): la lámina "no citada". */
+let laminaPlanillaId: string;
 let laminaAjenaId: string;
+let obraId: string;
+let obraAjenaId: string;
 let token: string;
 
 beforeAll(async () => {
@@ -98,6 +102,9 @@ beforeAll(async () => {
     .where(eq(laminas.documentoId, documento.id))
     .orderBy(laminas.numeroPagina);
   laminaId = paginas[0].id;
+  laminaPlanillaId = paginas[2].id;
+  obraId = obra.id;
+  obraAjenaId = obraAjena.id;
 
   const [docAjeno] = await db
     .insert(documentos)
@@ -200,5 +207,106 @@ describe('GET /api/laminas/[laminaId]/marcas: lo que dibuja el visor', () => {
     expect(marcas.deducciones).toEqual([]);
     // Y los hallazgos que salgan tienen que ser de esta lámina, no de la obra.
     expect(marcas.hallazgos.every((marca) => marca.bbox.length === 4)).toBe(true);
+  });
+});
+
+/**
+ * `?highlight=<hallazgoId>` sobre la lámina donde el sistema leyó lo que propone.
+ *
+ * La búsqueda dirigida encuentra el ancho de FP01 en la planilla de
+ * carpinterías, pero la consulta está citada en la planta: `laminas_json` no
+ * nombra la planilla en ningún lado. Hasta acá el visor resolvía el highlight
+ * solo contra esas citas, así que el recuadro del que salió el número —el que
+ * hay que mirar para confirmar— no tenía vista a pantalla completa: la bandeja
+ * lo mostraba en su panel y el link "abrir en página completa" caía en una
+ * lámina sin nada resaltado.
+ *
+ * Es **aditivo**: el contrato de `src/app/CLAUDE.md` §4 no cambia, se amplía.
+ */
+describe('resolverDestacado: la lámina de la propuesta también se resalta', () => {
+  const HUECO: [number, number, number, number] = [0.1, 0.2, 0.05, 0.1];
+  const FILA_PLANILLA: [number, number, number, number] = [0.6, 0.35, 0.3, 0.04];
+
+  /** Una consulta citada en la planta, con o sin el dato leído en la planilla. */
+  async function consulta(conPropuesta: boolean, clave: string): Promise<string> {
+    const [fila] = await db
+      .insert(hallazgos)
+      .values({
+        obraId,
+        clave,
+        tipo: 'faltante',
+        rubro: 'aberturas',
+        descripcion: 'Falta el ancho de FP01.',
+        laminasJson: [{ laminaId, bbox: HUECO, detalle: 'FP01' }],
+        targetRef: null,
+        valorPropuestoJson: conPropuesta
+          ? {
+              valores: { anchoM: 0.9 },
+              fuente: { laminaId: laminaPlanillaId, bbox: FILA_PLANILLA },
+              confianza: 0.85,
+              origen: 'busqueda_dirigida',
+            }
+          : null,
+        bloqueante: true,
+      })
+      .returning();
+    return fila.id;
+  }
+
+  it('devuelve la fuente de la propuesta primero, y después las citadas', async () => {
+    const id = await consulta(true, 'aberturas.FP01.ancho');
+
+    const destacado = await resolverDestacado(db, obraId, id);
+
+    expect(destacado?.nombre).toBe('Falta el ancho de FP01.');
+    // Primero la planilla: es el recuadro del que salió el número y al que el
+    // visor scrollea. Sin esto, la planilla no aparecía en la lista.
+    expect(destacado?.fuentes.map((fuente) => fuente.laminaId)).toEqual([
+      laminaPlanillaId,
+      laminaId,
+    ]);
+    expect(destacado?.fuentes[0].bbox).toEqual(FILA_PLANILLA);
+  });
+
+  it('sin propuesta sigue resolviendo exactamente las citadas', async () => {
+    const id = await consulta(false, 'aberturas.FP02.ancho');
+
+    const destacado = await resolverDestacado(db, obraId, id);
+
+    expect(destacado?.fuentes).toEqual([{ laminaId, bbox: HUECO, detalle: 'FP01' }]);
+  });
+
+  it('la propuesta leída en una zona ya citada no se resalta dos veces', async () => {
+    const [fila] = await db
+      .insert(hallazgos)
+      .values({
+        obraId,
+        clave: 'aberturas.FP03.ancho',
+        tipo: 'faltante',
+        rubro: 'aberturas',
+        descripcion: 'Falta el ancho de FP03.',
+        laminasJson: [{ laminaId, bbox: HUECO }],
+        targetRef: null,
+        valorPropuestoJson: {
+          valores: { anchoM: 0.9 },
+          fuente: { laminaId, bbox: HUECO },
+          origen: 'lectura_baja_confianza',
+        },
+        bloqueante: false,
+      })
+      .returning();
+
+    const destacado = await resolverDestacado(db, obraId, fila.id);
+
+    // Dos veces el mismo bbox diría "2 zonas citadas" por una sola.
+    expect(destacado?.fuentes).toHaveLength(1);
+  });
+
+  it('una consulta de otra obra no existe (RNF-4), y un id mal formado tampoco', async () => {
+    const id = await consulta(true, 'aberturas.FP04.ancho');
+
+    expect(await resolverDestacado(db, obraAjenaId, id)).toBeNull();
+    expect(await resolverDestacado(db, obraId, 'no-es-un-uuid')).toBeNull();
+    expect(await resolverDestacado(db, obraId, UUID_INEXISTENTE)).toBeNull();
   });
 });

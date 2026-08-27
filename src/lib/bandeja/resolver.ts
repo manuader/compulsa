@@ -277,10 +277,18 @@ function entidadDelTarget(db: Db, obraId: string, entidadId: string) {
     .then((filas) => filas[0]);
 }
 
-/** `escala.<laminaId>` → el id de la lámina; `null` si la clave es de otra familia. */
+/**
+ * `escala.<laminaId>` → el id de la lámina; `null` si la clave es de otra
+ * familia.
+ *
+ * Las claves de escala pueden llevar un sufijo (`escala.<laminaId>.rotulo`, el
+ * aviso de que la relectura del rótulo contradice la escala confirmada), así
+ * que se lee el **primer segmento** después del prefijo: la lámina es la misma
+ * y la respuesta también —confirmar una escala, cualquiera de las dos.
+ */
 function laminaBloqueada(clave: string): string | null {
   if (!clave.startsWith(PREFIJO_ESCALA)) return null;
-  const id = clave.slice(PREFIJO_ESCALA.length);
+  const id = clave.slice(PREFIJO_ESCALA.length).split('.')[0] ?? '';
   return zUuid.safeParse(id).success ? id : null;
 }
 

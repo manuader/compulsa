@@ -318,9 +318,15 @@ export function huellaDocumentacion(laminas: readonly LaminaParaHuella[]): strin
     .sort();
 
   const hash = createHash('sha256');
-  // El separador va aparte del contenido: dos láminas no pueden "fusionarse" en
-  // una huella distinta por lo que digan sus textos.
-  for (const fila of filas) hash.update(fila).update(' ');
+  // Las filas entran serializadas, no concatenadas con un separador: JSON escapa
+  // las comillas y los saltos de línea, así que dos láminas no pueden "fusionarse"
+  // en una huella distinta por lo que digan sus textos. Un separador imprimible no
+  // puede garantizarlo —el texto extraído de un PDF es libre y puede traer
+  // cualquier cosa— y el que sí podía, un byte NUL, le da a `git diff` un archivo
+  // binario y **lo esconde de `grep -r` y de `rg`, en silencio**: este archivo no
+  // aparecía en una búsqueda recursiva. Es la misma trampa que ya documenta
+  // `claveDeEntidad` en `procesar.ts`.
+  hash.update(JSON.stringify(filas));
   return hash.digest('hex');
 }
 

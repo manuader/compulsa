@@ -6,8 +6,8 @@
  * `/obras/[obraId]/laminas/[laminaId]?highlight=<id>` y el visor resalta los
  * bbox de las **fuentes** de ese target. El id puede ser de una entidad, de un
  * ítem de cómputo, de un hallazgo o de una deducción: los cuatro llevan
- * `Fuente[]` y los cuatro se resuelven acá. No renombres el parámetro sin
- * buscar sus usos.
+ * `Fuente[]` y los cuatro los resuelve `resolverDestacado`
+ * (`src/lib/pipeline/marcas.ts`). No renombres el parámetro sin buscar sus usos.
  */
 import { and, eq } from 'drizzle-orm';
 import type { Metadata } from 'next';
@@ -18,12 +18,10 @@ import { cache } from 'react';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { VisorLamina } from '@/components/viewer/visor-lamina';
-import { getDb, type Db } from '@/db/client';
-import { computoItems, deducciones, entidades, hallazgos, laminas } from '@/db/schema';
+import { getDb } from '@/db/client';
+import { laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
-import { describirValor, etiquetaCampo } from '@/lib/deduccion/motor';
-import { valorDeDeduccion } from '@/lib/deduccion/persistencia';
-import { armarMarcasDeLamina } from '@/lib/pipeline/marcas';
+import { armarMarcasDeLamina, resolverDestacado } from '@/lib/pipeline/marcas';
 import type { BBox, EstadoAnalisis, Fuente } from '@/types/domain';
 
 import { FormConfirmarEscala } from './ui';
@@ -71,61 +69,6 @@ function explicacionDelEstado(estado: EstadoAnalisis, errorDetalle: string | nul
     case 'analizada':
       return null;
   }
-}
-
-interface Destacado {
-  /** Cómo nombrarlo en el aviso: "el ítem Placa de roca de yeso". */
-  nombre: string;
-  fuentes: Fuente[];
-}
-
-/**
- * Resuelve `?highlight=` contra las tres tablas que llevan provenance. Siempre
- * con `obra_id` en el `where`: un id de otra obra no existe (RNF-4).
- */
-async function resolverDestacado(
-  db: Db,
-  obraId: string,
-  highlight: string,
-): Promise<Destacado | null> {
-  if (!UUID_RE.test(highlight)) return null;
-
-  const [entidad] = await db
-    .select({ nombre: entidades.nombre, fuentes: entidades.fuentesJson })
-    .from(entidades)
-    .where(and(eq(entidades.id, highlight), eq(entidades.obraId, obraId)));
-  if (entidad) return { nombre: entidad.nombre, fuentes: entidad.fuentes };
-
-  const [item] = await db
-    .select({ nombre: computoItems.descripcion, fuentes: computoItems.fuentesJson })
-    .from(computoItems)
-    .where(and(eq(computoItems.id, highlight), eq(computoItems.obraId, obraId)));
-  if (item) return { nombre: item.nombre, fuentes: item.fuentes };
-
-  const [hallazgo] = await db
-    .select({ nombre: hallazgos.descripcion, fuentes: hallazgos.laminasJson })
-    .from(hallazgos)
-    .where(and(eq(hallazgos.id, highlight), eq(hallazgos.obraId, obraId)));
-  if (hallazgo) return { nombre: hallazgo.nombre, fuentes: hallazgo.fuentes };
-
-  const [deduccion] = await db
-    .select({
-      campo: deducciones.campo,
-      valorJson: deducciones.valorJson,
-      fuentes: deducciones.fuentesJson,
-    })
-    .from(deducciones)
-    .where(and(eq(deducciones.id, highlight), eq(deducciones.obraId, obraId)));
-  if (deduccion) {
-    const valor = valorDeDeduccion(deduccion);
-    const nombre =
-      valor === null
-        ? `deducción de ${etiquetaCampo(deduccion.campo)}`
-        : `${etiquetaCampo(deduccion.campo)} deducido: ${describirValor(deduccion.campo, valor)}`;
-    return { nombre, fuentes: deduccion.fuentes };
-  }
-
-  return null;
 }
 
 function primerParametro(valor: string | string[] | undefined): string | null {

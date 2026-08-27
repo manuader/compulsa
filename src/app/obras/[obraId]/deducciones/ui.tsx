@@ -104,6 +104,15 @@ function porcentaje(confianza: number): string {
   return `${Math.round(confianza * 100)}%`;
 }
 
+/**
+ * El `destacados` de "no hay nada elegido", **una sola vez**.
+ *
+ * Un `?? []` allá abajo sería un array nuevo por render: `Overlay` scrollea con
+ * un `useEffect(…, [destacados])` y volvería a scrollear en cada uno. Es la
+ * misma constante de módulo que la bandeja (T5b), por el mismo motivo.
+ */
+const SIN_DESTACADOS: readonly BBox[] = [];
+
 /** Lo que el panel de la derecha está mostrando. */
 interface Seleccion {
   deduccionId: string;
@@ -334,7 +343,7 @@ export function BandejaDeducciones({ obraId, grupos, filtrada }: BandejaDeduccio
       <div className="min-w-0 lg:sticky lg:top-4">
         <PanelVisor
           laminaId={seleccion?.laminaId ?? null}
-          destacados={seleccion?.destacados ?? []}
+          destacados={seleccion?.destacados ?? SIN_DESTACADOS}
           etiqueta={seleccion?.etiqueta ?? null}
           colapsable
         />

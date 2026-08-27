@@ -23,11 +23,14 @@ import { and, eq } from 'drizzle-orm';
 
 import type { MarcaDeduccion, MarcaEntidad, MarcaHallazgo } from '@/components/viewer/overlay';
 import type { Db } from '@/db/client';
-import { deducciones, entidades, hallazgos, laminas } from '@/db/schema';
+import { computoItems, deducciones, entidades, hallazgos, laminas } from '@/db/schema';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
 import { describirValor, etiquetaCampo } from '@/lib/deduccion/motor';
 import { valorDeDeduccion } from '@/lib/deduccion/persistencia';
-import type { Fuente } from '@/types/domain';
+import type { Fuente, ValorPropuesto } from '@/types/domain';
+
+/** Forma canónica 8-4-4-4-12: un id de la URL es texto arbitrario hasta que se valida. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface MarcasDeLamina {
   laminaId: string;
@@ -147,4 +150,104 @@ export async function armarMarcasDeLamina(
     hallazgos: marcasHallazgos,
     deducciones: marcasDeducciones,
   };
+}
+
+/** Lo que `?highlight=` resalta: cómo se llama y qué zonas cita. */
+export interface Destacado {
+  /** Cómo nombrarlo en el aviso: "el ítem Placa de roca de yeso". */
+  nombre: string;
+  fuentes: Fuente[];
+}
+
+/**
+ * Las zonas de una consulta, **con la de su propuesta adelante**.
+ *
+ * Un hallazgo cita las láminas del hueco que pregunta (`laminas_json`), pero
+ * desde "proponer en vez de bloquear" puede además traer el lugar exacto donde
+ * el sistema leyó lo que propone (`valor_propuesto_json.fuente`), y ese lugar
+ * suele estar en **otra** lámina: la búsqueda dirigida encuentra el ancho de
+ * FP01 en la planilla DET00 y la consulta está citada en la planta A-01. Va
+ * primero por lo mismo que en la bandeja (`laminasDeConsulta`): es el recuadro
+ * que hay que mirar para confirmar, y es al que el visor scrollea.
+ *
+ * Sin repetidos: si la propuesta se leyó en una zona que la consulta ya citaba,
+ * resaltarla dos veces diría "2 zonas citadas" por una sola.
+ */
+function fuentesDeConsulta(citadas: readonly Fuente[], propuesta: ValorPropuesto | null): Fuente[] {
+  const fuentes: Fuente[] = [];
+  const vistas = new Set<string>();
+
+  for (const fuente of [propuesta?.fuente, ...citadas]) {
+    if (fuente === undefined) continue;
+    const clave = `${fuente.laminaId}:${fuente.bbox.join(',')}`;
+    if (vistas.has(clave)) continue;
+    vistas.add(clave);
+    fuentes.push(fuente);
+  }
+
+  return fuentes;
+}
+
+/**
+ * Resuelve `?highlight=<id>` contra las cuatro tablas que llevan provenance
+ * (`src/app/CLAUDE.md` §4). Siempre con `obra_id` en el `where`: un id de otra
+ * obra no existe (RNF-4).
+ *
+ * Vivía adentro de la página del visor. Se mudó acá por lo mismo que
+ * `armarMarcasDeLamina`: es la otra mitad de "qué se dibuja sobre esta lámina",
+ * y adentro de un `page.tsx` no se puede exportar para testear —Next valida los
+ * exports de una página igual que los de un `route.ts` (`CLAUDE.md` §9)—.
+ */
+export async function resolverDestacado(
+  db: Db,
+  obraId: string,
+  highlight: string,
+): Promise<Destacado | null> {
+  if (!UUID_RE.test(highlight)) return null;
+
+  const [entidad] = await db
+    .select({ nombre: entidades.nombre, fuentes: entidades.fuentesJson })
+    .from(entidades)
+    .where(and(eq(entidades.id, highlight), eq(entidades.obraId, obraId)));
+  if (entidad) return { nombre: entidad.nombre, fuentes: entidad.fuentes };
+
+  const [item] = await db
+    .select({ nombre: computoItems.descripcion, fuentes: computoItems.fuentesJson })
+    .from(computoItems)
+    .where(and(eq(computoItems.id, highlight), eq(computoItems.obraId, obraId)));
+  if (item) return { nombre: item.nombre, fuentes: item.fuentes };
+
+  const [hallazgo] = await db
+    .select({
+      nombre: hallazgos.descripcion,
+      fuentes: hallazgos.laminasJson,
+      propuesta: hallazgos.valorPropuestoJson,
+    })
+    .from(hallazgos)
+    .where(and(eq(hallazgos.id, highlight), eq(hallazgos.obraId, obraId)));
+  if (hallazgo) {
+    return {
+      nombre: hallazgo.nombre,
+      fuentes: fuentesDeConsulta(hallazgo.fuentes, hallazgo.propuesta),
+    };
+  }
+
+  const [deduccion] = await db
+    .select({
+      campo: deducciones.campo,
+      valorJson: deducciones.valorJson,
+      fuentes: deducciones.fuentesJson,
+    })
+    .from(deducciones)
+    .where(and(eq(deducciones.id, highlight), eq(deducciones.obraId, obraId)));
+  if (deduccion) {
+    const valor = valorDeDeduccion(deduccion);
+    const nombre =
+      valor === null
+        ? `deducción de ${etiquetaCampo(deduccion.campo)}`
+        : `${etiquetaCampo(deduccion.campo)} deducido: ${describirValor(deduccion.campo, valor)}`;
+    return { nombre, fuentes: deduccion.fuentes };
+  }
+
+  return null;
 }
