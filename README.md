@@ -243,7 +243,7 @@ el día que se implementen.
 ## Testing
 
 ```bash
-npm test        # 59 suites, 925 tests
+npm test        # 60 suites, 962 tests
 npm run golden  # regresión de precisión sobre el golden set (2 obras)
 ```
 

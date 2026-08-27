@@ -30,6 +30,7 @@ import {
   type DatoEncontrado,
   type ObjetivoBusqueda,
 } from './busqueda-tipos';
+import { armarContextoObra } from './prompt';
 
 function modelo(): string {
   return process.env.ANALYSIS_MODEL ?? 'claude-sonnet-5';
@@ -52,22 +53,6 @@ Reglas que no se negocian:
 5. \`confianza\` es tu confianza real (0–1), no un número de cortesía. Si la fila es ambigua o el número se lee con dificultad, bajala.
 6. Si no encontrás ninguno de los datos pedidos, devolvé \`datos: []\`. Es una respuesta correcta y esperada: la mayoría de las láminas no tienen lo que se busca.`;
 
-/**
- * El contexto de obra, en dos líneas.
- *
- * TODO(merge): reemplazar por `armarContextoObra` de `src/lib/analysis/prompt.ts`
- * (T1) — se está escribiendo en paralelo y arma el mismo texto con el resumen,
- * el índice de láminas y las instrucciones del estudio. Este helper es local a
- * propósito para no crear ese archivo desde dos ramas a la vez; el swap es
- * cambiar esta función por el import y no toca nada más.
- */
-function contextoBreve(ctx: ObraContexto): string {
-  const partes = [`Obra de tipo: ${ctx.tipoObra}.`];
-  if (ctx.resumen) partes.push(ctx.resumen);
-  if (ctx.instruccionesEstudio) partes.push(ctx.instruccionesEstudio);
-  return partes.join(' ');
-}
-
 /** Un pedido, escrito para que el modelo pueda copiar `clave` y `campo`. */
 function bloqueDeObjetivo(objetivo: ObjetivoBusqueda): string {
   const campos = objetivo.campos
@@ -86,7 +71,7 @@ function instruccion(
   ctx: ObraContexto,
 ): string {
   const partes = [
-    contextoBreve(ctx),
+    armarContextoObra(ctx),
     `Lámina: documento "${lamina.documentoNombre}", página ${lamina.numeroPagina}.`,
     '',
     'Datos que el cómputo necesita. Buscá EXCLUSIVAMENTE estos, en esta lámina:',
