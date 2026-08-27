@@ -1,0 +1,1 @@
+ALTER TABLE "hallazgos" ADD COLUMN "valor_propuesto_json" jsonb;

@@ -35,6 +35,7 @@
  */
 import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import { armarItem } from '@/lib/computo/presentacion';
+import { normalizarTag } from '@/lib/computo/tags';
 import { formatearNumero } from '@/lib/computo/unidades';
 import {
   alcanceDeReforma,
@@ -57,6 +58,19 @@ const MEDIDAS = [
 /** El tag manda (V2, P1); si no está, el nombre de la entidad. */
 function tagDe(entidad: EntidadPersistida): string {
   return leerTexto(entidad, 'tag') ?? entidad.nombre;
+}
+
+/**
+ * Con qué clave se agrupan dos aberturas. `normalizarTag` saca espacios y pasa
+ * a mayúsculas: la `v2` de la planilla y la `V2` de la planta son la misma
+ * ventana, y agruparlas por el texto crudo las contaba dos veces.
+ *
+ * Lo que se **muestra** (descripción, `claveItem`, clave del hallazgo) sigue
+ * siendo el tag tal como está escrito en la lámina del primer miembro del
+ * grupo: el arquitecto tiene que poder buscar ese texto en su plano.
+ */
+function claveDeTag(entidad: EntidadPersistida): string {
+  return normalizarTag(tagDe(entidad));
 }
 
 function capitalizar(texto: string): string {
@@ -125,9 +139,13 @@ export const plantillaAberturas = {
       tipoPorLamina.get(entidad.laminaId) ?? null;
 
     /** Un aviso por tag: la clave es única por obra y el ítem queda `supuesto`. */
-    const avisarCantidadSupuesta = (tag: string, grupo: readonly EntidadPersistida[]): void => {
-      if (avisados.has(tag)) return;
-      avisados.add(tag);
+    const avisarCantidadSupuesta = (
+      clave: string,
+      tag: string,
+      grupo: readonly EntidadPersistida[],
+    ): void => {
+      if (avisados.has(clave)) return;
+      avisados.add(clave);
       hallazgos.push(
         hallazgoSupuesto({
           rubro: RUBRO,
@@ -148,15 +166,16 @@ export const plantillaAberturas = {
       if (alcance === 'ninguno') continue; // lo existente no se computa
 
       const tag = tagDe(entidad);
+      const clave = claveDeTag(entidad);
       if (alcance === 'demolicion') {
-        agregar(retiros, tag, entidad); // el retiro no necesita medidas
+        agregar(retiros, clave, entidad); // el retiro no necesita medidas
         continue;
       }
 
       const faltantes = MEDIDAS.filter(({ campo }) => leerMedida(entidad, campo) === null);
       if (faltantes.length > 0) {
-        if (!sinMedidas.has(tag)) {
-          sinMedidas.add(tag); // un hallazgo por tag: la clave es única por obra
+        if (!sinMedidas.has(clave)) {
+          sinMedidas.add(clave); // un hallazgo por tag: la clave es única por obra
           hallazgos.push(
             hallazgoDatoFaltante({
               rubro: RUBRO,
@@ -166,19 +185,23 @@ export const plantillaAberturas = {
                 `No encontré ${faltantes.map((m) => m.nombre).join(' ni ')} de ${tag}. ` +
                 'Sin medidas no la puedo computar ni pedir cotización: cargá el dato o indicá en qué lámina está la planilla de carpinterías.',
               entidad,
-              campo: faltantes[0]!.campo,
+              // Todas las que faltan, no la primera: responder el ancho y que
+              // reaparezca la consulta por el alto es exactamente lo que la
+              // bandeja no tiene que hacer.
+              campos: faltantes.map((m) => m.campo),
             }),
           );
         }
         continue;
       }
 
-      agregar(nuevas, tag, entidad);
+      agregar(nuevas, clave, entidad);
     }
 
-    for (const [tag, grupo] of nuevas) {
+    for (const [clave, grupo] of nuevas) {
+      const tag = tagDe(grupo[0]!);
       const conteo = contarInstancias(grupo, tipoDe);
-      if (conteo.supuesto) avisarCantidadSupuesta(tag, grupo);
+      if (conteo.supuesto) avisarCantidadSupuesta(clave, tag, grupo);
       items.push(
         armarItem({
           rubro: RUBRO,
@@ -196,9 +219,10 @@ export const plantillaAberturas = {
       );
     }
 
-    for (const [tag, grupo] of retiros) {
+    for (const [clave, grupo] of retiros) {
+      const tag = tagDe(grupo[0]!);
       const conteo = contarInstancias(grupo, tipoDe);
-      if (conteo.supuesto) avisarCantidadSupuesta(tag, grupo);
+      if (conteo.supuesto) avisarCantidadSupuesta(clave, tag, grupo);
       items.push(
         armarItem({
           rubro: RUBRO,

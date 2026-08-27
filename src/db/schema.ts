@@ -50,6 +50,8 @@ import {
   type LineaPresupuesto,
   type Mandato,
   type RolUsuario,
+  type TargetRefPersistido,
+  type ValorPropuesto,
   // Import relativo a propósito: `drizzle-kit generate` bundlea este archivo con
   // esbuild y no resuelve el alias `@/` del tsconfig.
 } from '../types/domain';
@@ -337,7 +339,20 @@ export const hallazgos = pgTable(
     checklistItem: text('checklist_item'),
     /** Láminas citadas CON su bbox: es el `fuentes: Fuente[]` de `HallazgoDetectado`. */
     laminasJson: jsonb('laminas_json').$type<Fuente[]>().notNull(),
-    targetRef: jsonb('target_ref').$type<{ entidadId: string; campo: string }>(),
+    /**
+     * A qué entidad y campos apunta. Se escribe `campos` (plural); `campo`
+     * existe solo para leer las filas anteriores a "proponer en vez de
+     * bloquear". **Se lee siempre con `camposDelTarget()`**
+     * (`src/lib/hallazgos/target.ts`), nunca campo por campo.
+     */
+    targetRef: jsonb('target_ref').$type<TargetRefPersistido>(),
+    /**
+     * Lo que el sistema propone para esos campos, sin escribirlo en la entidad:
+     * lectura de baja confianza, escala del rótulo o búsqueda dirigida. El dato
+     * entra a `entidades.atributos_json` recién cuando el arquitecto confirma
+     * (P4). `null` ⇒ la consulta es una pregunta, no una propuesta.
+     */
+    valorPropuestoJson: jsonb('valor_propuesto_json').$type<ValorPropuesto>(),
     bloqueante: boolean('bloqueante').notNull(),
     estado: estadoHallazgoEnum('estado').notNull().default('abierto'),
     respuestaJson: jsonb('respuesta_json').$type<Record<string, unknown>>(),

@@ -16,7 +16,11 @@
  *      por una deducción validada (§11, P6).
  */
 import { sanityChecks } from '@/lib/computo/sanity';
-import { hallazgoBajaConfianza, UMBRAL_CONFIANZA } from '@/lib/hallazgos/taxonomia';
+import {
+  hallazgoBajaConfianza,
+  propuestaDeLectura,
+  UMBRAL_CONFIANZA,
+} from '@/lib/hallazgos/taxonomia';
 import { PLANTILLAS, type PlantillaRubro, type ResultadoComputo } from '@/lib/rubros/index';
 import type {
   EntidadDetectada,
@@ -63,6 +67,12 @@ export { UMBRAL_CONFIANZA };
  * apoya en datos por debajo del umbral no se emite —el sistema no computa lo
  * que no está seguro de haber leído— y sale como consulta bloqueante con la
  * provenance del ítem que se cayó, para que el arquitecto vea qué mirar.
+ *
+ * Cuando el ítem se apoya en **una** entidad (`entidadRef`), la consulta lleva
+ * además lo que esa entidad ya tiene leído como propuesta: el dato no se tira,
+ * se ofrece para confirmar. Un ítem **agregado** (la suma de varios ambientes,
+ * por ejemplo) no lleva target ni propuesta, y es lo honesto: no hay UNA
+ * entidad que confirmar, hay que ir a mirar cuál de todas está mal leída.
  */
 export function computarRubro(
   entidades: readonly EntidadPersistida[],
@@ -73,9 +83,12 @@ export function computarRubro(
   const { items, hallazgos } = plantilla.computar(entidades, tipoObra, laminas);
   const emitidos: ItemComputo[] = [];
   const degradados: HallazgoDetectado[] = [];
+  const porId = new Map(entidades.map((entidad) => [entidad.id, entidad]));
 
   for (const item of items) {
     if (item.confianza < UMBRAL_CONFIANZA) {
+      const respaldo = item.entidadRef === undefined ? undefined : porId.get(item.entidadRef);
+      const propuesta = respaldo === undefined ? null : propuestaDeLectura(respaldo);
       degradados.push(
         hallazgoBajaConfianza({
           rubro: item.rubro,
@@ -83,6 +96,7 @@ export function computarRubro(
           descripcion: item.descripcion,
           confianza: item.confianza,
           fuentes: item.fuentes,
+          ...(propuesta ? { propuesta } : {}),
         }),
       );
       continue;
