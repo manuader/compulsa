@@ -6,10 +6,21 @@ Extracción de información de láminas con IA (visión). Acá vive la frontera 
 
 ```ts
 interface AnalysisProvider {
-  leerRotulo(lamina: LaminaInput): Promise<RotuloDetectado>;      // título, escala, disciplina, tipo, revisión
+  leerRotulo(lamina: LaminaInput, ctx?: ObraContexto): Promise<RotuloDetectado>;  // título, escala, disciplina, tipo, revisión
   extraerEntidades(lamina: LaminaInput, ctx: ObraContexto): Promise<EntidadDetectada[]>;
 }
 ```
+
+El `ctx` de `leerRotulo` es **opcional y aditivo** (el mock lo ignora), y existe por
+el caché de `claude.ts`: el provider real resuelve la lámina entera en **una** llamada
+y la cachea por `laminaId`, así que manda el prompt de la **primera** llamada. Como el
+pipeline pide el rótulo antes que las entidades, sin este parámetro el `ObraContexto`
+no llegaba nunca al prompt (y la fila de auditoría quedaba sin `obraId`).
+
+El texto del contexto lo arma `prompt.ts`, que es **puro y sí tiene tests**:
+`armarContextoObra(ctx)` (tipo de obra, resumen, índice de láminas, instrucciones del
+estudio) y `textoInstrucciones(config.instruccionesExtraccion)`. Regla del módulo: lo
+que se pueda equivocar va en `prompt.ts`, no en `claude.ts`.
 
 Dos implementaciones, elegidas por `getAnalysisProvider()`:
 
@@ -22,6 +33,7 @@ Dos implementaciones, elegidas por `getAnalysisProvider()`:
 2. **El provider no escribe en la DB.** Devuelve datos; el pipeline (`src/lib/pipeline/`) persiste, audita y decide. Mantené esa frontera: hace testeable todo lo demás.
    **La única excepción es `registrarAuditoria()`** (regla 5, RNF-7): los providers reales —`claude.ts`, `presupuesto-claude.ts`, `qa-claude.ts`— escriben su propia fila de `auditoria` con los tokens de la llamada. Tiene que ser ahí: el consumo lo sabe quien hizo la llamada, y hacerlo devolver el `usage` para que lo escriba el pipeline obligaría a que las tres interfaces lo lleven en su tipo de retorno solo para eso. Ninguna otra tabla se toca desde acá.
 3. **El provider no inventa (P4).** El prompt de `claude.ts` instruye explícitamente devolver `null`/lista vacía ante ausencia de datos, jamás estimar. Campos no visibles → ausentes. La deducción es un motor de reglas aparte (F2), no un prompt.
+   **Pero no confundas "no inventar" con "no leer":** una **planilla de carpinterías** es una tabla de datos escritos y se extrae **una entidad `abertura` por fila** (con `bbox` = la fila), porque ahí es donde el estudio escribe las medidas que la planta no trae — saltearla dejaba a la deducción planilla↔plano sin nada que cruzar. `cantidad` de la planilla es informativa y no computa: la cantidad la pone la planta. Carátulas, memorias e índices siguen con `entidades: []`.
 4. **Escala (RF-201):** `RotuloDetectado.escalaConfiable` solo es `true` si la escala declarada se verificó contra ≥ 2 cotas leídas del plano (tolerancia 3%). Sin verificación → `false` → la lámina queda `bloqueada_escala` hasta que el usuario cargue una medida de referencia.
 5. **Costos (RNF-7):** `claude.ts` registra tokens de entrada/salida por llamada en la tabla `auditoria` (accion `analisis_llm`) para poder medir el costo por obra.
 6. Los fixtures del mock son parte del contrato de tests: si cambiás el shape de `EntidadDetectada`, actualizá fixtures + tipos + ambos providers en el mismo commit.

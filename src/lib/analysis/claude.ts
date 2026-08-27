@@ -17,6 +17,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { registrarAuditoria } from '@/lib/audit';
 import type { LaminaInput, ObraContexto } from '@/types/domain';
+import { armarContextoObra } from './prompt';
 import {
   sanearAnalisis,
   zAnalisisLaminaCrudo,
@@ -48,18 +49,21 @@ Reglas que no se negocian:
 6. \`estadoReforma\`: usá \`na\` en obra nueva. En reforma o ampliación, \`existente\`, \`demoler\` o \`nueva\` según lo que la lámina indique explícitamente (rayado de demolición, referencias, etc.); si la lámina no lo dice, \`na\`.
 7. Claves exactas de \`atributos\` según el tipo de entidad:
    - ambiente: superficieM2, perimetroM, alturaM, vanosM2
-   - abertura: tag, tipologia ('ventana' | 'puerta' | 'paño fijo'), anchoM, altoM
+   - abertura: tag, tipologia ('ventana' | 'puerta' | 'paño fijo'), anchoM, altoM, material, vidrio, cantidad — \`material\` y \`vidrio\` son texto libre tal como los escribe la lámina ("aluminio línea Módena", "DVH 4/9/4")
    - tabique: tipo ('durlock'), largoM, alturaM, caras
    - muro: tipo ('mamposteria'), largoM, alturaM
    - terminacion: superficieM2, ubicacion ('piso' | 'cielorraso' | 'pared'), ambiente (nombre del ambiente)
    No inventes claves nuevas y no incluyas una clave cuyo valor no leíste.
-
-Si la lámina no es un plano con entidades computables (una planilla, una carátula, una memoria), devolvé el rótulo que puedas leer y \`entidades: []\`.`;
+8. Cuando la lámina no es un plano con entidades dibujadas, fijate bien qué es antes de darla por vacía:
+   - **Planilla de carpinterías** (la tabla de aberturas del proyecto: una fila por tipología, con sus medidas): extraé **una entidad \`abertura\` por fila de la tabla**, con \`bbox\` = la fila. Es la lámina donde el estudio escribe las medidas que en la planta no están: saltearla es perder el dato. De cada fila devolvé **solo las claves que esa fila trae escritas** (\`tag\`, \`tipologia\`, \`anchoM\`, \`altoM\`, \`material\`, \`vidrio\`, \`cantidad\`); la clave que no está escrita no va (regla 1). \`cantidad\` es informativa y **no computa**: cuántas se compran lo dice la planta, no la planilla.
+   - **Carátula, memoria descriptiva, índice de láminas o cualquier otra lámina sin nada computable**: devolvé el rótulo que puedas leer y \`entidades: []\`.`;
 
 function instruccion(lamina: LaminaInput, ctx?: ObraContexto): string {
   const partes = [
     `Documento: "${lamina.documentoNombre}", página ${lamina.numeroPagina}.`,
-    ctx ? `Obra de tipo: ${ctx.tipoObra}.` : null,
+    // Todo el contexto de obra —tipo, resumen, índice de láminas, instrucciones
+    // del estudio— lo arma `prompt.ts`, que es puro y sí tiene tests.
+    ctx ? armarContextoObra(ctx) : null,
     'Leé el rótulo y extraé las entidades computables de esta lámina.',
     lamina.textoExtraido
       ? `\nTexto extraído del PDF (es literal, confiá en él por sobre lo que creas ver en el dibujo):\n---\n${lamina.textoExtraido}\n---`
@@ -102,9 +106,9 @@ async function pedirAnalisis(
   const saneo =
     respuesta.parsed_output === null ? null : sanearAnalisis(respuesta.parsed_output);
 
-  // RNF-7: el costo por obra se mide desde acá. Cuando la llamada la dispara
-  // `leerRotulo` todavía no hay `ObraContexto`, así que el vínculo con la obra
-  // queda por `targetRef` (lámina → obra).
+  // RNF-7: el costo por obra se mide desde acá. `obraId` sale del contexto, que
+  // ahora llega también desde `leerRotulo`; un llamador que no lo pase deja la
+  // fila sin obra y el vínculo queda por `targetRef` (lámina → obra).
   await registrarAuditoria({
     obraId: ctx?.obraId,
     actorTipo: 'agente',
@@ -135,6 +139,11 @@ export function crearProviderClaude(): AnalysisProvider {
   const cliente = new Anthropic();
   // Una lámina = una llamada. El pipeline pide primero el rótulo y después las
   // entidades; sin esto pagaríamos el PDF dos veces.
+  //
+  // Corolario: **la que manda es la primera llamada**. La segunda recibe la
+  // promesa ya en curso, con el prompt que armó la primera. Por eso `leerRotulo`
+  // también acepta el `ObraContexto` y lo pasa: si no, el contexto de obra no
+  // llegaba nunca al prompt (deuda del HANDOFF §8).
   const analisisPorLamina = new Map<string, Promise<AnalisisLamina>>();
 
   function analizar(lamina: LaminaInput, ctx?: ObraContexto): Promise<AnalisisLamina> {
@@ -155,8 +164,8 @@ export function crearProviderClaude(): AnalysisProvider {
   }
 
   return {
-    async leerRotulo(lamina) {
-      return structuredClone((await analizar(lamina)).rotulo);
+    async leerRotulo(lamina, ctx) {
+      return structuredClone((await analizar(lamina, ctx)).rotulo);
     },
     async extraerEntidades(lamina, ctx) {
       return structuredClone((await analizar(lamina, ctx)).entidades);
