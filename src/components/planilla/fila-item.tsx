@@ -13,10 +13,7 @@ import Link from 'next/link';
 import { useState, useTransition } from 'react';
 
 import { anularItemAction, editarItemAction } from '@/app/obras/[obraId]/computo/actions';
-import {
-  textoEscalaAsumida,
-  type EscalaAsumida,
-} from '@/components/planilla/escala-asumida';
+import { textoEscalaAsumida, type EscalaAsumida } from '@/components/planilla/escala-asumida';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

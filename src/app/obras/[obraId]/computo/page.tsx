@@ -12,10 +12,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 import { VerificacionComputo } from '@/app/obras/[obraId]/computo/verificacion-ui';
-import {
-  escalaAsumidaDelItem,
-  type LaminaDeFuente,
-} from '@/components/planilla/escala-asumida';
+import { escalaAsumidaDelItem, type LaminaDeFuente } from '@/components/planilla/escala-asumida';
 import { PlanillaRubro } from '@/components/planilla/planilla-rubro';
 import type { ItemPlanilla } from '@/components/planilla/planilla-rubro';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
