@@ -892,6 +892,31 @@ describe('confirmar la escala asumida', () => {
     expect((await hallazgoPorClave(`escala.${lamina.id}`)).estado).toBe('descartado');
   });
 
+  it('confirmar la escala de una lámina que no llegó a analizarse sí la manda a analizar', async () => {
+    const documento = await subirYProcesar('sin-escala.pdf');
+    const [lamina] = await laminasDe(documento.id);
+
+    // La corrida anterior se cayó y la lámina quedó en `error`: no tiene
+    // entidades. Cerrarle la consulta sin reprocesar la dejaría fuera del
+    // cómputo y sin nada que lo explique.
+    await db
+      .update(laminas)
+      .set({ estadoAnalisis: 'error', errorDetalle: 'la conexión se cortó' })
+      .where(eq(laminas.id, lamina.id));
+
+    const despues = await actualizarLamina(
+      db,
+      lamina.id,
+      { escala: '1:50', escalaConfiable: true },
+      { usuarioId, email: 'arq@estudionorte.ar' },
+      { db, storage },
+    );
+
+    expect(await procesamientosDe(lamina.id)).toBe(2);
+    expect(despues.estadoAnalisis).toBe('analizada');
+    expect(despues.errorDetalle).toBeNull();
+  });
+
   it('desde la bandeja, confirmar el supuesto tampoco re-analiza', async () => {
     const documento = await subirYProcesar('escala-declarada.pdf');
     const [lamina] = await laminasDe(documento.id);

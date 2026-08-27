@@ -707,7 +707,9 @@ export async function buscarDatosFaltantes(
     await auditar(obraId, ACCION_SIN_RESULTADO, `hallazgos:${pedido.objetivo.clave}`, {
       campos: marca.campos,
       huella,
-      motivo: 'El dato no está en la documentación de la obra; no se vuelve a buscar hasta que entre una lámina nueva.',
+      motivo:
+        'El dato no está en la documentación de la obra: no se vuelve a buscar hasta que entre ' +
+        'documentación nueva.',
     });
   }
 

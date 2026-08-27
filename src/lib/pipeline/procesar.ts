@@ -1223,9 +1223,9 @@ export interface ActorUsuario {
  *
  * Cuándo hace falta, y por qué solo entonces:
  *
- *  - **la lámina estaba `bloqueada_escala` y ahora hay escala confirmada**: no
- *    tiene entidades porque nunca se le extrajeron. Sin re-análisis no hay
- *    cómputo (RF-201);
+ *  - **la lámina no está analizada y ahora hay escala confirmada**: no tiene
+ *    entidades porque nunca se le extrajeron. Sin re-análisis no hay cómputo
+ *    (RF-201); el caso vivo es `bloqueada_escala`;
  *  - **la escala cambió de valor**: todo lo que se midió se midió con la
  *    anterior. Los números están mal hasta que se rehagan.
  *
@@ -1252,9 +1252,13 @@ export async function actualizarLamina(
   if (cambios.escalaConfiable === true) set.escalaConfiable = true;
 
   const confirmaEscala = cambios.escalaConfiable === true && !previa.escalaConfiable;
-  const desbloquea = confirmaEscala && previa.estadoAnalisis === 'bloqueada_escala';
+  // Confirmar la escala de una lámina que NO está analizada la manda a
+  // analizar: `bloqueada_escala` es el caso vivo, pero una que quedó en `error`
+  // o `pendiente` tampoco tiene entidades, y cerrarle la consulta sin
+  // reprocesar la dejaría fuera del cómputo sin nada que lo explique.
+  const faltaAnalizar = confirmaEscala && previa.estadoAnalisis !== 'analizada';
   const escalaCambio = cambios.escala !== undefined && cambios.escala !== previa.escala;
-  const reprocesa = desbloquea || escalaCambio;
+  const reprocesa = faltaAnalizar || escalaCambio;
 
   if (Object.keys(set).length > 0) {
     await db.update(laminas).set(set).where(eq(laminas.id, laminaId));
