@@ -321,6 +321,81 @@ describe('responderHallazgo sobre un faltante de medidas', () => {
     expect((await hallazgoPorClave('aberturas.medidas_vano.P1'))?.estado).toBe('respondido');
   });
 
+  it('rechaza un negativo, una unidad tipeada y un typo: los tres dejan la consulta abierta', async () => {
+    // El agujero que tapa: `parsearCantidad` devuelve `null` para todo lo que
+    // no es un positivo —el negativo incluido—, así que el chequeo `<= 0` de
+    // arriba solo llegaba a atrapar el cero. Los otros tres caían al camino de
+    // texto y cerraban la consulta ENTERA como `{tipo:'nota'}`: sin escribir un
+    // dato, sin recompute, y `recomputarObra` no reabre (regla 3). Quedaba la
+    // abertura incomputable, el rubro aprobable y, como única señal, una nota
+    // en «Respondidas».
+    const entidadId = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'V9',
+      atributos: { tag: 'V9', tipologia: 'ventana', anchoM: 1.2 },
+    });
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.V9');
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['altoM'] });
+
+    // Negativo, medida con la unidad tipeada, y el typo de la o por el cero.
+    for (const valor of ['-2', '0,90 m', '2,o5']) {
+      // Por la tarjeta multi-campo…
+      expect(
+        await responderHallazgo({ obraId, hallazgoId: abierto!.id, valores: { altoM: valor } }, actor),
+      ).toEqual({
+        ok: false,
+        error: `«${valor}» no es una medida: escribí solo el número, con coma decimal y sin unidad.`,
+      });
+      // …y por el `valor` suelto, que es el mismo endpoint con otro payload.
+      expect(await responderHallazgo({ obraId, hallazgoId: abierto!.id, valor }, actor)).toEqual({
+        ok: false,
+        error: `«${valor}» no es una medida: escribí solo el número, con coma decimal y sin unidad.`,
+      });
+    }
+
+    // La consulta sigue viva, la entidad intacta, el ítem sin emitir.
+    const intacto = await hallazgoPorClave('aberturas.medidas_vano.V9');
+    expect(intacto?.estado).toBe('abierto');
+    expect(intacto?.respuestaJson).toBeNull();
+    const [entidad] = await db.select().from(entidades).where(eq(entidades.id, entidadId));
+    expect(entidad.atributosJson.altoM).toBeUndefined();
+    expect(await itemPorClave('aberturas.V9')).toBeUndefined();
+    expect(await gateDeAberturas()).toEqual({ ok: false, bloqueantes: 1 });
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
+
+    // Y la medida bien escrita se sigue respondiendo igual que siempre.
+    expect(
+      await responderHallazgo({ obraId, hallazgoId: abierto!.id, valores: { altoM: '2,05' } }, actor),
+    ).toEqual({ ok: true });
+    expect((await hallazgoPorClave('aberturas.medidas_vano.V9'))?.estado).toBe('respondido');
+  });
+
+  it('una consulta que pregunta por un texto se sigue respondiendo en palabras', async () => {
+    // El downgrade a nota no se fue: sigue siendo lo correcto donde el campo no
+    // es una medida. El `tipo` de un tabique se contesta "durlock", y eso no es
+    // un atributo numérico que inventarle a la entidad (P4).
+    const entidadId = await insertarEntidad({
+      tipo: 'tabique',
+      nombre: 'T9',
+      atributos: { tipo: 'placa de yeso', largoM: 3, alturaM: 2.6, caras: 2 },
+    });
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('seco.sistema_tabique.T9');
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['tipo'] });
+
+    expect(
+      await responderHallazgo(
+        { obraId, hallazgoId: abierto!.id, valores: { tipo: 'durlock' } },
+        actor,
+      ),
+    ).toEqual({ ok: true });
+
+    const resuelto = await hallazgoPorClave('seco.sistema_tabique.T9');
+    expect(resuelto?.estado).toBe('respondido');
+    expect(resuelto?.respuestaJson).toEqual({ tipo: 'nota', nota: 'durlock' });
+  });
+
   it('rechaza la consulta de otra obra sin escribir nada', async () => {
     const [otroEstudio] = await db.insert(estudios).values({ nombre: 'Otro' }).returning();
     const [otraObra] = await db

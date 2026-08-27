@@ -74,7 +74,12 @@ export type CompraRecalculada = CompraCalculada;
 
 /**
  * Núcleo puro: cantidad válida (≥ 0, 2 decimales) o `null`.
- * `null` es "no lo pude leer", nunca 0.
+ *
+ * `null` es "no lo pude leer", nunca 0. **Y un negativo también da `null`**, no
+ * un número negativo: acá adentro `-2` y `dos metros` son lo mismo, "esto no es
+ * una cantidad". Quien lo llame no puede distinguirlos con un `<= 0` sobre el
+ * resultado —lo intentó `leerCampos` en la bandeja y el negativo se le escapaba
+ * al camino de texto—: el chequeo de "no es una medida" se hace sobre el `null`.
  */
 export async function parsearCantidad(texto: string): Promise<number | null> {
   const valor = numeroEsAr(texto);

@@ -57,6 +57,7 @@ import { z } from 'zod';
 import { parsearCantidad } from '@/app/obras/[obraId]/computo/actions';
 import { getDb, type Db } from '@/db/client';
 import { entidades, hallazgos, laminas, type Hallazgo } from '@/db/schema';
+import { esCampoDeMedida } from '@/lib/analysis/busqueda-tipos';
 import type { AnalysisProvider } from '@/lib/analysis/index';
 import { registrarAuditoria } from '@/lib/audit';
 import { enumerar, etiquetaCampo } from '@/lib/deduccion/motor';
@@ -182,6 +183,19 @@ const YA_RESUELTA = 'Esa consulta ya está resuelta. Refrescá la bandeja para v
 
 /** Responder "0" a un faltante dimensional cierra la consulta sin resolverla. */
 export const MEDIDA_NO_POSITIVA = 'La medida tiene que ser mayor a cero.';
+
+/**
+ * Lo que se escribió en un campo de medida y no es una medida.
+ *
+ * **Cita textualmente lo que el arquitecto tipeó**, porque los tres casos que
+ * caen acá se arreglan mirándolo: el typo (`2,o5` con o en vez de cero), la
+ * unidad de más (`0,90 m` — el número va pelado, la unidad la pone el campo) y
+ * el negativo (`-2`). Un "no pude leer el valor" a secas lo obliga a adivinar
+ * cuál de los tres fue.
+ */
+function noEsUnaMedida(texto: string): string {
+  return `«${texto}» no es una medida: escribí solo el número, con coma decimal y sin unidad.`;
+}
 
 /** Decisión 7: cerrar el supuesto de escala no marca la lámina como confiable. */
 export const ESCALA_NO_ES_SUPUESTO =
@@ -388,16 +402,39 @@ type LecturaDeCampos =
  * mitad del dato y `recomputarObra` no la reabre. Acá se miran los valores que
  * llegaron; que estén todos es responsabilidad de quien llama.
  *
- * Lo que no es número tampoco se escribe: el `tipo` de un tabique ("durlock")
- * se responde en palabras y el motor lo lee como medida, así que va a nota.
+ * ## Por qué `pideMedidas`, y no "lo que no es número va a nota"
+ *
+ * Que un texto se guarde como nota es correcto **cuando la consulta pregunta
+ * por un texto**: el `tipo` de un tabique se responde "durlock" y eso no es un
+ * atributo numérico que inventarle a la entidad (P4).
+ *
+ * Sobre una consulta que pide **medidas** era el mismo agujero del "0" con otra
+ * cara, y peor tapado. `parsearCantidad` devuelve `null` para todo lo que no es
+ * un positivo —el negativo incluido, así que el `numero <= 0` de acá abajo solo
+ * llegaba a atrapar el cero—, y con eso `-2`, `0,90 m` (con la unidad tipeada)
+ * y el typo `2,o5` caían al camino de texto: la respuesta entera se cerraba
+ * como `{tipo:'nota'}`, sin escribir un dato, sin recompute, y `recomputarObra`
+ * no reabre (regla 3). Quedaba una abertura incomputable, un rubro aprobable y,
+ * como única señal, una nota en «Respondidas». Es el mismo CRITICAL que ya se
+ * tapó en los cierres parciales.
+ *
+ * Por eso: **si el target tiene aunque sea un campo de medida, un valor que no
+ * es una medida es un error y la consulta queda abierta**, con el texto citado
+ * para que se vea qué arreglar. El downgrade a nota queda solo para las
+ * consultas donde ningún campo es de medida, que son las que se contestan en
+ * palabras.
  */
 async function leerCampos(
   crudos: readonly (readonly [string, string])[],
+  pideMedidas: boolean,
 ): Promise<LecturaDeCampos> {
   const valores: Record<string, number> = {};
   for (const [campo, texto] of crudos) {
     const numero = await parsearCantidad(texto);
-    if (numero === null) return { tipo: 'texto', texto: crudos.map(([, t]) => t).join(' · ') };
+    if (numero === null) {
+      if (pideMedidas) return { tipo: 'error', error: noEsUnaMedida(texto) };
+      return { tipo: 'texto', texto: crudos.map(([, t]) => t).join(' · ') };
+    }
     if (numero <= 0) return { tipo: 'error', error: MEDIDA_NO_POSITIVA };
     valores[campo] = numero;
   }
@@ -431,6 +468,11 @@ function camposEscritos(
  *    una auditoría, un recompute.
  *  - `valor` suelto ⇒ el primer campo del target (lo de siempre).
  *  - resto ⇒ la respuesta queda como nota, sin tocar ningún dato.
+ *
+ * La nota es el piso **solo si la consulta no pide medidas**. Sobre una que sí
+ * las pide, un valor que no es una medida (`-2`, `0,90 m`, `2,o5`) es un error
+ * y la consulta queda abierta: cerrarla como nota dejaba la abertura sin
+ * computar y el rubro aprobable, y `recomputarObra` no reabre (regla 3).
  */
 export async function responderHallazgo(
   entrada: EntradaRespuesta,
@@ -480,7 +522,7 @@ export async function responderHallazgo(
 
   // Camino nuevo: la tarjeta manda un valor por campo.
   if (escritos.length > 0) {
-    const leidos = await leerCampos(escritos);
+    const leidos = await leerCampos(escritos, campos.some(esCampoDeMedida));
     if (leidos.tipo === 'error') return { ok: false, error: leidos.error };
 
     // Sin números que escribir, la respuesta es lo que se dijo, no un dato: no
@@ -521,6 +563,15 @@ export async function responderHallazgo(
   // impedir (RF-404). Se rechaza y la consulta sigue abierta.
   if (target !== null && numero !== null && numero <= 0) {
     return { ok: false, error: MEDIDA_NO_POSITIVA };
+  }
+
+  // Y lo mismo por el camino del `valor` suelto: sobre una consulta que pide
+  // medidas, un `-2`, un `0,90 m` o un `2,o5` no son una nota, son un error de
+  // tipeo, y cerrarlos como nota deja la abertura incomputable para siempre
+  // (misma razón que en `leerCampos`). Una consulta que pregunta por un texto
+  // sí se responde en palabras, y ahí la nota sigue siendo lo correcto.
+  if (texto !== '' && numero === null && campos.some(esCampoDeMedida)) {
+    return { ok: false, error: noEsUnaMedida(texto) };
   }
 
   // Un `valor` suelto responde UN campo. Si la consulta pide dos, no hay forma
@@ -863,7 +914,7 @@ export async function confirmarLote(
     // Y una propuesta que no es un número tampoco: entraría a la entidad como
     // atributo sin que nadie la haya mirado (P4).
     const completa = campos.length > 0 && crudos.length === campos.length;
-    const leidos = completa ? await leerCampos(crudos) : null;
+    const leidos = completa ? await leerCampos(crudos, campos.some(esCampoDeMedida)) : null;
     if (leidos === null || leidos.tipo !== 'numeros') {
       salteadas += 1;
       continue;
