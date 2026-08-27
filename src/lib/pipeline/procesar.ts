@@ -129,6 +129,16 @@ export function descripcionEscalaRelectura(confirmada: string, releida: string):
 /** Respuesta con la que el desbloqueo manual cierra el hallazgo de escala. */
 export const RESPUESTA_ESCALA_CONFIRMADA = { auto: 'escala confirmada a mano' } as const;
 
+/**
+ * Respuesta con la que se cierra la consulta de escala de una lámina que resultó
+ * ser una **planilla**: ahí no hay nada que medir, así que la escala no aplica.
+ * Cubre la lámina que quedó bloqueada en una corrida vieja —o clasificada como
+ * plano y reclasificada después— y que ahora se analiza igual.
+ */
+export const RESPUESTA_ESCALA_NO_APLICA = {
+  auto: 'la lámina es una planilla: sus datos están escritos, no se miden',
+} as const;
+
 /** Respuesta con la que se cierra el aviso de relectura cuando deja de aplicar. */
 export const RESPUESTA_RELECTURA_COINCIDE = {
   auto: 'el rótulo volvió a leerse igual que la escala confirmada',
@@ -701,6 +711,12 @@ export function escalaRelectura(
  *
  * Una escala en blanco (`'   '`) es lo mismo que no tenerla: no se puede
  * proponer confirmar la nada.
+ *
+ * **Esto dice qué escala hay, no qué hace el pipeline con ella.** Quien decide
+ * es `analizarLamina`, y tiene una excepción: una lámina `tipo === 'planilla'`
+ * se analiza igual aunque el modo sea `bloqueada`, porque en una tabla no se
+ * mide, se lee. Esa excepción vive allá y no acá para que esta función siga
+ * siendo la lectura del rótulo y nada más.
  */
 export type ModoEscala = 'confiable' | 'asumida' | 'bloqueada';
 
@@ -1005,7 +1021,11 @@ async function sincronizarHallazgoRelectura(
   });
 }
 
-async function cerrarHallazgoEscala(db: Db, lamina: Lamina): Promise<void> {
+async function cerrarHallazgoEscala(
+  db: Db,
+  lamina: Lamina,
+  respuesta: Record<string, string> = RESPUESTA_ESCALA_CONFIRMADA,
+): Promise<void> {
   const clave = claveEscala(lamina.id);
   const [previo] = await db
     .select()
@@ -1022,10 +1042,10 @@ async function cerrarHallazgoEscala(db: Db, lamina: Lamina): Promise<void> {
   // auditoría contando otra historia que la que pasó.
   await db
     .update(hallazgos)
-    .set({ estado: 'respondido', respuestaJson: { ...RESPUESTA_ESCALA_CONFIRMADA } })
+    .set({ estado: 'respondido', respuestaJson: { ...respuesta } })
     .where(eq(hallazgos.id, previo.id));
   await auditarAgente(lamina.obraId, 'hallazgo_respondido', `hallazgos:${clave}`, {
-    ...RESPUESTA_ESCALA_CONFIRMADA,
+    ...respuesta,
   });
 }
 
@@ -1256,8 +1276,9 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     // El texto del PDF se guarda en la lámina (RF-106): es lo que después lee el
     // Q&A del expediente para contestar con citas. Se persiste en las dos
     // salidas —analizada y bloqueada por escala— porque una lámina sin escala
-    // igual dice cosas: una planilla de carpinterías es texto puro y no se
-    // computa. Vacío ⇒ `null`, que es "no hay texto que citar" y no "no leí".
+    // igual dice cosas: una carátula o una memoria descriptiva no computan nada
+    // y aun así se citan. Vacío ⇒ `null`, que es "no hay texto que citar" y no
+    // "no leí".
     const textoExtraido = entrada.textoExtraido?.trim() ? entrada.textoExtraido : null;
 
     const modo = modoEscala(campos);
@@ -1266,7 +1287,30 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     // lectura" que declarar.
     const confianzaEscala = rotulo.escala !== null ? rotulo.confianza : null;
 
-    if (modo === 'bloqueada') {
+    /**
+     * **Una planilla no se mide: se lee**, y por eso la falta de escala no la
+     * bloquea.
+     *
+     * Una planilla de carpinterías casi nunca imprime una escala en el rótulo
+     * —no tiene por qué: es una tabla—, y el prompt manda `escalaConfiable:
+     * true` SOLO tras verificar contra ≥ 2 cotas, así que el provider real
+     * devuelve `escala: null, escalaConfiable: false` y `modoEscala` daba
+     * `bloqueada`. Con eso la planilla no extraía ni una fila, la deducción
+     * planilla↔plano se quedaba sin nada que cruzar y la búsqueda dirigida la
+     * excluía de las candidatas (exige `analizada`): la ola entera de "el
+     * sistema propone lo que sabe leer" se apagaba para esa obra justo en la
+     * lámina donde están escritas las medidas que el arquitecto reclamaba.
+     *
+     * Bloquearla no protegía nada. RF-201 existe para que nadie mida sobre una
+     * escala que no es; en una tabla no se mide, se transcribe, y sus números
+     * vienen con todas las letras y con el bbox de la fila.
+     *
+     * Corolario: tampoco se le abre consulta de escala. Preguntar por la escala
+     * de una planilla es pedir un dato que no cambia nada de lo que se extrajo.
+     */
+    const esPlanilla = campos.tipo === 'planilla';
+
+    if (modo === 'bloqueada' && !esPlanilla) {
       // RF-201: sin escala declarada no se mide nada. Si la lámina traía
       // entidades de una corrida anterior, se van con ella.
       const { eliminadas } = await sincronizarEntidades(db, lamina, []);
@@ -1309,11 +1353,15 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
       .set({ ...campos, ...SOLTAR, textoExtraido, estadoAnalisis: 'analizada', errorDetalle: null })
       .where(eq(laminas.id, laminaId));
 
-    // Las dos salidas que sí computan. La diferencia es qué queda en la bandeja:
-    // con la escala verificada, nada; con la escala asumida, un supuesto no
-    // bloqueante que se confirma de un click con lo que ya se leyó.
+    // Las tres salidas que sí computan. La diferencia es qué queda en la
+    // bandeja: con la escala verificada, nada; con la escala asumida, un
+    // supuesto no bloqueante que se confirma de un click con lo que ya se leyó;
+    // con una planilla sin escala, tampoco nada — ahí no hay nada que medir, y
+    // si una corrida vieja dejó la consulta abierta, se cierra diciendo por qué.
     if (modo === 'asumida') {
       await upsertHallazgoEscala(db, lamina, 'asumida', campos.escala, confianzaEscala);
+    } else if (modo === 'bloqueada') {
+      await cerrarHallazgoEscala(db, lamina, RESPUESTA_ESCALA_NO_APLICA);
     } else {
       await cerrarHallazgoEscala(db, lamina);
     }
@@ -1332,6 +1380,9 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
       titulo: campos.titulo,
       escala: campos.escala,
       escalaAsumida: modo === 'asumida',
+      // Una planilla analizada sin escala: queda dicho en la auditoría, que es
+      // donde se ve por qué una lámina sin escala igual trajo entidades.
+      ...(modo === 'bloqueada' ? { escalaNoAplica: true } : {}),
       entidades: validas.length,
       ...resumen,
       descartadas,

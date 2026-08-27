@@ -29,6 +29,11 @@ export interface LaminaDeFuente {
   escala: string | null;
   /** `true` si el modelo la verificó contra cotas, o el arquitecto la confirmó. */
   escalaConfiable: boolean;
+  /**
+   * Qué clase de lámina es. Solo se mira si es `'planilla'`: los números de una
+   * tabla se transcriben, no se miden, así que su escala no los afecta.
+   */
+  tipo: string | null;
 }
 
 /** La lámina sin verificar sobre la que se computó un ítem. */
@@ -50,6 +55,15 @@ export interface EscalaAsumida {
  * el mismo silencio que esto viene a romper. El texto del aviso distingue los
  * dos casos.
  *
+ * **Las planillas quedan afuera, y no es una excepción de conveniencia.** Una
+ * planilla de carpinterías casi nunca declara escala y desde el arreglo de la
+ * revisión final se analiza igual: sus filas producen aberturas con el ancho y
+ * el alto **escritos en la tabla**. Ese número no se computó sobre ninguna
+ * escala —no se midió, se transcribió—, así que avisar que "se computó sin una
+ * escala verificada" sería una advertencia falsa sobre el dato más confiable de
+ * la obra, y de las que enseñan a ignorar el badge. Si el ítem además se apoya
+ * en un plano sin verificar, ese plano es otra fuente y el aviso sale por él.
+ *
  * Una fuente que apunta a una lámina que ya no está en la obra se ignora: no
  * hay nada que nombrar, y el ítem tiene su propio aviso ("perdió la entidad que
  * lo respaldaba") por otro lado.
@@ -60,7 +74,7 @@ export function escalaAsumidaDelItem(
 ): EscalaAsumida | null {
   for (const fuente of fuentes) {
     const lamina = laminas.get(fuente.laminaId);
-    if (lamina === undefined || lamina.escalaConfiable) continue;
+    if (lamina === undefined || lamina.escalaConfiable || lamina.tipo === 'planilla') continue;
     return { laminaId: lamina.laminaId, etiqueta: lamina.etiqueta, escala: lamina.escala };
   }
   return null;

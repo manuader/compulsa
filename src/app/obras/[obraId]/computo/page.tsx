@@ -135,6 +135,7 @@ export default async function ComputoPage({
         numeroPagina: laminas.numeroPagina,
         escala: laminas.escala,
         escalaConfiable: laminas.escalaConfiable,
+        tipo: laminas.tipo,
       })
       .from(laminas)
       .where(eq(laminas.obraId, obra.id)),
@@ -150,6 +151,7 @@ export default async function ComputoPage({
         etiqueta: fila.codigo ?? `Página ${fila.numeroPagina}`,
         escala: fila.escala,
         escalaConfiable: fila.escalaConfiable,
+        tipo: fila.tipo,
       },
     ]),
   );

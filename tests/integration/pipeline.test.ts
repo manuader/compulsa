@@ -837,6 +837,68 @@ describe('escala declarada pero no verificada (decisión 1)', () => {
   });
 });
 
+describe('una planilla sin escala declarada se lee igual', () => {
+  /**
+   * La trampa que la revisión final encontró, y que es exactamente la regla 6
+   * de `tests/CLAUDE.md` cometida en la misma ola que escribió la regla.
+   *
+   * Una planilla de carpinterías no imprime escala en el rótulo —no tiene por
+   * qué: es una tabla—, y el prompt real (`claude.ts`, regla 4) manda
+   * `escalaConfiable: true` SOLO tras verificar contra ≥ 2 cotas. O sea que el
+   * provider real devuelve `escala: null, escalaConfiable: false` para toda
+   * planilla, y con eso `modoEscala` daba `bloqueada`: sin filas extraídas, sin
+   * deducción planilla↔plano y excluida de la búsqueda dirigida, que exige
+   * `analizada`. Los cuatro fixtures de planilla del repo declaraban
+   * `escalaConfiable: true` —una salida que el provider real **no puede
+   * emitir**— y la suite entera validaba un rótulo imposible.
+   *
+   * `obra-reforma.pdf` p2 es esa planilla, ahora con el rótulo que el provider
+   * real sí produce. Este test es el que faltaba.
+   */
+  it('queda analizada, con sus filas extraídas y sin consulta de escala', async () => {
+    const documento = await subirYProcesar('obra-reforma.pdf');
+    const lams = await laminasDe(documento.id);
+    const planilla = lams.find((l) => l.tipo === 'planilla');
+    if (!planilla) throw new Error('el fixture de reforma tiene que traer una planilla');
+
+    // El rótulo que el provider real puede emitir: sin escala y sin verificar.
+    expect(planilla.escala).toBeNull();
+    expect(planilla.escalaConfiable).toBe(false);
+    // Y aun así se leyó: en una tabla no se mide, se transcribe.
+    expect(planilla.estadoAnalisis).toBe('analizada');
+
+    const filas = await db.select().from(entidades).where(eq(entidades.laminaId, planilla.id));
+    expect(filas.map((e) => e.nombre).sort()).toEqual(['P3', 'V5']);
+    expect(filas.find((e) => e.nombre === 'P3')?.atributosJson).toMatchObject({
+      anchoM: 0.8,
+      altoM: 2.05,
+    });
+
+    // Sin hallazgo de escala: preguntar por la escala de una planilla es pedir
+    // un dato que no cambia nada de lo que se extrajo.
+    expect(await hallazgoPorClave(`escala.${planilla.id}`)).toBeUndefined();
+
+    // `analizada` + `planilla` es exactamente lo que `laminasCandidatas` pide
+    // para releerla en la búsqueda dirigida: con la planilla bloqueada, la
+    // lámina donde están escritas las medidas no entraba nunca.
+  });
+
+  it('la planilla no bloquea el rubro y una lámina común sin escala sí', async () => {
+    await subirYProcesar('obra-reforma.pdf');
+    await subirYProcesar('sin-escala.pdf');
+
+    const abiertos = await db
+      .select()
+      .from(hallazgos)
+      .where(and(eq(hallazgos.obraId, obraId), eq(hallazgos.estado, 'abierto')));
+    const deEscala = abiertos.filter((f) => f.clave.startsWith('escala.'));
+
+    // Una sola consulta de escala en toda la obra, y es la del plano sin escala.
+    expect(deEscala).toHaveLength(1);
+    expect(deEscala[0].bloqueante).toBe(true);
+  });
+});
+
 describe('confirmar la escala asumida', () => {
   it('confirmar la misma escala no vuelve a llamar al modelo', async () => {
     const documento = await subirYProcesar('escala-declarada.pdf');
