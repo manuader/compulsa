@@ -8,12 +8,17 @@ detecta ambientes, muros, tabiques y aberturas, y arma la planilla con cantidad 
 y cantidad de compra redondeada a la presentación comercial con la que se compra el material:
 placas de 1,20 × 2,40, baldes de 15 kg, cajas de 500 tornillos.
 
-Lo que la documentación no resuelve no se rellena en silencio: se pregunta. Todo hueco —un dato
-que falta, una lámina sin escala verificable, un elemento que ya existe en una reforma, una
-deducción que no llega al umbral de confianza— cae en la bandeja de consultas, se responde de a un
-clic y el cómputo se recalcula solo. Ningún rubro se puede aprobar con una consulta bloqueante
-abierta. Ese es el punto: el número que sale de acá se puede llevar al corralón sin que falte ni
-sobre material, y se puede auditar hasta el plano.
+Lo que la documentación **sí** dice, el sistema lo lee y lo **propone**: si el ancho de una ventana
+está escrito en la planilla de carpinterías, la consulta llega con el número puesto, la lámina y el
+recuadro de donde salió, y se confirma con un clic. Nunca se escribe solo — proponer no es
+inventar—, pero tampoco se pregunta de cero algo que está escrito dos láminas más allá.
+
+Lo que la documentación **no** resuelve no se rellena en silencio: se pregunta. Todo hueco —un dato
+que no está en ningún lado, una lámina sin ninguna escala, un elemento que ya existe en una
+reforma, una deducción que no llega al umbral de confianza— cae en la bandeja de consultas, con el
+plano al lado para poder mirarlo mientras se contesta, y el cómputo se recalcula solo. Ningún rubro
+se puede aprobar con una consulta bloqueante abierta. Ese es el punto: el número que sale de acá se
+puede llevar al corralón sin que falte ni sobre material, y se puede auditar hasta el plano.
 
 Con el cómputo aprobado arranca la otra mitad: **la compulsa**. El sistema congela lo aprobado en
 un snapshot con hash, arma el pedido de cotización con las condiciones del §13 del PRD (IVA
@@ -85,7 +90,7 @@ No lo agregues sin necesidad: el día que haga falta rasterizar de verdad hay qu
 npm run dev          # dev server (PGlite local, migra al boot)
 npm run build        # build de producción
 npm start            # sirve el build
-npm test             # vitest (unit + integration) — 925 tests, sin red
+npm test             # vitest (unit + integration) — 1077 tests, sin red
 npm run test:watch   # vitest en watch
 npm run golden       # harness de regresión de precisión contra el golden set
 npm run seed         # datos de demo (idempotente)
@@ -126,16 +131,25 @@ Lo que hay hoy, punta a punta.
   ni por pantalla ni por API ni por descarga de archivo.
 - Alta de obra (nueva / reforma / ampliación) y expediente: upload de PDF, separación por página,
   lectura de rótulo (código, título, disciplina, tipo, escala), reclasificación manual y reproceso.
-- **Bloqueo por escala**: una lámina sin escala verificable no se computa y abre una consulta
-  bloqueante; cuando el arquitecto confirma la escala, la lámina se re-analiza sola.
+- **Escala**: si el rótulo **declara** una escala que el sistema no pudo verificar contra las cotas,
+  la lámina se analiza y se computa igual, avisando que la escala es asumida; confirmarla es un clic
+  y no dispara un re-análisis (corregirla a otro valor sí, porque todo se midió con la anterior).
+  Solo una lámina **sin ninguna escala** queda bloqueada, con una consulta que pide una medida de
+  referencia.
 - Cómputo en cuatro rubros: **aberturas, construcción en seco, pintura y obra gruesa**, con
   cantidad neta, desperdicio, cantidad de compra y presentación comercial.
 - Visor de láminas con overlay de entidades y consultas sobre el plano, capas conmutables y
   resaltado en rojo del ítem que venés a mirar desde la planilla.
 - Planilla editable por rubro: edición inline con recálculo server-side, alta y anulación de ítems,
   filtros por origen y aprobación de rubro con confirmación.
-- Bandeja de consultas: responder, marcar existente, confirmar supuesto o descartar, de a una o en
-  lote, con efecto inmediato sobre el cómputo.
+- Bandeja de consultas **con el plano al lado**: la lista a la izquierda, la lámina de esa consulta
+  a la derecha con el recuadro resaltado, sin navegar a otra pantalla. Responder, marcar existente,
+  confirmar supuesto o descartar, de a una o en lote, con efecto inmediato sobre el cómputo.
+- **La consulta llega con el valor propuesto** cuando el dato está escrito en algún lado: leído del
+  rótulo, leído del plano con poca confianza, o encontrado por la **búsqueda dirigida** —que relee
+  las planillas y las láminas citadas con la lista de lo que falta en la mano—. Cada propuesta dice
+  de dónde salió y con cuánta confianza, y una abertura pide su ancho y su alto **en una sola
+  tarjeta**: se responde entera o no se responde.
 - **Doble pasada de verificación (RF-306):** «Verificar cómputo» relee las láminas, compara contra
   la planilla y abre una consulta no bloqueante por cada desvío mayor al 5%, citando los dos
   valores.
@@ -201,9 +215,13 @@ Lo que hay hoy, punta a punta.
   compulsas, adjudicar, eliminar obras y gestionar usuarios; `lectura` no muta nada. El permiso lo
   exigen los núcleos, no la pantalla: esconder un botón es cortesía.
 - **Invitaciones por código** con rol y vencimiento, alta y baja lógica de usuarios.
-- **Configuración del estudio**: desperdicio por rubro (guardar recalcula las obras activas),
-  condiciones por defecto del pedido, mandato, pesos del ranking, dólar MEP de referencia y
-  **checklists por rubro** (qué se chequea y qué frena la aprobación).
+- **Configuración del estudio**: **instrucciones de extracción** (en castellano, generales y por
+  rubro: «las cotas de nuestros planos están en centímetros», «las medidas de las carpinterías están
+  en la planilla DET00») que viajan al prompt de análisis de todas las obras del estudio —sirven
+  para decirle **dónde y cómo mirar**, no para pedirle que complete lo que la lámina no dice—,
+  desperdicio por rubro (guardar recalcula las obras activas), condiciones por defecto del pedido,
+  mandato, pesos del ranking, dólar MEP de referencia y **checklists por rubro** (qué se chequea y
+  qué frena la aprobación).
 - **Notificaciones** con campanita y deduplicación por clave: deducciones esperando, proveedor que
   no contesta, compulsa adjudicada, alguien que se sumó al estudio.
 
@@ -243,12 +261,12 @@ el día que se implementen.
 ## Testing
 
 ```bash
-npm test        # 60 suites, 962 tests
+npm test        # 67 suites, 1077 tests
 npm run golden  # regresión de precisión sobre el golden set (2 obras)
 ```
 
-Los tests **nunca** usan red ni `ANTHROPIC_API_KEY`: los providers de análisis, de presupuesto y de
-Q&A son siempre el mock con fixtures. Los de integración corren sobre PGlite en memoria, uno por
+Los tests **nunca** usan red ni `ANTHROPIC_API_KEY`: los cuatro providers —análisis, presupuesto,
+Q&A y búsqueda dirigida— son siempre el mock con fixtures. Los de integración corren sobre PGlite en memoria, uno por
 suite, sin persistir nada. Los asserts pinean números exactos, no rangos. Ver
 [tests/CLAUDE.md](tests/CLAUDE.md).
 
