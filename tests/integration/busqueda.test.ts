@@ -35,8 +35,11 @@ import {
 } from '@/db/schema';
 import type { BusquedaProvider } from '@/lib/analysis/busqueda-tipos';
 import {
+  ACCION_BUSQUEDA,
+  ACCION_SIN_RESULTADO,
   buscarDatosFaltantes,
   escribirPropuesta,
+  laminasCandidatas,
   MAX_LAMINAS_POR_BUSQUEDA,
 } from '@/lib/pipeline/busqueda';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
@@ -306,6 +309,101 @@ describe('buscarDatosFaltantes', () => {
     });
 
     expect(llamadas.length).toBeLessThanOrEqual(MAX_LAMINAS_POR_BUSQUEDA);
+  });
+
+  it('una corrida truncada por el cap no marca nada: no leyó lo que dice no haber encontrado', async () => {
+    // La marca dice "el dato no está en la documentación de la obra" y lleva la
+    // huella de la obra ENTERA, así que la corrida siguiente ni lo intenta.
+    // Escribirla cuando el cap dejó láminas sin abrir era afirmar eso sobre
+    // documentación que nadie leyó, y la mentira no caducaba hasta que entrara
+    // documentación nueva.
+    const [a01, det00] = await laminasDeLaObra();
+    // Ocho planillas más: con DET00 son nueve, y con A-01 —que el hallazgo
+    // cita— las candidatas ordenadas son diez contra un cap de ocho.
+    for (let i = 0; i < 8; i += 1) {
+      await db.insert(laminas).values({
+        documentoId: det00.documentoId,
+        obraId,
+        numeroPagina: 100 + i,
+        codigo: `DET-${i}`,
+        tipo: 'planilla',
+        // El mismo PDF: lo único que importa es que el storage lo pueda leer.
+        archivoRef: det00.archivoRef,
+        estadoAnalisis: 'analizada',
+      });
+    }
+    expect(a01.codigo).toBe('A-01');
+
+    const llamadas: string[] = [];
+    const resultado = await buscarDatosFaltantes(obraId, {
+      db,
+      storage,
+      provider: providerQueCuenta(llamadas),
+    });
+
+    // Se leyeron ocho y quedaron dos afuera: el objetivo volvió vacío…
+    expect(llamadas).toHaveLength(MAX_LAMINAS_POR_BUSQUEDA);
+    expect(resultado.sinResultado).toBe(1);
+    // …y aun así NO quedó marcado.
+    expect((await hallazgoPorClave(CLAVE))?.busquedaJson).toBeNull();
+
+    const corrida = await db
+      .select()
+      .from(auditoria)
+      .where(and(eq(auditoria.obraId, obraId), eq(auditoria.accion, ACCION_BUSQUEDA)));
+    expect(corrida).toHaveLength(1);
+    expect(corrida[0].diffJson).toMatchObject({
+      truncadaPorCap: true,
+      laminasCandidatas: 10,
+      sinMarcarPorTruncado: 1,
+    });
+    // Y nadie auditó "el dato no está en la documentación".
+    expect((await todaLaAuditoria()).some((f) => f.accion === ACCION_SIN_RESULTADO)).toBe(false);
+
+    // La corrida siguiente vuelve a salir a buscar, que es exactamente el
+    // costo que se elige pagar antes que auditar una revisión que no ocurrió.
+    const segunda = await buscarDatosFaltantes(obraId, {
+      db,
+      storage,
+      provider: providerQueCuenta([]),
+    });
+    expect(segunda.objetivos).toBe(1);
+  });
+
+  it('la misma corrida SIN truncar sí marca: leyó todo lo que había para leer', async () => {
+    const llamadas: string[] = [];
+    const resultado = await buscarDatosFaltantes(obraId, {
+      db,
+      storage,
+      provider: providerQueCuenta(llamadas),
+    });
+
+    expect(llamadas).toHaveLength(2); // las dos láminas de la obra, sin cap de por medio
+    expect(resultado.sinResultado).toBe(1);
+    expect((await hallazgoPorClave(CLAVE))?.busquedaJson).toMatchObject({
+      campos: ['anchoM', 'altoM'],
+    });
+  });
+
+  it('laminasCandidatas avisa cuándo cortó y cuándo no', () => {
+    const planilla = (n: number) => ({
+      id: `id-${n}`,
+      numeroPagina: n,
+      archivoRef: `ref-${n}`,
+      codigo: `DET-${n}`,
+      titulo: null,
+      tipo: 'planilla' as const,
+      estadoAnalisis: 'analizada',
+      textoExtraido: null,
+      documentoNombre: 'x.pdf',
+    });
+    const tres = [planilla(1), planilla(2), planilla(3)];
+
+    expect(laminasCandidatas(tres, new Set(), 3)).toEqual({ laminas: tres, truncado: false });
+    expect(laminasCandidatas(tres, new Set(), 2)).toEqual({
+      laminas: [tres[0], tres[1]],
+      truncado: true,
+    });
   });
 
   it('una obra sin consultas con target no gasta una llamada ni una auditoría', async () => {

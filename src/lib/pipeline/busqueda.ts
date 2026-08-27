@@ -43,6 +43,13 @@
  *     consulta que la documentación simplemente no puede responder le costaba
  *     al usuario hasta ocho llamadas en cada `procesarDocumento`, para siempre.
  *
+ *     **Una corrida truncada por el cap no marca nada** (`laminasCandidatas`
+ *     avisa con `truncado`). La marca dice "el dato no está en la
+ *     documentación" y lleva la huella de la obra entera: escribirla cuando
+ *     quedaron láminas sin abrir es afirmar algo sobre lo que nadie leyó, y
+ *     además hace que la corrida siguiente ni lo intente. Preferimos volver a
+ *     pagar antes que auditar una revisión que no ocurrió.
+ *
  * Las propuestas que deja acá sobreviven al recompute: la regla de merge de
  * `recomputar.ts` (decisión 8 del plan) no pisa una `busqueda_dirigida` cuando
  * el motor re-emite el hallazgo sin propuesta propia. Sin eso, el primer
@@ -88,8 +95,19 @@ import {
 /**
  * Cuántas láminas puede releer una corrida. Peor caso de la obra del reclamo
  * (25 láminas): 8 llamadas extra, ~30 % del costo de analizarla, todas
- * auditadas. El corte es por corrida, no por obra: la búsqueda siguiente
- * arranca por las que quedaron pendientes de propuesta.
+ * auditadas.
+ *
+ * **El corte es por corrida y la corrida siguiente vuelve a empezar por el
+ * principio de la misma lista ordenada** (planillas primero, después las
+ * citadas): no hay ningún cursor que recuerde dónde quedó. Con la
+ * documentación quieta eso significa que las láminas del final del orden no se
+ * leen nunca, y es a propósito —la lista está ordenada por dónde es más
+ * probable que esté el dato—, pero conviene tenerlo escrito: una versión
+ * anterior de este comentario prometía que "la búsqueda siguiente arranca por
+ * las que quedaron pendientes", y eso no pasa ni pasó nunca.
+ *
+ * Lo que sí cambia por corrida es qué objetivos entran (los que ya tienen
+ * propuesta salen) y, si entra documentación nueva, qué láminas son candidatas.
  */
 export const MAX_LAMINAS_POR_BUSQUEDA = 8;
 
@@ -136,7 +154,15 @@ export interface ResultadoBusqueda {
   laminasConsultadas: number;
   /** Objetivos cuya propuesta quedó escrita en la consulta. */
   propuestos: number;
-  /** Objetivos que volvieron vacíos: el dato no está en la documentación. */
+  /**
+   * Objetivos que volvieron vacíos de **las láminas que se leyeron**.
+   *
+   * Con la corrida completa eso es "el dato no está en la documentación", y por
+   * eso se marcan. Si el cap truncó las candidatas, es apenas "no apareció en
+   * las que llegamos a mirar": el número sale igual —es lo que pasó— pero no se
+   * escribe ninguna marca, y la auditoría de la corrida lo dice
+   * (`truncadaPorCap`).
+   */
   sinResultado: number;
 }
 
@@ -268,19 +294,27 @@ function armarPedidos(
  * una planilla—, pero si algún día aparece una obra así y el dato se escapa, el
  * arreglo es reservar un par de lugares del cap para las citadas, no invertir la
  * prioridad.
+ *
+ * Por eso devuelve también **`truncado`**: la corrida necesita saber que quedó
+ * documentación sin leer para no marcar los objetivos vacíos como "buscado y no
+ * está" (ver la decisión 6 en la cabecera del módulo). La marca dice que el
+ * dato **no está en la documentación**, y sobre una corrida truncada eso sería
+ * una afirmación sobre láminas que nadie abrió — que además hace que la corrida
+ * siguiente ni siquiera vuelva a intentar.
  */
 export function laminasCandidatas(
   todas: readonly LaminaCandidata[],
   citadas: ReadonlySet<string>,
   cap: number = MAX_LAMINAS_POR_BUSQUEDA,
-): LaminaCandidata[] {
+): { laminas: LaminaCandidata[]; truncado: boolean } {
   const esPlanilla = (lamina: LaminaCandidata): boolean =>
     lamina.tipo === 'planilla' && lamina.estadoAnalisis === 'analizada';
 
   const planillas = todas.filter(esPlanilla);
   const otras = todas.filter((lamina) => !esPlanilla(lamina) && citadas.has(lamina.id));
 
-  return [...planillas, ...otras].slice(0, cap);
+  const ordenadas = [...planillas, ...otras];
+  return { laminas: ordenadas.slice(0, cap), truncado: ordenadas.length > cap };
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +606,7 @@ export async function buscarDatosFaltantes(
     for (const fuente of pedido.hallazgo.laminasJson) citadas.add(fuente.laminaId);
   }
 
-  const candidatas = laminasCandidatas(todasLasLaminas, citadas);
+  const { laminas: candidatas, truncado } = laminasCandidatas(todasLasLaminas, citadas);
 
   const storage = deps.storage ?? getStorage();
   const provider = deps.provider ?? getBusquedaProvider();
@@ -701,9 +735,22 @@ export async function buscarDatosFaltantes(
   // La marca va después de intentar todas las propuestas: si el provider se
   // cayó a mitad de la corrida, nada de esto llegó a escribirse y la próxima
   // vuelve a buscar, que es lo correcto — no se buscó, se rompió.
+  //
+  // Y por el mismo motivo **una corrida truncada por el cap no marca nada**. La
+  // marca afirma "el dato no está en la documentación de la obra" y hace que la
+  // corrida siguiente ni lo intente: si el cap dejó láminas sin abrir, eso sería
+  // una afirmación sobre documentación que nadie leyó, apoyada encima en la
+  // huella de la obra **entera** — así que la mentira no caduca hasta que entre
+  // documentación nueva. La alternativa era guardar en la marca qué láminas se
+  // consultaron y compararlas en la corrida siguiente; se descartó porque con
+  // la documentación quieta el orden de candidatas es el mismo y la corrida
+  // siguiente volvería a leer exactamente las mismas ocho: la marca no ahorraría
+  // nada y la comparación agregaría un estado más que mantener. No marcar es lo
+  // barato y lo honesto: la corrida que sí alcanzó a leer todo marca, y la que
+  // no, no.
   const marcadas: string[] = [];
   const at = new Date().toISOString();
-  for (const pedido of vacios) {
+  for (const pedido of truncado ? [] : vacios) {
     const marca: MarcaBusqueda = { campos: pedido.objetivo.campos, huella, at };
     if (!(await marcarSinResultado(db, pedido.hallazgo.id, marca))) {
       cerradasEnVuelo.push(pedido.objetivo.clave);
@@ -726,6 +773,16 @@ export async function buscarDatosFaltantes(
     sinResultado: resultado.sinResultado,
     claves: escritas,
     ...(marcadas.length > 0 ? { marcadas } : {}),
+    // Qué quedó sin leer y qué no se marcó por eso: es lo que explica que la
+    // corrida siguiente vuelva a pagar los mismos objetivos.
+    ...(truncado
+      ? {
+          truncadaPorCap: true,
+          laminasCandidatas: laminasCandidatas(todasLasLaminas, citadas, Number.MAX_SAFE_INTEGER)
+            .laminas.length,
+          sinMarcarPorTruncado: vacios.length,
+        }
+      : {}),
     ...(omitidos > 0 ? { omitidosPorMarca: omitidos } : {}),
     ...(invalidas.length > 0 ? { descartadasPorContrato: invalidas } : {}),
     ...(cerradasEnVuelo.length > 0 ? { cerradasEnVuelo } : {}),
