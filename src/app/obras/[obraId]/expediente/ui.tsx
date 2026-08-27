@@ -444,6 +444,10 @@ function FilaLamina({
       }),
     );
 
+  /** Computada con la escala que declara el rótulo, que nadie verificó. */
+  const escalaAsumida =
+    lamina.estadoAnalisis === 'analizada' && lamina.escala !== null && !lamina.escalaConfiable;
+
   return (
     <TableRow>
       <TableCell numeric>{lamina.numeroPagina}</TableCell>
@@ -473,9 +477,17 @@ function FilaLamina({
             {ETIQUETA_ESTADO[lamina.estadoAnalisis]}
           </Badge>
 
-          {lamina.estadoAnalisis === 'bloqueada_escala' ? (
+          {/* Dos láminas piden escala acá, y no es lo mismo: la bloqueada no se
+              computó y espera el dato, y la de escala asumida ya está computada
+              con la que declara el rótulo y solo espera el visto bueno. Las dos
+              se resuelven con el mismo formulario —confirmar o corregir— y por
+              eso las dos lo tienen en el expediente, que es la lista donde el
+              arquitecto ve el estado de todas juntas. */}
+          {lamina.estadoAnalisis === 'bloqueada_escala' || escalaAsumida ? (
             <FormEscala
               numeroPagina={lamina.numeroPagina}
+              escalaDeclarada={lamina.escala}
+              yaComputada={escalaAsumida}
               ocupada={ocupada}
               onConfirmar={parchear}
             />
@@ -567,17 +579,35 @@ function FilaLamina({
 /**
  * Desbloqueo manual de escala (RF-201). No es un formulario de más: la lámina
  * no se computa hasta que alguien confirme con qué escala se lee.
+ *
+ * Si el rótulo declara una escala, el campo **viene lleno con esa**: leerla en
+ * el plano, ver el input vacío y tipear "1:20" a mano era exactamente el
+ * trabajo que el sistema estaba haciendo hacer de gusto. Sigue siendo editable
+ * —el rótulo miente seguido, sobre todo en láminas reescaladas al imprimir— y
+ * el copy cambia según haya algo declarado o no, porque no es lo mismo pedir
+ * que confirmen una lectura que pedir un dato que no se tiene.
  */
 function FormEscala({
   numeroPagina,
+  escalaDeclarada,
+  yaComputada = false,
   ocupada,
   onConfirmar,
 }: {
   numeroPagina: number;
+  /** La que dice el rótulo, sin verificar contra las cotas. `null` si no hay. */
+  escalaDeclarada: string | null;
+  /**
+   * `true` si la lámina ya se analizó con la escala asumida. Cambia lo que el
+   * formulario promete: confirmarla **no** vuelve a analizar nada (el cómputo
+   * ya salió con esa misma escala), corregirla sí. Prometer un re-análisis que
+   * no va a pasar es tan malo como no avisarlo cuando pasa.
+   */
+  yaComputada?: boolean;
   ocupada: boolean;
   onConfirmar: (cambios: Record<string, unknown>) => Promise<void>;
 }) {
-  const [escala, setEscala] = useState('');
+  const [escala, setEscala] = useState(escalaDeclarada ?? '');
 
   return (
     <form
@@ -589,7 +619,11 @@ function FormEscala({
       }}
     >
       <p className="text-xs text-neutral-600">
-        No pude verificar la escala contra las cotas. Indicá la del plano y la vuelvo a analizar.
+        {escalaDeclarada === null
+          ? 'No leí ninguna escala en el rótulo y no la pude verificar contra las cotas. Indicá la del plano y la vuelvo a analizar.'
+          : yaComputada
+            ? `Leí ${escalaDeclarada} en el rótulo pero no la pude verificar contra las cotas. Computé con esa escala: confirmala si es la del plano, o corregila y la vuelvo a analizar.`
+            : `Leí ${escalaDeclarada} en el rótulo pero no la pude verificar contra las cotas. Confirmala o corregila y vuelvo a analizar la lámina.`}
       </p>
       <Input
         name="escala"

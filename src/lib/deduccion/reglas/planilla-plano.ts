@@ -11,12 +11,21 @@
  * (RF-504) cuando el expediente directamente no la trae.
  */
 import type { EntidadPersistida } from '@/lib/computo/engine';
+import { normalizarTag } from '@/lib/computo/tags';
 import type { CandidatoDeduccion, ContextoDeduccion, SalidaRegla } from '@/lib/deduccion/motor';
 import { describirValor, etiquetaCampo, leerCampo } from '@/lib/deduccion/motor';
 import { leerTexto } from '@/lib/hallazgos/taxonomia';
 
 /** Solo las dos medidas de la carpintería: nada más se cruza entre plano y planilla. */
 const CAMPOS = ['anchoM', 'altoM'] as const;
+
+/**
+ * Cómo se comparan dos tags. La definición vive en `@/lib/computo/tags` —una
+ * hoja sin imports— porque `rubros/aberturas.ts` también la necesita y traerla
+ * desde acá le metía el motor de deducción en el grafo (ver el comentario de
+ * ese archivo). Se re-exporta para quien la busque en la regla que la motivó.
+ */
+export { normalizarTag };
 
 /**
  * El tag de la abertura ("V2", "P1"). El atributo manda; si el análisis no lo
@@ -39,21 +48,25 @@ export function deducirPlanillaPlano(
   for (const destino of aberturas) {
     const tag = tagDeAbertura(destino);
     if (tag === null) continue;
+    const tagNormalizado = normalizarTag(tag);
     const destinoEnPlanilla = ctx.tipoLamina(destino) === 'planilla';
 
     for (const campo of CAMPOS) {
       if (leerCampo(destino, campo) !== null) continue;
 
-      const fuente = aberturas.find(
-        (otra) =>
+      const fuente = aberturas.find((otra) => {
+        const tagOtra = tagDeAbertura(otra);
+        return (
           otra.id !== destino.id &&
           otra.laminaId !== destino.laminaId &&
-          tagDeAbertura(otra) === tag &&
+          tagOtra !== null &&
+          normalizarTag(tagOtra) === tagNormalizado &&
           // Exactamente una de las dos tiene que ser la planilla: entre dos
           // plantas no hay "planilla ↔ plano", hay continuidad.
           (ctx.tipoLamina(otra) === 'planilla') !== destinoEnPlanilla &&
-          leerCampo(otra, campo) !== null,
-      );
+          leerCampo(otra, campo) !== null
+        );
+      });
       if (fuente === undefined) continue;
 
       const valor = leerCampo(fuente, campo)!;

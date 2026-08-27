@@ -14,7 +14,14 @@
  */
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { fuentesDeEntidades } from '@/lib/computo/presentacion';
-import type { EstadoReforma, Fuente, HallazgoDetectado, RubroId, TipoHallazgo } from '@/types/domain';
+import type {
+  EstadoReforma,
+  Fuente,
+  HallazgoDetectado,
+  RubroId,
+  TipoHallazgo,
+  ValorPropuesto,
+} from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Las cinco clases (§11)
@@ -163,8 +170,12 @@ export interface EntradaDatoFaltante {
   checklistItem?: string;
   descripcion: string;
   entidad: EntidadPersistida;
-  /** Campo que se completa al responder el hallazgo. */
-  campo: string;
+  /**
+   * Campos que se completan al responder el hallazgo, en el orden en que se
+   * piden. **Todos** los que faltan, no el primero: una tarjeta con el ancho y
+   * el alto juntos se responde una vez; de a uno, la consulta reaparece.
+   */
+  campos: string[];
 }
 
 /** Clase 5: faltante real. Bloquea la aprobación del rubro. */
@@ -177,7 +188,7 @@ export function hallazgoDatoFaltante(entrada: EntradaDatoFaltante): HallazgoDete
     ...(entrada.checklistItem ? { checklistItem: entrada.checklistItem } : {}),
     bloqueante: true,
     fuentes: fuentesDeEntidades([entrada.entidad]),
-    targetRef: { entidadId: entrada.entidad.id, campo: entrada.campo },
+    targetRef: { entidadId: entrada.entidad.id, campos: entrada.campos },
   };
 }
 
@@ -223,6 +234,60 @@ export function hallazgoInconsistencia(entrada: EntradaInconsistencia): Hallazgo
   };
 }
 
+// ---------------------------------------------------------------------------
+// Propuestas: lo que ya se leyó y no alcanzó para computar
+// ---------------------------------------------------------------------------
+
+/**
+ * Una propuesta lista para volcar en un hallazgo: a qué entidad apunta, qué
+ * campos pide y qué valores sugiere.
+ */
+export interface PropuestaDeLectura {
+  entidadId: string;
+  campos: string[];
+  valorPropuesto: ValorPropuesto;
+}
+
+/**
+ * Lo que el análisis **ya leyó** de una entidad, ofrecido como propuesta.
+ *
+ * Una entidad con confianza por debajo del umbral no computa (§11.b), pero sus
+ * medidas están leídas y guardadas: tirarlas y preguntar de cero es lo que
+ * llenaba la bandeja de consultas que el sistema ya podía contestar. Acá se
+ * empaquetan tal cual, con la lámina y el bbox de donde salieron, para que el
+ * arquitecto confirme con un click en vez de tipear.
+ *
+ * No escribe nada (P4 intacto): la propuesta es una sugerencia con provenance,
+ * el dato entra a la entidad recién cuando se confirma.
+ *
+ * Devuelve `null` si la entidad no tiene **ninguna** medida positiva leída: sin
+ * nada que proponer, el hallazgo queda como estaba (una pregunta honesta).
+ */
+export function propuestaDeLectura(entidad: EntidadPersistida): PropuestaDeLectura | null {
+  const campos: string[] = [];
+  const valores: Record<string, number | string> = {};
+
+  for (const campo of Object.keys(entidad.atributos)) {
+    const medida = leerMedida(entidad, campo);
+    if (medida === null) continue;
+    campos.push(campo);
+    valores[campo] = medida;
+  }
+
+  if (campos.length === 0) return null;
+
+  return {
+    entidadId: entidad.id,
+    campos,
+    valorPropuesto: {
+      valores,
+      fuente: { laminaId: entidad.laminaId, bbox: entidad.bbox },
+      confianza: entidad.confianza,
+      origen: 'lectura_baja_confianza',
+    },
+  };
+}
+
 export interface EntradaBajaConfianza {
   rubro: RubroId;
   /** Clave del ítem que NO se emitió: "seco.placas". */
@@ -230,11 +295,18 @@ export interface EntradaBajaConfianza {
   descripcion: string;
   confianza: number;
   fuentes: Fuente[];
+  /** Lo que se leyó de la entidad de respaldo, si hay una sola y tiene algo. */
+  propuesta?: PropuestaDeLectura;
 }
 
 /**
  * Regla de oro §11.b: confianza por debajo del umbral ⇒ el ítem no se emite y
  * el dato se degrada a consulta bloqueante.
+ *
+ * Con `propuesta`, la consulta deja de ser "revisá la documentación" y pasa a
+ * ser "leí esto, ¿lo confirmás?": el hallazgo apunta a la entidad de respaldo y
+ * lleva los valores leídos. Confirmarlo sube la confianza de la entidad a 1 y
+ * el ítem se emite (esa parte es de la bandeja, no de acá).
  */
 export function hallazgoBajaConfianza(entrada: EntradaBajaConfianza): HallazgoDetectado {
   const prefijo = `${entrada.rubro}.`;
@@ -254,5 +326,14 @@ export function hallazgoBajaConfianza(entrada: EntradaBajaConfianza): HallazgoDe
     checklistItem: `${entrada.rubro}.baja_confianza`,
     bloqueante: true,
     fuentes: entrada.fuentes,
+    ...(entrada.propuesta
+      ? {
+          targetRef: {
+            entidadId: entrada.propuesta.entidadId,
+            campos: entrada.propuesta.campos,
+          },
+          valorPropuesto: entrada.propuesta.valorPropuesto,
+        }
+      : {}),
   };
 }

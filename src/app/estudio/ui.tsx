@@ -10,7 +10,13 @@
  * rechaza igual (`src/lib/plataforma/roles.ts`).
  */
 import Link from 'next/link';
-import { useActionState, useState, useTransition, type ReactNode } from 'react';
+import {
+  useActionState,
+  useState,
+  useTransition,
+  type ComponentPropsWithRef,
+  type ReactNode,
+} from 'react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -329,6 +335,28 @@ function SeccionConfig({
   );
 }
 
+/**
+ * Textarea con etiqueta, al tono de `Input`.
+ *
+ * Vive acá y no en `src/components/ui/` porque es el único de la pantalla: si
+ * aparece un segundo uso, se sube a primitiva.
+ */
+function AreaTexto({
+  label,
+  ...props
+}: { label: string } & ComponentPropsWithRef<'textarea'>) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-medium text-neutral-700">{label}</span>
+      <textarea
+        rows={4}
+        className="block w-full rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-neutral-900"
+        {...props}
+      />
+    </label>
+  );
+}
+
 const NOMBRE_RUBRO: Record<RubroId, string> = {
   aberturas: 'Aberturas',
   seco: 'Construcción en seco',
@@ -350,8 +378,58 @@ export function FormulariosConfig({
   config: ConfigEstudio;
   desperdiciosDePlantilla: Record<RubroId, number>;
 }) {
+  // El `<details>` de las instrucciones por rubro arranca cerrado: el contador
+  // es lo que avisa que adentro hay algo escrito.
+  const rubrosConInstruccion = RUBROS.filter(
+    (rubro) => (config.instruccionesExtraccion.porRubro[rubro] ?? '').trim() !== '',
+  ).length;
+
   return (
     <div className="flex flex-col gap-6">
+      <SeccionConfig titulo="Instrucciones de extracción" seccion="instrucciones">
+        <p className="text-sm text-neutral-600">
+          Lo que le explicarías a alguien que abre tus planos por primera vez, escrito una sola vez:
+          viaja con <strong className="font-medium">cada lámina que se analiza</strong>, en todas las
+          obras del estudio. Sirve para decir dónde mirar y cómo leerlo — no para pedir que complete
+          lo que la lámina no dice: eso sigue siendo una consulta en la bandeja.
+        </p>
+        <AreaTexto
+          label="Para todas las láminas"
+          name="instruccion.general"
+          rows={4}
+          defaultValue={config.instruccionesExtraccion.general}
+          placeholder={
+            'Ejemplo: las cotas de nuestros planos están en centímetros. Las medidas de las carpinterías nunca están en la planta: están en la planilla de la lámina DET00.'
+          }
+        />
+
+        <details className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2">
+          <summary className="cursor-pointer list-none text-sm font-medium text-neutral-800">
+            Instrucciones por rubro ({rubrosConInstruccion} de {RUBROS.length} con texto)
+          </summary>
+          <div className="mt-3 flex flex-col gap-4">
+            <p className="text-sm text-neutral-600">
+              Se suman a las de arriba en cada lámina, etiquetadas con el rubro
+              («Aberturas: …»), para que el análisis sepa a cuál aplica cada una. El estilo es el
+              del dictado a un ayudante, paso por paso:{' '}
+              <em>
+                «identificá los tramos horizontales de agua caliente en planta y su longitud en
+                metros; después los accesorios: codos a 90, a 45, tés…»
+              </em>
+            </p>
+            {RUBROS.map((rubro) => (
+              <AreaTexto
+                key={rubro}
+                label={NOMBRE_RUBRO[rubro]}
+                name={`instruccion.${rubro}`}
+                rows={3}
+                defaultValue={config.instruccionesExtraccion.porRubro[rubro] ?? ''}
+              />
+            ))}
+          </div>
+        </details>
+      </SeccionConfig>
+
       <SeccionConfig titulo="Desperdicio por rubro" seccion="desperdicios">
         <p className="text-sm text-neutral-600">
           Pisa el desperdicio de referencia de la plantilla del rubro. Vacío = el de la plantilla.

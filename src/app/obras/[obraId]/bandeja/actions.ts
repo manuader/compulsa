@@ -29,6 +29,7 @@ import {
   UsuarioInactivoError,
 } from '@/lib/plataforma/roles';
 import {
+  confirmarLote,
   descartarHallazgo,
   descartarLote,
   confirmarSupuesto,
@@ -40,8 +41,10 @@ import {
   type EntradaLote,
   type EntradaRespuesta,
   type ResultadoAccion,
+  type ResultadoConfirmacionLote,
   type ResultadoLote,
 } from '@/lib/bandeja/resolver';
+import { buscarDatosFaltantes } from '@/lib/pipeline/busqueda';
 
 /**
  * La bandeja, la planilla y el tablero muestran las mismas consultas desde el
@@ -148,4 +151,60 @@ export async function descartarLoteAction(entrada: EntradaLote): Promise<Resulta
   const resultado = await descartarLote({ ...entrada, obraId }, actor);
   if (resultado.ok) await revalidar(obraId);
   return resultado;
+}
+
+export async function confirmarLoteAction(
+  entrada: EntradaLote,
+): Promise<ResultadoConfirmacionLote> {
+  const ctx = await contexto(entrada);
+  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  if (esRechazo(ctx)) return { ok: false, error: ctx.error };
+  const { obraId, ...actor } = ctx;
+  const resultado = await confirmarLote({ ...entrada, obraId }, actor);
+  if (resultado.ok) await revalidar(obraId);
+  return resultado;
+}
+
+/**
+ * Busca en la documentación los datos que la bandeja está preguntando
+ * (decisión 5): una llamada por lámina candidata, que solo escribe
+ * **propuestas** —el dato entra a la entidad recién cuando alguien confirma
+ * (P4)—. Gasta créditos, así que es un botón explícito, no algo que pase solo
+ * al mirar la pantalla.
+ *
+ * El núcleo se importa **estático**, como cualquier otro de este archivo. Hubo
+ * una versión con `await import()` y comentarios `webpackIgnore`, puesta cuando
+ * el módulo todavía lo escribía otra rama: con esos comentarios el bundler deja
+ * el specifier crudo, Node no resuelve el alias `@/` y el `catch` convertía el
+ * `ERR_MODULE_NOT_FOUND` en "no disponible en esta versión". El botón estaba
+ * muerto en runtime con la suite entera en verde, porque un envoltorio sin
+ * lógica no tenía quién lo ejercitara. Ahora lo ejercita
+ * `tests/integration/bandeja-acciones.test.ts`.
+ */
+interface EntradaBusqueda {
+  obraId: string;
+}
+
+export async function buscarEnDocumentacionAction(
+  entrada: EntradaBusqueda,
+): Promise<ResultadoAccion> {
+  const ctx = await contexto(entrada);
+  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  if (esRechazo(ctx)) return { ok: false, error: ctx.error };
+  const { obraId } = ctx;
+
+  // La búsqueda habla con la API de análisis: sin credenciales falla con un
+  // error que nombra la variable que falta (CLAUDE.md §8), y eso es lo que
+  // tiene que leer el arquitecto, no un 500.
+  try {
+    await buscarDatosFaltantes(obraId);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'No pude buscar en la documentación.',
+    };
+  }
+
+  await revalidar(obraId);
+  return { ok: true };
 }

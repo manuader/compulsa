@@ -67,7 +67,7 @@ describe('plantilla pintura: huecos de documentación', () => {
     expect(hallazgos[0]!.clave).toBe('pintura.altura_ambiente.Dormitorio 1');
     expect(hallazgos[0]!.tipo).toBe('faltante');
     expect(hallazgos[0]!.bloqueante).toBe(true);
-    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'a2', campo: 'alturaM' });
+    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'a2', campos: ['alturaM'] });
   });
 
   it('sin vanosM2 computa bruto, avisa con un supuesto NO bloqueante y degrada el origen', () => {
@@ -101,7 +101,7 @@ describe('plantilla pintura: huecos de documentación', () => {
     expect(hallazgos).toHaveLength(1);
     expect(hallazgos[0]!.clave).toBe('pintura.superficie_ambiente.Baño');
     expect(hallazgos[0]!.bloqueante).toBe(true);
-    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'a4', campo: 'superficieM2' });
+    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'a4', campos: ['superficieM2'] });
   });
 
   it('suma todos los ambientes en un solo ítem por clave', () => {

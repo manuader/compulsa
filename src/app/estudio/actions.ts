@@ -221,6 +221,19 @@ export async function guardarConfigAction(
     const valor = numero(texto(formData, 'mepValor'));
     const fecha = texto(formData, 'mepFecha').trim();
     payload.mepReferencia = valor === null && fecha === '' ? null : { valor, fecha };
+  } else if (seccion === 'instrucciones') {
+    // Un rubro con el textarea vacío no se guarda en `null`: se va del objeto.
+    // Así borrar la instrucción de un rubro es vaciar el campo y guardar, y la
+    // columna no acumula claves con string vacío.
+    const porRubro: Record<string, string> = {};
+    for (const rubro of RUBROS) {
+      const instruccion = texto(formData, `instruccion.${rubro}`).trim();
+      if (instruccion !== '') porRubro[rubro] = instruccion;
+    }
+    payload.instruccionesExtraccion = {
+      general: texto(formData, 'instruccion.general').trim(),
+      porRubro,
+    };
   } else {
     return { error: 'No pude leer qué parte de la configuración querías guardar.' };
   }

@@ -53,7 +53,38 @@ export interface LaminaInput {
   numeroPagina: number;             // 1-based dentro del original
   textoExtraido?: string;
 }
-export interface ObraContexto { obraId: string; tipoObra: TipoObra }
+
+/**
+ * Una lámina del expediente vista desde el índice que se le pasa al prompt.
+ *
+ * Es un subconjunto estructural de la fila de `laminas` (mismos nombres de
+ * campo): quien ya tenga la fila la pasa tal cual, sin mapear.
+ */
+export interface LaminaIndice {
+  codigo: string | null;            // "A-01"
+  titulo: string | null;            // "PLANTA PB"
+  tipo: TipoLamina | null;
+}
+
+/**
+ * Lo que el análisis sabe de la obra cuando mira UNA lámina.
+ *
+ * `obraId` y `tipoObra` son obligatorios desde F0. Los tres campos nuevos son
+ * **aditivos y opcionales**: un provider que no los mire se comporta igual que
+ * antes, y el mock los ignora. Los arma el pipeline (`analizarLamina`) leyendo
+ * el resumen ejecutivo, el índice de láminas de la obra y la configuración del
+ * estudio (`ConfigEstudio.instruccionesExtraccion`).
+ */
+export interface ObraContexto {
+  obraId: string;
+  tipoObra: TipoObra;
+  /** Titular del resumen ejecutivo de la obra, si ya se generó. */
+  resumen?: string;
+  /** Las otras láminas del expediente, para que el modelo sepa dónde mirar. */
+  indiceLaminas?: LaminaIndice[];
+  /** Instrucciones de extracción del estudio, ya resueltas a texto plano. */
+  instruccionesEstudio?: string;
+}
 
 export interface ItemComputo {
   rubro: RubroId; descripcion: string; unidad: Unidad;
@@ -62,11 +93,93 @@ export interface ItemComputo {
   confianza: number; entidadRef?: string;
   claveItem: string;                // estable para diff/golden, ej. "seco.placas", "aberturas.V2"
 }
+/** De dónde salió una propuesta. Ver `ValorPropuesto`. */
+export type OrigenPropuesto = 'lectura_baja_confianza' | 'rotulo' | 'busqueda_dirigida';
+
+/**
+ * Lo que el sistema **propone** para cerrar un hallazgo, sin escribirlo.
+ *
+ * Es el contrato de "proponer en vez de bloquear": el dato ya se leyó (con poca
+ * confianza, del rótulo o de una búsqueda dirigida en la documentación) pero
+ * **no entra a la entidad hasta que el arquitecto confirma** — P4 sigue en pie,
+ * la propuesta es una sugerencia con provenance, no un valor computado.
+ *
+ * `valores` es plural a propósito: una carpintería sin acotar necesita ancho
+ * **y** alto, y preguntarlos de a uno hace reaparecer la consulta. Las claves
+ * son los campos del `targetRef` del mismo hallazgo.
+ */
+export interface ValorPropuesto {
+  /** `campo → valor propuesto`. Las claves salen de `camposDelTarget()`. */
+  valores: Record<string, number | string>;
+  /** Dónde se leyó (lámina + bbox). Opcional: el rótulo no siempre tiene bbox útil. */
+  fuente?: Fuente;
+  /** Confianza de la lectura, 0–1. */
+  confianza?: number;
+  origen: OrigenPropuesto;
+}
+
+/**
+ * "Ya busqué esto en la documentación y el dato no estaba."
+ *
+ * Es lo contrario de `ValorPropuesto` y por eso vive en su propia columna
+ * (`hallazgos.busqueda_json`) y no adentro de la propuesta: una propuesta dice
+ * qué proponer, y esto dice que **no hay nada que proponer**. Meterlo en
+ * `valor_propuesto_json` obligaría a todo lector de propuestas —la tarjeta de
+ * la bandeja, el merge del recompute, `zValorPropuesto`— a distinguir una
+ * propuesta real de una marca de vacío.
+ *
+ * Existe por plata: sin esto, cada `procesarDocumento` vuelve a pagar hasta
+ * ocho llamadas al modelo por una consulta que la documentación simplemente no
+ * puede responder, para siempre.
+ *
+ * **Cómo caduca.** No por reloj —el dato no aparece porque pase el tiempo—
+ * sino por `huella`: la marca vale mientras la documentación de la obra sea la
+ * misma que se leyó. Si el arquitecto sube una lámina nueva, o una que estaba
+ * bloqueada pasa a analizada, la huella cambia, la marca deja de aplicar y el
+ * dato se vuelve a buscar. Un reproceso del mismo documento no la cambia, que
+ * es justo el caso que había que dejar de pagar.
+ */
+export interface MarcaBusqueda {
+  /** Los campos que se buscaron y volvieron vacíos. */
+  campos: string[];
+  /** Huella de la documentación sobre la que se buscó. Ver `huellaDocumentacion`. */
+  huella: string;
+  /** Cuándo se buscó (ISO). Informativo: la caducidad la decide la huella. */
+  at: string;
+  /**
+   * Quién buscó (`BusquedaProvider.nombre`). La marca de un provider **no vale
+   * para otro**: una obra procesada sin `ANTHROPIC_API_KEY` la busca el mock,
+   * que sin fixture devuelve `[]` y marcaría toda la obra como "no está en la
+   * documentación" con la huella real — y al configurar la key, el provider de
+   * verdad no saldría a buscar nunca, porque la huella no cambió.
+   *
+   * Opcional porque las marcas escritas antes de esto no lo traen: sin
+   * `provider` la marca no coincide con ninguno y el dato se vuelve a buscar
+   * una vez, que es el lado seguro del error.
+   */
+  provider?: string;
+}
+
+/**
+ * A qué campos de qué entidad apunta un hallazgo. Se escribe siempre en plural.
+ *
+ * **Nunca lo leas directo**: `camposDelTarget()` (`src/lib/hallazgos/target.ts`)
+ * es el único lector válido, porque las filas viejas guardaron `campo` singular.
+ */
+export interface TargetRef { entidadId: string; campos: string[] }
+
+/**
+ * El `target_ref` tal como puede venir de la base: filas anteriores a T0 traen
+ * `campo` singular, las nuevas traen `campos`. Retrocompat **de lectura**.
+ */
+export interface TargetRefPersistido { entidadId: string; campo?: string; campos?: string[] }
+
 export interface HallazgoDetectado {
   tipo: TipoHallazgo; rubro: RubroId | null; descripcion: string;
   clave: string;                    // única por obra para idempotencia, ej. "seco.altura_tabiques.T1"
   checklistItem?: string; bloqueante: boolean; fuentes: Fuente[];
-  targetRef?: { entidadId: string; campo: string };  // si responderlo actualiza una entidad
+  targetRef?: TargetRef;            // si responderlo actualiza una entidad
+  valorPropuesto?: ValorPropuesto;  // lo que el sistema propone para esos campos
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +224,27 @@ export interface LineaPresupuesto {
 export interface PesosRanking { total: number; fidelidad: number; plazo: number }
 
 /**
+ * Las instrucciones que el estudio le da al analizador de láminas.
+ *
+ * Es la sistematización de los prompts manuales del arquitecto: lo que hoy
+ * escribe a mano cada vez ("las medidas de las carpinterías están en la
+ * planilla DET00", "las cotas están en cm") pasa a ser configuración del
+ * estudio y viaja con `ObraContexto.instruccionesEstudio` en cada llamada.
+ *
+ * Las dos viajan en **cada** llamada de extracción: `general` tal cual, y las de
+ * `porRubro` como una línea etiquetada con el nombre del rubro
+ * (`textoInstrucciones` en `src/lib/analysis/prompt.ts`), que es lo que le dice
+ * al modelo a qué aplica cada una. No hay ningún "rubro en foco" —el análisis
+ * lee la lámina entera, no un rubro por vez—, y la etiqueta es justamente lo
+ * que hace que eso no sea un problema. Ambos vacíos por default: sin
+ * configurar, el prompt es el de siempre.
+ */
+export interface InstruccionesExtraccion {
+  general: string;
+  porRubro: Partial<Record<RubroId, string>>;
+}
+
+/**
  * Configuración por estudio (`estudios.config_json`).
  *
  * Se guarda **parcial** —solo lo que el estudio pisó— y se lee completa por
@@ -126,6 +260,8 @@ export interface ConfigEstudio {
   pesosRanking: PesosRanking;
   /** Dólar MEP de referencia del estudio; `null` ⇒ no cotiza en dólares. */
   mepReferencia: { valor: number; fecha: string } | null;
+  /** Qué mirar y cómo leerlo al analizar las láminas de este estudio. */
+  instruccionesExtraccion: InstruccionesExtraccion;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +285,11 @@ export const ESTADOS_ANALISIS = ['pendiente', 'procesando', 'analizada', 'bloque
 export const TIPOS_HALLAZGO = ['faltante', 'inconsistencia', 'existente_confirmar', 'supuesto'] as const satisfies readonly TipoHallazgo[];
 export const ESTADOS_HALLAZGO = ['abierto', 'respondido', 'descartado'] as const satisfies readonly EstadoHallazgo[];
 export const ESTADOS_RUBRO = ['borrador', 'revision', 'aprobado'] as const satisfies readonly EstadoRubro[];
+export const ORIGENES_PROPUESTOS = [
+  'lectura_baja_confianza',
+  'rotulo',
+  'busqueda_dirigida',
+] as const satisfies readonly OrigenPropuesto[];
 
 // F1–F4
 export const ROLES_USUARIO = ['titular', 'colaborador', 'lectura'] as const satisfies readonly RolUsuario[];
@@ -185,12 +326,19 @@ export const MANDATO_DEFAULT: Mandato = {
 /** RF-1101: `0,5×(totalMínimo/total) + 0,3×fidelidad + 0,2×(plazoMínimo/plazo)`. */
 export const PESOS_RANKING_DEFAULT: PesosRanking = { total: 0.5, fidelidad: 0.3, plazo: 0.2 };
 
+/** Sin instrucciones propias: el prompt de extracción es el de siempre. */
+export const INSTRUCCIONES_EXTRACCION_DEFAULT: InstruccionesExtraccion = {
+  general: '',
+  porRubro: {},
+};
+
 export const CONFIG_ESTUDIO_DEFAULT: ConfigEstudio = {
   desperdiciosPct: {},
   condicionesDefault: CONDICIONES_RFQ_DEFAULT,
   mandatoDefault: MANDATO_DEFAULT,
   pesosRanking: PESOS_RANKING_DEFAULT,
   mepReferencia: null,
+  instruccionesExtraccion: INSTRUCCIONES_EXTRACCION_DEFAULT,
 };
 
 // ---------------------------------------------------------------------------
@@ -210,6 +358,17 @@ export const zFuente = z.object({
   laminaId: z.string(),
   bbox: zBBox,
   detalle: z.string().optional(),
+});
+
+/**
+ * Una propuesta del sistema, tal como se guarda en `hallazgos.valor_propuesto_json`
+ * y como la valida la búsqueda dirigida antes de escribirla.
+ */
+export const zValorPropuesto = z.object({
+  valores: z.record(z.string(), z.union([z.number(), z.string()])),
+  fuente: zFuente.optional(),
+  confianza: z.number().min(0).max(1).optional(),
+  origen: z.enum(ORIGENES_PROPUESTOS),
 });
 
 export const zEntidadDetectada = z.object({
@@ -287,6 +446,12 @@ export const zLineaPresupuesto = z.object({
  * `zConfigEstudio.parse({})` devuelve la configuración completa del PRD: la
  * columna guarda solo los overrides y el que lee nunca ve un `undefined`.
  */
+/** Instrucciones de extracción del estudio. Los dos campos tienen default vacío. */
+export const zInstruccionesExtraccion = z.object({
+  general: z.string().default(''),
+  porRubro: z.partialRecord(z.enum(RUBROS), z.string()).default({}),
+});
+
 export const zConfigEstudio = z.object({
   desperdiciosPct: z.record(z.string(), z.number().min(0).max(100)).default({}),
   condicionesDefault: zCondicionesRfq.default(CONDICIONES_RFQ_DEFAULT),
@@ -298,6 +463,7 @@ export const zConfigEstudio = z.object({
     .object({ valor: z.number().positive(), fecha: z.string() })
     .nullable()
     .default(null),
+  instruccionesExtraccion: zInstruccionesExtraccion.default(INSTRUCCIONES_EXTRACCION_DEFAULT),
 });
 
 // ---------------------------------------------------------------------------
@@ -324,6 +490,7 @@ type _ListasCompletas = Assert<
   | Faltantes<TipoHallazgo, typeof TIPOS_HALLAZGO>
   | Faltantes<EstadoHallazgo, typeof ESTADOS_HALLAZGO>
   | Faltantes<EstadoRubro, typeof ESTADOS_RUBRO>
+  | Faltantes<OrigenPropuesto, typeof ORIGENES_PROPUESTOS>
   | Faltantes<RolUsuario, typeof ROLES_USUARIO>
   | Faltantes<EstadoCompulsa, typeof ESTADOS_COMPULSA>
   | Faltantes<EstadoContacto, typeof ESTADOS_CONTACTO>
@@ -344,6 +511,8 @@ type Difiere<A, B, Nombre extends string> = [A] extends [B]
 // Cada schema Zod tiene que inferir exactamente su interface, ni más ni menos.
 type _SchemasAlineados = Assert<
   | Difiere<z.infer<typeof zFuente>, Fuente, 'zFuente'>
+  | Difiere<z.infer<typeof zValorPropuesto>, ValorPropuesto, 'zValorPropuesto'>
+  | Difiere<z.infer<typeof zInstruccionesExtraccion>, InstruccionesExtraccion, 'zInstruccionesExtraccion'>
   | Difiere<z.infer<typeof zEntidadDetectada>, EntidadDetectada, 'zEntidadDetectada'>
   | Difiere<z.infer<typeof zRotuloDetectado>, RotuloDetectado, 'zRotuloDetectado'>
   | Difiere<z.infer<typeof zCondicionesRfq>, CondicionesRfq, 'zCondicionesRfq'>

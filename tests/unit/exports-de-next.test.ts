@@ -200,3 +200,50 @@ describe('route handlers de src/app/api', () => {
     expect(ofensores(rutas, SOLO_HANDLERS_Y_OPCIONES)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// El cuarto chequeo: un `import()` que el bundler tiene prohibido seguir
+// ---------------------------------------------------------------------------
+
+/**
+ * Un `import()` marcado `webpackIgnore` / `turbopackIgnore` dentro de `src/`.
+ *
+ * Esos comentarios le dicen al bundler «no toques este import»: dejá el
+ * specifier crudo y que lo resuelva Node en runtime. Node no conoce el alias
+ * `@/` —lo inventan `tsconfig.json` y el bundler—, así que un import ignorado
+ * que apunte a un módulo nuestro termina en `ERR_MODULE_NOT_FOUND` **cada vez
+ * que se ejecuta**, con el build en verde y la suite entera en verde.
+ *
+ * Pasó de verdad: `buscarEnDocumentacionAction` conservó de un merge un
+ * `await import(...)` ignorado hacia `@/lib/pipeline/busqueda`, con un `catch`
+ * que traducía el fallo a «la búsqueda todavía no está disponible en esta
+ * versión». El botón de la bandeja estuvo muerto una ola entera.
+ *
+ * Y **ningún test de runtime lo agarra**, que es exactamente por qué este mira
+ * el texto del fuente: bajo `vitest` estos comentarios no significan nada,
+ * vite-node resuelve el alias igual y el import anda. El bug solo existe con el
+ * bundler de por medio, o sea únicamente en la app de verdad. Se verificó
+ * corriendo el test de runtime contra el código roto: pasaba.
+ *
+ * La regla es entera y sin excepciones porque hoy no hay ninguna que valga: en
+ * `src/` **todo import lo sigue el bundler**. Si algún día hace falta uno que
+ * no —un módulo opcional, uno generado—, el specifier tiene que ser algo que
+ * Node resuelva solo (una ruta relativa, una URL `file://`, un paquete de
+ * `node_modules`), y esa excepción se escribe acá con su motivo al lado.
+ *
+ * Se mira el `import(` y su lista de argumentos, no el archivo entero: un
+ * comentario que **cuenta** esta historia —como el de `actions.ts`— no es un
+ * import ignorado, y marcarlo sería enseñar a apagar el chequeo.
+ */
+const IMPORT_IGNORADO = /\bimport\s*\([^)]*(?:webpackIgnore|turbopackIgnore)/;
+
+describe('imports que el bundler no sigue', () => {
+  it('no hay ninguno en src/: Node no resuelve nuestros alias en runtime', () => {
+    const ofensores = archivosDeFuente(SRC)
+      .map((archivo) => ({ archivo, fuente: readFileSync(archivo, 'utf8') }))
+      .filter(({ fuente }) => IMPORT_IGNORADO.test(fuente))
+      .map(({ archivo }) => path.relative(process.cwd(), archivo));
+
+    expect(ofensores).toEqual([]);
+  });
+});

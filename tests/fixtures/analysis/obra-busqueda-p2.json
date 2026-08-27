@@ -1,0 +1,13 @@
+{
+  "rotulo": {
+    "titulo": "PLANILLA DE CARPINTERÍAS",
+    "codigo": "DET00",
+    "disciplina": "arquitectura",
+    "tipoLamina": "planilla",
+    "escala": null,
+    "escalaConfiable": false,
+    "revision": "0",
+    "confianza": 0.9
+  },
+  "entidades": []
+}

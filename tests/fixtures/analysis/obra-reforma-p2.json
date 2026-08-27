@@ -5,7 +5,7 @@
     "disciplina": "arquitectura",
     "tipoLamina": "planilla",
     "escala": null,
-    "escalaConfiable": true,
+    "escalaConfiable": false,
     "revision": "1",
     "confianza": 0.9
   },

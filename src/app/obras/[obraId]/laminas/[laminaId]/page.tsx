@@ -6,8 +6,8 @@
  * `/obras/[obraId]/laminas/[laminaId]?highlight=<id>` y el visor resalta los
  * bbox de las **fuentes** de ese target. El id puede ser de una entidad, de un
  * ítem de cómputo, de un hallazgo o de una deducción: los cuatro llevan
- * `Fuente[]` y los cuatro se resuelven acá. No renombres el parámetro sin
- * buscar sus usos.
+ * `Fuente[]` y los cuatro los resuelve `resolverDestacado`
+ * (`src/lib/pipeline/marcas.ts`). No renombres el parámetro sin buscar sus usos.
  */
 import { and, eq } from 'drizzle-orm';
 import type { Metadata } from 'next';
@@ -17,15 +17,14 @@ import { cache } from 'react';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import type { MarcaDeduccion, MarcaEntidad, MarcaHallazgo } from '@/components/viewer/overlay';
 import { VisorLamina } from '@/components/viewer/visor-lamina';
-import { getDb, type Db } from '@/db/client';
-import { computoItems, deducciones, entidades, hallazgos, laminas } from '@/db/schema';
+import { getDb } from '@/db/client';
+import { laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
-import { TITULO_REGLA } from '@/lib/deduccion/memoria';
-import { describirValor, etiquetaCampo } from '@/lib/deduccion/motor';
-import { valorDeDeduccion } from '@/lib/deduccion/persistencia';
+import { armarMarcasDeLamina, resolverDestacado } from '@/lib/pipeline/marcas';
 import type { BBox, EstadoAnalisis, Fuente } from '@/types/domain';
+
+import { FormConfirmarEscala } from './ui';
 
 /** Misma forma que valida `requireObraCore`: un id mal formado es un 404, no un 500. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -70,61 +69,6 @@ function explicacionDelEstado(estado: EstadoAnalisis, errorDetalle: string | nul
     case 'analizada':
       return null;
   }
-}
-
-interface Destacado {
-  /** Cómo nombrarlo en el aviso: "el ítem Placa de roca de yeso". */
-  nombre: string;
-  fuentes: Fuente[];
-}
-
-/**
- * Resuelve `?highlight=` contra las tres tablas que llevan provenance. Siempre
- * con `obra_id` en el `where`: un id de otra obra no existe (RNF-4).
- */
-async function resolverDestacado(
-  db: Db,
-  obraId: string,
-  highlight: string,
-): Promise<Destacado | null> {
-  if (!UUID_RE.test(highlight)) return null;
-
-  const [entidad] = await db
-    .select({ nombre: entidades.nombre, fuentes: entidades.fuentesJson })
-    .from(entidades)
-    .where(and(eq(entidades.id, highlight), eq(entidades.obraId, obraId)));
-  if (entidad) return { nombre: entidad.nombre, fuentes: entidad.fuentes };
-
-  const [item] = await db
-    .select({ nombre: computoItems.descripcion, fuentes: computoItems.fuentesJson })
-    .from(computoItems)
-    .where(and(eq(computoItems.id, highlight), eq(computoItems.obraId, obraId)));
-  if (item) return { nombre: item.nombre, fuentes: item.fuentes };
-
-  const [hallazgo] = await db
-    .select({ nombre: hallazgos.descripcion, fuentes: hallazgos.laminasJson })
-    .from(hallazgos)
-    .where(and(eq(hallazgos.id, highlight), eq(hallazgos.obraId, obraId)));
-  if (hallazgo) return { nombre: hallazgo.nombre, fuentes: hallazgo.fuentes };
-
-  const [deduccion] = await db
-    .select({
-      campo: deducciones.campo,
-      valorJson: deducciones.valorJson,
-      fuentes: deducciones.fuentesJson,
-    })
-    .from(deducciones)
-    .where(and(eq(deducciones.id, highlight), eq(deducciones.obraId, obraId)));
-  if (deduccion) {
-    const valor = valorDeDeduccion(deduccion);
-    const nombre =
-      valor === null
-        ? `deducción de ${etiquetaCampo(deduccion.campo)}`
-        : `${etiquetaCampo(deduccion.campo)} deducido: ${describirValor(deduccion.campo, valor)}`;
-    return { nombre, fuentes: deduccion.fuentes };
-  }
-
-  return null;
 }
 
 function primerParametro(valor: string | string[] | undefined): string | null {
@@ -184,82 +128,18 @@ export default async function LaminaPage({
   const db = await getDb();
   const highlight = primerParametro(query.highlight);
 
-  const [filasEntidades, filasHallazgos, filasDeducciones, destacado] = await Promise.all([
-    db
-      .select({
-        id: entidades.id,
-        tipo: entidades.tipo,
-        nombre: entidades.nombre,
-        fuentes: entidades.fuentesJson,
-      })
-      .from(entidades)
-      .where(and(eq(entidades.obraId, obra.id), eq(entidades.laminaId, lamina.id))),
-    db
-      .select({
-        id: hallazgos.id,
-        descripcion: hallazgos.descripcion,
-        bloqueante: hallazgos.bloqueante,
-        estado: hallazgos.estado,
-        fuentes: hallazgos.laminasJson,
-      })
-      .from(hallazgos)
-      .where(eq(hallazgos.obraId, obra.id)),
-    // La marca va sobre la entidad que la deducción COMPLETARÍA, que es la que
-    // hoy está sin acotar: por eso el join es contra `entidades.laminaId`.
-    db
-      .select({
-        id: deducciones.id,
-        campo: deducciones.campo,
-        regla: deducciones.regla,
-        valorJson: deducciones.valorJson,
-        fuentesEntidad: entidades.fuentesJson,
-      })
-      .from(deducciones)
-      .innerJoin(entidades, eq(deducciones.entidadId, entidades.id))
-      .where(
-        and(
-          eq(deducciones.obraId, obra.id),
-          eq(deducciones.estado, 'propuesta'),
-          eq(entidades.laminaId, lamina.id),
-        ),
-      ),
+  // El armado de las marcas es compartido con el panel embebido
+  // (`src/lib/pipeline/marcas.ts`): las dos vistas dibujan exactamente lo mismo.
+  const [marcas, destacado] = await Promise.all([
+    armarMarcasDeLamina(db, obra.id, lamina.id),
     highlight ? resolverDestacado(db, obra.id, highlight) : Promise.resolve(null),
   ]);
+  // `cargarLamina` ya la resolvió contra la obra; esto es una carrera con un
+  // borrado, no un caso normal.
+  if (!marcas) notFound();
 
   const deEstaLamina = (fuentes: readonly Fuente[]): Fuente[] =>
     fuentes.filter((fuente) => fuente.laminaId === lamina.id);
-
-  const marcasEntidades: MarcaEntidad[] = filasEntidades.flatMap((fila) =>
-    deEstaLamina(fila.fuentes).map((fuente) => ({
-      id: fila.id,
-      tipo: fila.tipo,
-      nombre: fila.nombre,
-      ...(fuente.detalle === undefined ? {} : { detalle: fuente.detalle }),
-      bbox: fuente.bbox,
-    })),
-  );
-
-  const marcasHallazgos: MarcaHallazgo[] = filasHallazgos
-    .filter((fila) => fila.estado !== 'descartado')
-    .flatMap((fila) =>
-      deEstaLamina(fila.fuentes).map((fuente) => ({
-        id: fila.id,
-        descripcion: fila.descripcion,
-        bloqueante: fila.bloqueante,
-        bbox: fuente.bbox,
-      })),
-    );
-
-  const marcasDeducciones: MarcaDeduccion[] = filasDeducciones.flatMap((fila) => {
-    const valor = valorDeDeduccion(fila);
-    return deEstaLamina(fila.fuentesEntidad).map((fuente) => ({
-      id: fila.id,
-      campo: etiquetaCampo(fila.campo),
-      valor: valor === null ? '—' : describirValor(fila.campo, valor),
-      regla: TITULO_REGLA[fila.regla],
-      bbox: fuente.bbox,
-    }));
-  });
 
   const fuentesDestacadas = destacado ? deEstaLamina(destacado.fuentes) : [];
   const destacados: BBox[] = fuentesDestacadas.map((fuente) => fuente.bbox);
@@ -268,9 +148,6 @@ export default async function LaminaPage({
       ? (destacado.fuentes[0] ?? null)
       : null;
 
-  // La ref es una ruta relativa POSIX del storage: cada segmento se codifica por
-  // separado para no romper la barra que separa carpetas.
-  const archivoUrl = `/api/archivos/${lamina.archivoRef.split('/').map(encodeURIComponent).join('/')}`;
   const explicacion = explicacionDelEstado(lamina.estadoAnalisis, lamina.errorDetalle);
 
   return (
@@ -307,6 +184,12 @@ export default async function LaminaPage({
         </Card>
       ) : null}
 
+      {/* Escala declarada pero sin verificar: el badge lo decía y no había forma
+          de confirmarla desde acá, que es la pantalla donde se lee el rótulo. */}
+      {lamina.escala && !lamina.escalaConfiable ? (
+        <FormConfirmarEscala laminaId={lamina.id} escalaDeclarada={lamina.escala} />
+      ) : null}
+
       {highlight && !destacado ? (
         <Card>
           <CardContent className="text-sm text-neutral-700">
@@ -341,10 +224,10 @@ export default async function LaminaPage({
       ) : null}
 
       <VisorLamina
-        archivoUrl={archivoUrl}
-        entidades={marcasEntidades}
-        hallazgos={marcasHallazgos}
-        deducciones={marcasDeducciones}
+        archivoUrl={marcas.archivoUrl}
+        entidades={marcas.entidades}
+        hallazgos={marcas.hallazgos}
+        deducciones={marcas.deducciones}
         destacados={destacados}
       />
     </div>

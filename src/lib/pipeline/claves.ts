@@ -46,6 +46,23 @@ export function claveEscala(laminaId: string): string {
   return `${PREFIJO_ESCALA}${laminaId}`;
 }
 
+/**
+ * La otra consulta de escala de una lámina: **la relectura del rótulo
+ * contradice la escala que está confirmada** (`escala.<laminaId>.rotulo`).
+ *
+ * Va en una clave propia y no en `escala.<laminaId>` porque las dos pueden
+ * convivir con estados distintos: la de siempre está cerrada —el arquitecto ya
+ * confirmó o corrigió la escala, y por eso mismo `upsertHallazgoEscala` no la
+ * reabre— y esta nace después, cuando un re-análisis lee otra cosa. Comparte el
+ * prefijo `escala.` a propósito: así el recompute no la concilia (`esClaveDelMotor`)
+ * y la bandeja la trata como lo que es, una consulta de escala con su botón
+ * «Confirmar escala». Por eso el id de la lámina va **antes** del sufijo: el
+ * lector de la bandeja se queda con el primer segmento.
+ */
+export function claveEscalaRotulo(laminaId: string): string {
+  return `${PREFIJO_ESCALA}${laminaId}.rotulo`;
+}
+
 export function claveVerificacion(claveItem: string): string {
   return `${PREFIJO_VERIFICACION}${claveItem}`;
 }

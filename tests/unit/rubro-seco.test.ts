@@ -121,7 +121,7 @@ describe('plantilla seco: varios tabiques y datos faltantes', () => {
     expect(hallazgos[0]!.tipo).toBe('faltante');
     expect(hallazgos[0]!.rubro).toBe('seco');
     expect(hallazgos[0]!.bloqueante).toBe(true);
-    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 't3', campo: 'alturaM' });
+    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 't3', campos: ['alturaM'] });
   });
 
   it('sin ningún tabique computable no emite ítems en cero', () => {

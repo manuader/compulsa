@@ -57,7 +57,7 @@ describe('plantilla aberturas', () => {
     expect(falta!.tipo).toBe('faltante');
     expect(falta!.rubro).toBe('aberturas');
     expect(falta!.bloqueante).toBe(true);
-    expect(falta!.targetRef).toEqual({ entidadId: 'e3', campo: 'altoM' });
+    expect(falta!.targetRef).toEqual({ entidadId: 'e3', campos: ['altoM'] });
     expect(falta!.fuentes).toEqual([
       { laminaId: 'L1', bbox: [0.5, 0.1, 0.05, 0.1], detalle: 'P1' },
     ]);
@@ -71,7 +71,9 @@ describe('plantilla aberturas', () => {
     expect(items).toEqual([]);
     expect(hallazgos).toHaveLength(1);
     expect(hallazgos[0]!.clave).toBe('aberturas.medidas_vano.V9');
-    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'e9', campo: 'anchoM' });
+    // Las DOS medidas en un solo target: responder solo el ancho y que
+    // reaparezca la consulta por el alto es el bug que esto cierra.
+    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'e9', campos: ['anchoM', 'altoM'] });
   });
 });
 
@@ -260,5 +262,79 @@ describe('computarObra: regla de oro de confianza (§11.b)', () => {
 
     expect(items.map((i) => i.claveItem)).toEqual(['aberturas.V2']);
     expect(hallazgos.map((h) => h.clave)).toEqual(['aberturas.baja_confianza.P2']);
+  });
+
+  it('el ítem que se apoya en UNA entidad degrada con la lectura como propuesta', () => {
+    const dudosa = abertura({
+      id: 'e10',
+      nombre: 'P4',
+      bbox: [0.7, 0.3, 0.05, 0.1],
+      confianza: 0.5,
+      atributos: { tag: 'P4', tipologia: 'puerta', anchoM: 0.8, altoM: 2.05 },
+    });
+    const { items, hallazgos } = computarObra([dudosa], 'nueva', ['aberturas']);
+
+    expect(items).toEqual([]);
+    const [baja] = hallazgos;
+    expect(baja!.clave).toBe('aberturas.baja_confianza.P4');
+    expect(baja!.targetRef).toEqual({ entidadId: 'e10', campos: ['anchoM', 'altoM'] });
+    expect(baja!.valorPropuesto).toEqual({
+      valores: { anchoM: 0.8, altoM: 2.05 },
+      fuente: { laminaId: 'L1', bbox: [0.7, 0.3, 0.05, 0.1] },
+      confianza: 0.5,
+      origen: 'lectura_baja_confianza',
+    });
+  });
+
+  it('el ítem agregado degrada sin target: no hay UNA entidad que confirmar', () => {
+    // Dos V2 ⇒ el ítem `aberturas.V2` sale de las dos, sin `entidadRef`.
+    const unaDudosa = abertura({ id: 'e11', confianza: 0.5 });
+    const { hallazgos } = computarObra([v2a, unaDudosa], 'nueva', ['aberturas']);
+
+    const [baja] = hallazgos;
+    expect(baja!.clave).toBe('aberturas.baja_confianza.V2');
+    expect(baja!.targetRef).toBeUndefined();
+    expect(baja!.valorPropuesto).toBeUndefined();
+  });
+});
+
+describe('plantilla aberturas: el tag se normaliza para agrupar', () => {
+  it("'v2' y 'V2' son la misma ventana: un ítem con las dos fuentes", () => {
+    const enMinuscula = abertura({
+      id: 'e12',
+      nombre: 'v2',
+      bbox: [0.6, 0.4, 0.05, 0.05],
+      atributos: { tag: 'v2', tipologia: 'ventana', anchoM: 1.2, altoM: 1.5 },
+    });
+    const { items, hallazgos } = plantillaAberturas.computar([v2a, enMinuscula], 'nueva');
+
+    expect(hallazgos).toEqual([]);
+    expect(items).toHaveLength(1);
+    // La clave y la descripción usan el tag del primer miembro, tal cual está
+    // escrito en su lámina: el arquitecto tiene que poder buscarlo en el plano.
+    expect(items[0]!.claveItem).toBe('aberturas.V2');
+    expect(items[0]!.cantNeta).toBe(2);
+    expect(items[0]!.fuentes).toEqual([
+      { laminaId: 'L1', bbox: [0.1, 0.1, 0.05, 0.05], detalle: 'V2' },
+      { laminaId: 'L1', bbox: [0.6, 0.4, 0.05, 0.05], detalle: 'v2' },
+    ]);
+  });
+
+  it("'FP 01' y 'FP01' también: un solo hallazgo de medidas faltantes", () => {
+    const conEspacio = abertura({
+      id: 'e13',
+      nombre: 'FP 01',
+      atributos: { tag: 'FP 01', tipologia: 'puerta' },
+    });
+    const sinEspacio = abertura({
+      id: 'e14',
+      nombre: 'FP01',
+      bbox: [0.8, 0.2, 0.05, 0.05],
+      atributos: { tag: 'FP01', tipologia: 'puerta' },
+    });
+    const { items, hallazgos } = plantillaAberturas.computar([conEspacio, sinEspacio], 'nueva');
+
+    expect(items).toEqual([]);
+    expect(hallazgos.map((h) => h.clave)).toEqual(['aberturas.medidas_vano.FP 01']);
   });
 });
