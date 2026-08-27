@@ -34,9 +34,11 @@ import {
   type Hallazgo,
 } from '@/db/schema';
 import {
+  confirmarLote,
   confirmarSupuesto,
   descartarHallazgo,
   descartarLote,
+  ESCALA_NO_ES_SUPUESTO,
   marcarExistente,
   MEDIDA_NO_POSITIVA,
   responderHallazgo,
@@ -69,6 +71,8 @@ async function insertarEntidad(entrada: {
   tipo: 'abertura' | 'tabique' | 'ambiente' | 'muro';
   nombre: string;
   atributos: Record<string, number | string | boolean | null>;
+  /** Por debajo de 0,7 el motor degrada el ítem a consulta (§11.b). */
+  confianza?: number;
 }): Promise<string> {
   const [fila] = await db
     .insert(entidades)
@@ -80,10 +84,17 @@ async function insertarEntidad(entrada: {
       atributosJson: entrada.atributos,
       estadoReforma: 'na',
       fuentesJson: fuente(entrada.nombre),
-      confianza: 0.9,
+      confianza: entrada.confianza ?? 0.9,
     })
     .returning();
   return fila.id;
+}
+
+function hallazgosAbiertos(): Promise<Hallazgo[]> {
+  return db
+    .select()
+    .from(hallazgos)
+    .where(and(eq(hallazgos.obraId, obraId), eq(hallazgos.estado, 'abierto')));
 }
 
 function hallazgoPorClave(clave: string): Promise<Hallazgo | undefined> {
@@ -338,6 +349,359 @@ describe('responderHallazgo sobre un faltante de medidas', () => {
   });
 });
 
+describe('una consulta con varios campos se responde de una sola vez', () => {
+  it('pide el ancho y el alto juntos, los escribe en un update y no reaparece', async () => {
+    // FP01 no tiene ninguna de las dos medidas. Antes eso eran dos consultas en
+    // serie: responder el ancho hacía aparecer la del alto en el recompute.
+    const entidadId = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta' },
+    });
+    await recomputarObra(obraId);
+
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['anchoM', 'altoM'] });
+    expect(
+      (await hallazgosAbiertos()).filter((h) => h.clave.startsWith('aberturas.medidas_vano.')),
+    ).toHaveLength(1);
+
+    const resultado = await responderHallazgo(
+      { obraId, hallazgoId: abierto!.id, valores: { anchoM: '0,90', altoM: '2,05' } },
+      actor,
+    );
+    expect(resultado).toEqual({ ok: true });
+
+    // 1) Las dos medidas quedaron escritas.
+    const [entidad] = await db.select().from(entidades).where(eq(entidades.id, entidadId));
+    expect(entidad.atributosJson.anchoM).toBe(0.9);
+    expect(entidad.atributosJson.altoM).toBe(2.05);
+
+    // 2) El ítem se computa: una puerta, una unidad de compra.
+    const item = await itemPorClave('aberturas.FP01');
+    expect(item?.estado).toBe('activo');
+    expect(item?.origen).toBe('explicito');
+    expect(item?.cantCompra).toBe(1);
+
+    // 3) La respuesta guarda los dos campos, no uno.
+    const resuelto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+    expect(resuelto?.estado).toBe('respondido');
+    expect(resuelto?.respuestaJson).toEqual({
+      tipo: 'valor',
+      valores: { anchoM: 0.9, altoM: 2.05 },
+    });
+
+    // 4) Cero reapariciones: ni ahora ni después de recomputar.
+    await recomputarObra(obraId);
+    expect((await hallazgosAbiertos()).filter((h) => h.rubro === 'aberturas')).toHaveLength(0);
+
+    // 5) UNA sola auditoría de entidad, con los dos diffs adentro.
+    const deEntidad = (await auditoriaDelUsuario()).filter(
+      (r) => r.accion === 'entidad_actualizada',
+    );
+    expect(deEntidad).toHaveLength(1);
+    expect(deEntidad[0].diffJson).toEqual({
+      anchoM: { antes: null, despues: 0.9 },
+      altoM: { antes: null, despues: 2.05 },
+    });
+  });
+
+  it('un 0 en cualquiera de los campos no escribe ninguno', async () => {
+    const entidadId = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta' },
+    });
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+
+    // El ancho es válido, el alto no: escribir solo el ancho cerraría la
+    // consulta con la abertura igual de incomputable (RF-404).
+    expect(
+      await responderHallazgo(
+        { obraId, hallazgoId: abierto!.id, valores: { anchoM: '0,90', altoM: '0' } },
+        actor,
+      ),
+    ).toEqual({ ok: false, error: MEDIDA_NO_POSITIVA });
+
+    const [entidad] = await db.select().from(entidades).where(eq(entidades.id, entidadId));
+    expect(entidad.atributosJson.anchoM).toBeUndefined();
+    expect(entidad.atributosJson.altoM).toBeUndefined();
+    expect((await hallazgoPorClave('aberturas.medidas_vano.FP01'))?.estado).toBe('abierto');
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
+  });
+
+  it('rechaza una respuesta a la que le falta un campo: cerrarla lo perdería para siempre', async () => {
+    // El caso peligroso no es el campo en blanco sino el que **no viene** en el
+    // payload: la tarjeta lo impide con un `disabled`, pero esto es una server
+    // action y el cliente manda lo que quiere. Si se escribiera solo el ancho,
+    // la consulta quedaría `respondido` y `recomputarObra` no la reabre nunca
+    // (regla 3): el alto no se vuelve a pedir jamás.
+    const entidadId = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta' },
+    });
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+
+    const resultado = await responderHallazgo(
+      { obraId, hallazgoId: abierto!.id, valores: { anchoM: '0,90' } },
+      actor,
+    );
+    expect(resultado.ok).toBe(false);
+    expect(resultado.ok === false && resultado.error).toContain('alto');
+
+    // Ni el campo que sí vino se escribe: es todo o nada.
+    const [entidad] = await db.select().from(entidades).where(eq(entidades.id, entidadId));
+    expect(entidad.atributosJson.anchoM).toBeUndefined();
+    expect(entidad.atributosJson.altoM).toBeUndefined();
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
+
+    // Y la consulta sigue viva, también después de recomputar.
+    await recomputarObra(obraId);
+    const intacto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+    expect(intacto?.estado).toBe('abierto');
+    expect(intacto?.respuestaJson).toBeNull();
+
+    // La respuesta completa sí entra.
+    expect(
+      await responderHallazgo(
+        { obraId, hallazgoId: abierto!.id, valores: { anchoM: '0,90', altoM: '2,05' } },
+        actor,
+      ),
+    ).toEqual({ ok: true });
+    expect((await itemPorClave('aberturas.FP01'))?.estado).toBe('activo');
+  });
+
+  it('un `valor` suelto no responde una consulta que pide dos medidas', async () => {
+    // Con `campos: ['anchoM','altoM']` y un solo número no hay forma de saber
+    // cuál es, y escribir el primero cerraría la consulta con el otro sin
+    // cargar. Es el mismo agujero por la puerta del payload viejo.
+    const entidadId = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta' },
+    });
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+
+    const resultado = await responderHallazgo(
+      { obraId, hallazgoId: abierto!.id, valor: '0,90' },
+      actor,
+    );
+    expect(resultado.ok).toBe(false);
+
+    const [entidad] = await db.select().from(entidades).where(eq(entidades.id, entidadId));
+    expect(entidad.atributosJson.anchoM).toBeUndefined();
+    expect((await hallazgoPorClave('aberturas.medidas_vano.FP01'))?.estado).toBe('abierto');
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
+  });
+
+  it('rechaza un campo que la consulta no pide', async () => {
+    await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta' },
+    });
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+
+    const resultado = await responderHallazgo(
+      { obraId, hallazgoId: abierto!.id, valores: { espesorM: '0,15' } },
+      actor,
+    );
+    expect(resultado.ok).toBe(false);
+    expect(resultado.ok === false && resultado.error).toContain('espesorM');
+    expect((await hallazgoPorClave('aberturas.medidas_vano.FP01'))?.estado).toBe('abierto');
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
+  });
+});
+
+describe('confirmar una lectura de baja confianza', () => {
+  it('sube la confianza de la entidad a 1 y el ítem que no se emitía aparece', async () => {
+    // Las medidas están leídas, pero con 0,6 de confianza el motor no computa
+    // (§11.b): el dato existe y hasta ahora se tiraba.
+    const entidadId = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta', anchoM: 0.9, altoM: 2.05 },
+      confianza: 0.6,
+    });
+    await recomputarObra(obraId);
+
+    expect(await itemPorClave('aberturas.FP01')).toBeUndefined();
+
+    const abierto = await hallazgoPorClave('aberturas.baja_confianza.FP01');
+    expect(abierto?.estado).toBe('abierto');
+    // Los campos salen de recorrer `atributos_json`, y jsonb no conserva el
+    // orden en que se escribieron: ordena las claves por largo y después
+    // alfabéticamente. De ahí "altoM" antes que "anchoM" — es el orden en el
+    // que la tarjeta va a mostrar los inputs de una propuesta de lectura.
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['altoM', 'anchoM'] });
+    expect(abierto?.valorPropuestoJson).toMatchObject({
+      valores: { anchoM: 0.9, altoM: 2.05 },
+      confianza: 0.6,
+      origen: 'lectura_baja_confianza',
+    });
+
+    expect(
+      await responderHallazgo(
+        { obraId, hallazgoId: abierto!.id, valores: { anchoM: '0,90', altoM: '2,05' } },
+        actor,
+      ),
+    ).toEqual({ ok: true });
+
+    // Sin esto la confirmación no serviría de nada: el gate mira la confianza
+    // de la ENTIDAD, así que el ítem se seguiría degradando (decisión 4).
+    const [entidad] = await db.select().from(entidades).where(eq(entidades.id, entidadId));
+    expect(entidad.confianza).toBe(1);
+
+    const item = await itemPorClave('aberturas.FP01');
+    expect(item?.estado).toBe('activo');
+    expect(item?.cantCompra).toBe(1);
+
+    const deEntidad = (await auditoriaDelUsuario()).filter(
+      (r) => r.accion === 'entidad_actualizada',
+    );
+    expect(deEntidad).toHaveLength(1);
+    expect(deEntidad[0].diffJson).toMatchObject({ confianza: { antes: 0.6, despues: 1 } });
+
+    // Y no vuelve a preguntar por lo mismo en el próximo recompute.
+    await recomputarObra(obraId);
+    expect((await hallazgosAbiertos()).filter((h) => h.rubro === 'aberturas')).toHaveLength(0);
+  });
+});
+
+describe('confirmarLote', () => {
+  it('confirma las que traen propuesta y saltea la que no tiene nada que confirmar', async () => {
+    const fp01 = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta', anchoM: 0.9, altoM: 2.05 },
+      confianza: 0.6,
+    });
+    const fp02 = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP02',
+      atributos: { tag: 'FP02', tipologia: 'ventana', anchoM: 1.2, altoM: 1.5 },
+      confianza: 0.6,
+    });
+    // V2 no tiene el alto en ningún lado: su consulta es una pregunta, no una
+    // propuesta, y el lote no la puede confirmar.
+    await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'V2',
+      atributos: { tag: 'V2', tipologia: 'ventana', anchoM: 1 },
+    });
+    await recomputarObra(obraId);
+
+    const uno = await hallazgoPorClave('aberturas.baja_confianza.FP01');
+    const dos = await hallazgoPorClave('aberturas.baja_confianza.FP02');
+    const sinPropuesta = await hallazgoPorClave('aberturas.medidas_vano.V2');
+    expect(uno?.valorPropuestoJson).not.toBeNull();
+    expect(dos?.valorPropuestoJson).not.toBeNull();
+    expect(sinPropuesta?.valorPropuestoJson).toBeNull();
+
+    const resultado = await confirmarLote(
+      { obraId, hallazgoIds: [uno!.id, dos!.id, sinPropuesta!.id] },
+      actor,
+    );
+    expect(resultado).toEqual({ ok: true, confirmadas: 2, salteadas: 1 });
+
+    // Las dos confirmadas quedaron con la confianza en 1 y sus ítems activos.
+    for (const id of [fp01, fp02]) {
+      const [entidad] = await db.select().from(entidades).where(eq(entidades.id, id));
+      expect(entidad.confianza).toBe(1);
+    }
+    expect((await itemPorClave('aberturas.FP01'))?.estado).toBe('activo');
+    expect((await itemPorClave('aberturas.FP02'))?.estado).toBe('activo');
+
+    // La que no tenía propuesta sigue esperando una respuesta a mano.
+    expect((await hallazgoPorClave('aberturas.medidas_vano.V2'))?.estado).toBe('abierto');
+
+    const registros = await auditoriaDelUsuario();
+    expect(registros.filter((r) => r.accion === 'hallazgo_respondido')).toHaveLength(2);
+    expect(registros.filter((r) => r.accion === 'entidad_actualizada')).toHaveLength(2);
+  });
+
+  it('saltea la propuesta a la que le falta una medida en vez de cerrar la consulta', async () => {
+    // El escenario real: la búsqueda dirigida encuentra el ancho en la planilla
+    // y el alto no. Confirmar eso escribiría el ancho y cerraría la consulta
+    // para siempre, con la abertura igual de incomputable y sin nada que diga
+    // que el alto quedó sin cargar.
+    const entidadId = await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta' },
+    });
+    await recomputarObra(obraId);
+
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['anchoM', 'altoM'] });
+    await db
+      .update(hallazgos)
+      .set({
+        valorPropuestoJson: {
+          valores: { anchoM: 0.9 },
+          origen: 'busqueda_dirigida',
+          confianza: 0.85,
+        },
+      })
+      .where(eq(hallazgos.id, abierto!.id));
+
+    const resultado = await confirmarLote({ obraId, hallazgoIds: [abierto!.id] }, actor);
+    expect(resultado).toEqual({ ok: true, confirmadas: 0, salteadas: 1 });
+
+    const [entidad] = await db.select().from(entidades).where(eq(entidades.id, entidadId));
+    expect(entidad.atributosJson.anchoM).toBeUndefined();
+
+    const intacto = await hallazgoPorClave('aberturas.medidas_vano.FP01');
+    expect(intacto?.estado).toBe('abierto');
+    expect(intacto?.respuestaJson).toBeNull();
+    // La propuesta parcial sigue ahí: la tarjeta la muestra y una persona la completa.
+    expect(intacto?.valorPropuestoJson).toMatchObject({ valores: { anchoM: 0.9 } });
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
+  });
+
+  it('no toca nada si alguna de las seleccionadas es de otra obra', async () => {
+    await insertarEntidad({
+      tipo: 'abertura',
+      nombre: 'FP01',
+      atributos: { tag: 'FP01', tipologia: 'puerta', anchoM: 0.9, altoM: 2.05 },
+      confianza: 0.6,
+    });
+    await recomputarObra(obraId);
+    const propio = await hallazgoPorClave('aberturas.baja_confianza.FP01');
+
+    const [otroEstudio] = await db.insert(estudios).values({ nombre: 'Otro' }).returning();
+    const [otraObra] = await db
+      .insert(obras)
+      .values({ estudioId: otroEstudio.id, nombre: 'Ajena', zona: 'GBA', tipo: 'nueva' })
+      .returning();
+    const [ajeno] = await db
+      .insert(hallazgos)
+      .values({
+        obraId: otraObra.id,
+        clave: 'aberturas.baja_confianza.P9',
+        tipo: 'faltante',
+        rubro: 'aberturas',
+        descripcion: 'Consulta de otra obra.',
+        laminasJson: [],
+        bloqueante: true,
+      })
+      .returning();
+
+    const resultado = await confirmarLote(
+      { obraId, hallazgoIds: [propio!.id, ajeno.id] },
+      actor,
+    );
+    expect(resultado.ok).toBe(false);
+    expect((await hallazgoPorClave('aberturas.baja_confianza.FP01'))?.estado).toBe('abierto');
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
+  });
+});
+
 describe('marcarExistente', () => {
   it('sobre un ambiente ya construido, sus ítems salen del cómputo', async () => {
     // Sin altura no hay m² de pared, pero el cielorraso sí se computa: es el
@@ -425,6 +789,36 @@ describe('confirmarSupuesto y descarte', () => {
     expect(resuelto?.estado).toBe('respondido');
     expect(resuelto?.respuestaJson).toEqual({ tipo: 'supuesto_confirmado' });
     expect((await itemPorClave('pintura.latex_paredes'))?.cantNeta).toBe(litrosAntes);
+  });
+
+  it('confirmarSupuesto rechaza el supuesto de escala: ese tiene su propio botón', async () => {
+    // La escala asumida es un supuesto, pero darlo por bueno acá cerraría la
+    // consulta sin marcar `escala_confiable` ni reprocesar la lámina: la obra
+    // quedaría computada sobre una escala que nadie verificó y sin ninguna
+    // consulta que lo diga (decisión 7).
+    const [supuesto] = await db
+      .insert(hallazgos)
+      .values({
+        obraId,
+        clave: `escala.${laminaId}`,
+        tipo: 'supuesto',
+        rubro: null,
+        descripcion: 'Computé la lámina con la escala 1:20 que declara el rótulo.',
+        laminasJson: [],
+        bloqueante: false,
+        valorPropuestoJson: { valores: { escala: '1:20' }, origen: 'rotulo' },
+      })
+      .returning();
+
+    expect(await confirmarSupuesto({ obraId, hallazgoId: supuesto.id }, actor)).toEqual({
+      ok: false,
+      error: ESCALA_NO_ES_SUPUESTO,
+    });
+
+    const intacto = await hallazgoPorClave(`escala.${laminaId}`);
+    expect(intacto?.estado).toBe('abierto');
+    expect(intacto?.respuestaJson).toBeNull();
+    expect(await auditoriaDelUsuario()).toHaveLength(0);
   });
 
   it('descartarHallazgo cierra una consulta y es idempotente', async () => {

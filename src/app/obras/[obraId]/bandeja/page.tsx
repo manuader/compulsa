@@ -15,6 +15,7 @@ import Link from 'next/link';
 import { getDb } from '@/db/client';
 import { entidades, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
+import { formatearNumero } from '@/lib/computo/unidades';
 import { camposDelTarget } from '@/lib/hallazgos/target';
 import { PREFIJO_ESCALA } from '@/lib/pipeline/claves';
 import {
@@ -85,6 +86,20 @@ function capitalizar(texto: string): string {
   return texto.charAt(0).toUpperCase() + texto.slice(1);
 }
 
+/**
+ * El valor propuesto, listo para entrar en un input.
+ *
+ * Se formatea acá, en el server, porque la pantalla es cliente y el
+ * `toString()` de JS escribe "0.9": el arquitecto tiene que ver "0,90" y
+ * poder corregirlo sin traducir de un formato a otro (`src/app/CLAUDE.md`).
+ * Los enteros van sin decimales ("2 caras", no "2,00 caras"); el resto con dos,
+ * que es como se escribe una medida en un plano.
+ */
+function valorParaInput(valor: number | string): string {
+  if (typeof valor === 'string') return valor;
+  return Number.isInteger(valor) ? formatearNumero(valor) : formatearNumero(valor, 2);
+}
+
 export const metadata: Metadata = { title: 'Bandeja de consultas' };
 
 export default async function BandejaPage({
@@ -117,6 +132,11 @@ export default async function BandejaPage({
   ]);
 
   const etiquetaLamina = new Map(planos.map((fila) => [fila.id, etiquetaDeLamina(fila)]));
+  // Para la leyenda de la propuesta alcanza el código ("DET00"): el título
+  // entero adentro de "propuesto por la búsqueda en …" tapa el dato propuesto.
+  const codigoLamina = new Map(
+    planos.map((fila) => [fila.id, fila.codigo ?? `Página ${fila.numeroPagina}`]),
+  );
   const nombreEntidad = new Map(
     elementos.map((fila) => [fila.id, `${capitalizar(fila.tipo)} ${fila.nombre}`]),
   );
@@ -151,6 +171,10 @@ export default async function BandejaPage({
       if (etiqueta) citadas.push({ laminaId: fuente.laminaId, etiqueta });
     }
 
+    const campos = camposDelTarget(fila.targetRef);
+    const propuesta = fila.valorPropuestoJson;
+    const fuentePropuesta = propuesta?.fuente ?? null;
+
     return {
       id: fila.id,
       clave: fila.clave,
@@ -159,10 +183,34 @@ export default async function BandejaPage({
       descripcion: fila.descripcion,
       bloqueante: fila.bloqueante,
       estado: fila.estado,
-      campo: camposDelTarget(fila.targetRef)[0] ?? null,
+      campos,
+      campo: campos[0] ?? null,
       entidad: fila.targetRef ? (nombreEntidad.get(fila.targetRef.entidadId) ?? null) : null,
       esEscala: fila.clave.startsWith(PREFIJO_ESCALA),
       laminas: citadas,
+      // Con bbox: es lo que el visor necesita para resaltar de qué está
+      // hablando la consulta sin que el arquitecto tenga que buscarlo.
+      fuentes: fila.laminasJson.map((f) => ({ laminaId: f.laminaId, bbox: f.bbox })),
+      valorPropuesto: propuesta
+        ? {
+            valores: Object.fromEntries(
+              Object.entries(propuesta.valores).map(([campo, valor]) => [
+                campo,
+                valorParaInput(valor),
+              ]),
+            ),
+            origen: propuesta.origen,
+            confianza: propuesta.confianza ?? null,
+            fuente:
+              fuentePropuesta === null
+                ? null
+                : {
+                    laminaId: fuentePropuesta.laminaId,
+                    etiqueta: codigoLamina.get(fuentePropuesta.laminaId) ?? 'la documentación',
+                    bbox: fuentePropuesta.bbox,
+                  },
+          }
+        : null,
       respuesta: fila.respuestaJson,
     };
   });
