@@ -476,6 +476,7 @@ function FilaLamina({
           {lamina.estadoAnalisis === 'bloqueada_escala' ? (
             <FormEscala
               numeroPagina={lamina.numeroPagina}
+              escalaDeclarada={lamina.escala}
               ocupada={ocupada}
               onConfirmar={parchear}
             />
@@ -567,17 +568,27 @@ function FilaLamina({
 /**
  * Desbloqueo manual de escala (RF-201). No es un formulario de más: la lámina
  * no se computa hasta que alguien confirme con qué escala se lee.
+ *
+ * Si el rótulo declara una escala, el campo **viene lleno con esa**: leerla en
+ * el plano, ver el input vacío y tipear "1:20" a mano era exactamente el
+ * trabajo que el sistema estaba haciendo hacer de gusto. Sigue siendo editable
+ * —el rótulo miente seguido, sobre todo en láminas reescaladas al imprimir— y
+ * el copy cambia según haya algo declarado o no, porque no es lo mismo pedir
+ * que confirmen una lectura que pedir un dato que no se tiene.
  */
 function FormEscala({
   numeroPagina,
+  escalaDeclarada,
   ocupada,
   onConfirmar,
 }: {
   numeroPagina: number;
+  /** La que dice el rótulo, sin verificar contra las cotas. `null` si no hay. */
+  escalaDeclarada: string | null;
   ocupada: boolean;
   onConfirmar: (cambios: Record<string, unknown>) => Promise<void>;
 }) {
-  const [escala, setEscala] = useState('');
+  const [escala, setEscala] = useState(escalaDeclarada ?? '');
 
   return (
     <form
@@ -589,7 +600,9 @@ function FormEscala({
       }}
     >
       <p className="text-xs text-neutral-600">
-        No pude verificar la escala contra las cotas. Indicá la del plano y la vuelvo a analizar.
+        {escalaDeclarada === null
+          ? 'No leí ninguna escala en el rótulo y no la pude verificar contra las cotas. Indicá la del plano y la vuelvo a analizar.'
+          : `Leí ${escalaDeclarada} en el rótulo pero no la pude verificar contra las cotas. Confirmala o corregila y vuelvo a analizar la lámina.`}
       </p>
       <Input
         name="escala"
