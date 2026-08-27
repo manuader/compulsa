@@ -34,7 +34,11 @@ import {
   type Lamina,
 } from '@/db/schema';
 import type { BusquedaProvider } from '@/lib/analysis/busqueda-tipos';
-import { buscarDatosFaltantes, MAX_LAMINAS_POR_BUSQUEDA } from '@/lib/pipeline/busqueda';
+import {
+  buscarDatosFaltantes,
+  escribirPropuesta,
+  MAX_LAMINAS_POR_BUSQUEDA,
+} from '@/lib/pipeline/busqueda';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import { recomputarObra } from '@/lib/pipeline/recomputar';
 import type { StorageAdapter } from '@/lib/storage/index';
@@ -317,11 +321,118 @@ describe('buscarDatosFaltantes', () => {
     expect((await todaLaAuditoria()).length).toBe(antes);
   });
 
+  it('un provider que devuelve valores fuera de contrato no ensucia la base', async () => {
+    // `deps.provider` es inyectable y `DatoEncontrado` es una interfaz: nada
+    // obliga a un provider a pasar por `sanearBusqueda`. `zValorPropuesto` es la
+    // red del pipeline sobre lo que escribe.
+    const resultado = await buscarDatosFaltantes(obraId, {
+      db,
+      storage,
+      provider: {
+        async buscarDatos(_lamina, objetivos) {
+          return objetivos.flatMap((objetivo) =>
+            objetivo.campos.map((campo) => ({
+              clave: objetivo.clave,
+              campo,
+              valor: 0.9,
+              bbox: [5, -1, 0.3, 0.04] as [number, number, number, number],
+              confianza: 3,
+            })),
+          );
+        },
+      },
+    });
+
+    expect(resultado.propuestos).toBe(0);
+    expect(resultado.sinResultado).toBe(0);
+    const consulta = await hallazgoPorClave(CLAVE);
+    expect(consulta?.estado).toBe('abierto');
+    expect(consulta?.valorPropuestoJson).toBeNull();
+
+    const filas = await todaLaAuditoria();
+    expect(filas.filter((f) => f.accion === 'hallazgo_valor_propuesto')).toEqual([]);
+  });
+
+  it('si el arquitecto responde mientras la corrida está en vuelo, no le pisa la consulta', async () => {
+    const consulta = await hallazgoPorClave(CLAVE);
+
+    const resultado = await buscarDatosFaltantes(obraId, {
+      db,
+      storage,
+      provider: {
+        async buscarDatos(_lamina, objetivos) {
+          // El arquitecto contesta desde la bandeja justo mientras se lee.
+          await db
+            .update(hallazgos)
+            .set({ estado: 'respondido', respuestaJson: { anchoM: 1.2, altoM: 2.4 } })
+            .where(eq(hallazgos.id, consulta!.id));
+
+          return objetivos.flatMap((objetivo) =>
+            objetivo.campos.map((campo) => ({
+              clave: objetivo.clave,
+              campo,
+              valor: 0.9,
+              bbox: [0.1, 0.3, 0.3, 0.04] as [number, number, number, number],
+              confianza: 0.85,
+            })),
+          );
+        },
+      },
+    });
+
+    expect(resultado.propuestos).toBe(0);
+    const despues = await hallazgoPorClave(CLAVE);
+    expect(despues?.estado).toBe('respondido');
+    expect(despues?.valorPropuestoJson).toBeNull();
+  });
+
   it('una obra que no existe explota con ObraInexistenteError', async () => {
     const [otra] = await db.select().from(obras).where(eq(obras.id, obraId));
     expect(otra).toBeDefined();
     await expect(
       buscarDatosFaltantes('00000000-0000-0000-0000-000000000000', { db, storage }),
     ).rejects.toThrow(/No existe la obra/);
+  });
+});
+
+/**
+ * La condición de "sigue abierto" va en el `WHERE` del `UPDATE`, no solo en un
+ * `if` previo. Testear eso pide entrar por abajo: si se llamara a
+ * `buscarDatosFaltantes`, la fila cerrada la frenaría el chequeo en memoria y el
+ * `WHERE` nunca se ejercitaría.
+ */
+describe('escribirPropuesta · el UPDATE condicional', () => {
+  const PROPUESTA = {
+    valores: { anchoM: 0.9, altoM: 2.05 },
+    confianza: 0.85,
+    origen: 'busqueda_dirigida',
+  } as const;
+
+  it('escribe sobre una consulta abierta', async () => {
+    const consulta = await hallazgoPorClave(CLAVE);
+
+    expect(await escribirPropuesta(db, consulta!.id, { ...PROPUESTA })).toBe(true);
+    expect((await hallazgoPorClave(CLAVE))?.valorPropuestoJson).toEqual(PROPUESTA);
+  });
+
+  it('no escribe sobre una que se cerró, aunque el id exista', async () => {
+    const consulta = await hallazgoPorClave(CLAVE);
+    await db
+      .update(hallazgos)
+      .set({ estado: 'respondido', respuestaJson: { anchoM: 1.2 } })
+      .where(eq(hallazgos.id, consulta!.id));
+
+    expect(await escribirPropuesta(db, consulta!.id, { ...PROPUESTA })).toBe(false);
+
+    const despues = await hallazgoPorClave(CLAVE);
+    expect(despues?.estado).toBe('respondido');
+    expect(despues?.valorPropuestoJson).toBeNull();
+    expect(despues?.respuestaJson).toEqual({ anchoM: 1.2 });
+  });
+
+  it('un id que no existe devuelve false, no explota', async () => {
+    expect(
+      await escribirPropuesta(db, '00000000-0000-0000-0000-000000000000', { ...PROPUESTA }),
+    ).toBe(false);
   });
 });

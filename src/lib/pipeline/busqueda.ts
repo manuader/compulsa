@@ -67,7 +67,13 @@ import { PREFIJO_ESCALA, PREFIJO_VERIFICACION } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
 import { ACTOR_PIPELINE, comoEntidadPersistida, ObraInexistenteError } from '@/lib/pipeline/recomputar';
 import { getStorage, type StorageAdapter } from '@/lib/storage/index';
-import type { LaminaIndice, LaminaInput, ObraContexto, ValorPropuesto } from '@/types/domain';
+import {
+  zValorPropuesto,
+  type LaminaIndice,
+  type LaminaInput,
+  type ObraContexto,
+  type ValorPropuesto,
+} from '@/types/domain';
 
 /**
  * Cuántas láminas puede releer una corrida. Peor caso de la obra del reclamo
@@ -94,12 +100,23 @@ export interface DepsBusqueda {
   provider?: BusquedaProvider;
 }
 
+/**
+ * El resultado de una corrida.
+ *
+ * `propuestos + sinResultado` puede ser **menor** que `objetivos`, y la
+ * diferencia son los objetivos que encontraron el dato pero no lo escribieron:
+ * el arquitecto cerró la consulta mientras la corrida estaba en vuelo, o la
+ * propuesta armada no pasó `zValorPropuesto`. Ninguno de los dos casos es "el
+ * dato no está en la documentación", que es lo que `sinResultado` significa;
+ * meterlos ahí sería mentir en el único número que dice si vale la pena seguir
+ * buscando. Los dos quedan en la auditoría de la corrida.
+ */
 export interface ResultadoBusqueda {
   /** Hallazgos que efectivamente se salieron a buscar. */
   objetivos: number;
   /** Láminas que se releyeron: una llamada al provider cada una. */
   laminasConsultadas: number;
-  /** Objetivos que volvieron con al menos un campo. */
+  /** Objetivos cuya propuesta quedó escrita en la consulta. */
   propuestos: number;
   /** Objetivos que volvieron vacíos: el dato no está en la documentación. */
   sinResultado: number;
@@ -225,6 +242,14 @@ function armarPedidos(
  * Las planillas van **primero** porque es donde el dato aparece escrito con
  * todas las letras. Con el loop cortando apenas no queda nada pendiente, ese
  * orden es lo que hace que la obra del reclamo se resuelva con una sola llamada.
+ *
+ * **Caso de borde conocido:** el corte por cap es sobre la lista ya ordenada,
+ * así que una obra con más de `cap` planillas analizadas no llega a mirar
+ * ninguna lámina citada. Es el orden correcto igual —las planillas son donde
+ * está el dato, y una obra con nueve planillas es una obra donde el dato está en
+ * una planilla—, pero si algún día aparece una obra así y el dato se escapa, el
+ * arreglo es reservar un par de lugares del cap para las citadas, no invertir la
+ * prioridad.
  */
 export function laminasCandidatas(
   todas: readonly LaminaCandidata[],
@@ -247,9 +272,12 @@ export function laminasCandidatas(
 /**
  * Arma la propuesta de un objetivo con lo que volvió de las láminas.
  *
- *  - **por campo gana la mayor confianza** (ya resuelto en `mejores`): dos
- *    láminas pueden decir cosas distintas del mismo vano y la lectura más
- *    segura es la que se propone;
+ *  - **por campo gana la mayor confianza** (ya resuelto en `mejores`): si una
+ *    lámina devuelve dos lecturas del mismo vano, se propone la más segura.
+ *    Ojo con el alcance real: como el loop corta apenas el campo aparece, esa
+ *    competencia se resuelve **dentro de la respuesta de una lámina**, no entre
+ *    láminas — un campo que ya se encontró no se vuelve a pedir. Es el precio
+ *    de no pagar una llamada por lámina, y está tomado a propósito;
  *  - **la fuente es la del campo mejor leído**: `ValorPropuesto` lleva una sola,
  *    y señalar la lectura más confiable es lo que le sirve al arquitecto que
  *    abre el visor para verificarla;
@@ -281,6 +309,57 @@ function armarPropuesta(
     confianza: Math.min(...ganadores.map((ganador) => ganador.confianza)),
     origen: 'busqueda_dirigida',
   };
+}
+
+/**
+ * La propuesta validada contra el contrato de `hallazgos.valor_propuesto_json`,
+ * o `null` si no lo cumple.
+ *
+ * `sanearBusqueda` es la disciplina **del provider** sobre lo que devuelve un
+ * modelo; esto es la del **pipeline** sobre lo que escribe en la base, y son dos
+ * cosas distintas: `deps.provider` es inyectable y `DatoEncontrado` es una
+ * interfaz de TypeScript, así que un provider que no pase por el saneo —o que
+ * tenga un bug— puede devolver una confianza de 3 o un bbox fuera de la lámina
+ * sin que nada lo frene. Confiar en que el de al lado ya validó es exactamente
+ * cómo entra basura a una columna `jsonb`.
+ *
+ * Descarta en vez de explotar: la búsqueda es aditiva, y una propuesta que no
+ * cumple el contrato deja la consulta como estaba —una pregunta honesta en la
+ * bandeja— en vez de tirar abajo la corrida entera. El descarte se cuenta y
+ * viaja en la auditoría de la corrida, así que no es silencioso.
+ */
+function propuestaValida(propuesta: ValorPropuesto): ValorPropuesto | null {
+  const validada = zValorPropuesto.safeParse(propuesta);
+  return validada.success ? validada.data : null;
+}
+
+/**
+ * Escribe la propuesta **solo si el hallazgo sigue abierto**, en el mismo
+ * `UPDATE`. Devuelve `false` si no tocó ninguna fila.
+ *
+ * La condición va en el `WHERE` y no solo en un `if` previo: entre leer la fila
+ * y escribirla pasan milisegundos en los que el arquitecto puede responder o
+ * descartar la consulta desde la bandeja, y con el chequeo únicamente en
+ * memoria la propuesta se escribía igual sobre un hallazgo ya cerrado. Es el
+ * mismo `UPDATE` condicional con el que `plataforma/usuarios.ts` protege al
+ * último titular del estudio.
+ *
+ * Exportada para poder testear esa condición sola: simular la carrera de verdad
+ * pediría meter una costura en el medio de la corrida, y lo que hay que probar
+ * es que el `WHERE` la sostiene aunque el `if` no la haya visto.
+ */
+export async function escribirPropuesta(
+  db: Db,
+  hallazgoId: string,
+  propuesta: ValorPropuesto,
+): Promise<boolean> {
+  const filas = await db
+    .update(hallazgos)
+    .set({ valorPropuestoJson: propuesta })
+    .where(and(eq(hallazgos.id, hallazgoId), eq(hallazgos.estado, 'abierto')))
+    .returning({ id: hallazgos.id });
+
+  return filas.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,28 +529,48 @@ export async function buscarDatosFaltantes(
   }
 
   const escritas: string[] = [];
+  /** Propuestas que no cumplieron el contrato de la columna. */
+  const invalidas: string[] = [];
+  /** Consultas que el arquitecto cerró mientras la corrida estaba en vuelo. */
+  const cerradasEnVuelo: string[] = [];
 
   for (const pedido of pedidos) {
-    const propuesta = armarPropuesta(pedido.objetivo, mejores.get(pedido.objetivo.clave) ?? new Map());
-    if (propuesta === null) {
+    const armada = armarPropuesta(pedido.objetivo, mejores.get(pedido.objetivo.clave) ?? new Map());
+    if (armada === null) {
       resultado.sinResultado += 1;
       continue;
     }
-    resultado.propuestos += 1;
+
+    // El contrato de `valor_propuesto_json` se aplica acá, antes de escribir:
+    // el pipeline no confía en que el provider ya haya saneado.
+    const propuesta = propuestaValida(armada);
+    if (propuesta === null) {
+      invalidas.push(pedido.objetivo.clave);
+      continue;
+    }
 
     // Se relee la fila: entre pedir el dato y guardarlo pasaron segundos de red
     // y el arquitecto pudo haber respondido o descartado la consulta. Lo que él
     // cerró no se toca (regla 3 de la bandeja).
     const [actual] = await db.select().from(hallazgos).where(eq(hallazgos.id, pedido.hallazgo.id));
-    if (!actual || actual.estado !== 'abierto') continue;
-    if (igualJson(actual.valorPropuestoJson, propuesta)) continue;
+    if (!actual || actual.estado !== 'abierto') {
+      cerradasEnVuelo.push(pedido.objetivo.clave);
+      continue;
+    }
+    if (igualJson(actual.valorPropuestoJson, propuesta)) {
+      // Ya está escrita, idéntica: cuenta como propuesta y no se audita de nuevo.
+      resultado.propuestos += 1;
+      continue;
+    }
 
     // NUNCA `entidades.atributos_json` (P4): la propuesta vive en el hallazgo
-    // hasta que alguien la confirme.
-    await db
-      .update(hallazgos)
-      .set({ valorPropuestoJson: propuesta })
-      .where(eq(hallazgos.id, pedido.hallazgo.id));
+    // hasta que alguien la confirme. Y solo si sigue abierta: el chequeo de
+    // arriba mira una foto, este `UPDATE` mira la fila.
+    if (!(await escribirPropuesta(db, pedido.hallazgo.id, propuesta))) {
+      cerradasEnVuelo.push(pedido.objetivo.clave);
+      continue;
+    }
+    resultado.propuestos += 1;
     escritas.push(pedido.objetivo.clave);
 
     await auditar(obraId, ACCION_PROPUESTA, `hallazgos:${pedido.objetivo.clave}`, {
@@ -488,6 +587,8 @@ export async function buscarDatosFaltantes(
     propuestos: resultado.propuestos,
     sinResultado: resultado.sinResultado,
     claves: escritas,
+    ...(invalidas.length > 0 ? { descartadasPorContrato: invalidas } : {}),
+    ...(cerradasEnVuelo.length > 0 ? { cerradasEnVuelo } : {}),
   });
 
   return resultado;
