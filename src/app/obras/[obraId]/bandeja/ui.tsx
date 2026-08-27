@@ -6,9 +6,19 @@
  * Cada consulta es una tarjeta con lo necesario para decidir sin salir de la
  * pantalla: qué falta, si frena la aprobación del rubro, en qué lámina está el
  * dato —el link resalta el hallazgo en el visor— y las acciones de un
- * clic. Cuando el hallazgo apunta a un campo de una entidad, el input inline
- * pide **ese** campo con su nombre en es-AR ("Alto (m)"), no un "valor"
- * genérico: lo que se responde es el dato que falta, no un formulario.
+ * clic. Cuando el hallazgo apunta a campos de una entidad, hay **un input por
+ * campo** con su nombre en es-AR ("Ancho (m)", "Alto (m)"), no un "valor"
+ * genérico: lo que se responde es el dato que falta, no un formulario. Y van
+ * todos juntos, porque una carpintería sin acotar necesita el ancho **y** el
+ * alto: preguntarlos de a uno hacía reaparecer la consulta.
+ *
+ * ## Proponer en vez de preguntar
+ *
+ * Si el sistema ya leyó el dato —con poca confianza, del rótulo o buscándolo en
+ * la documentación— el input **viene lleno** con esa lectura y el botón dice
+ * "Confirmar": el trabajo del arquitecto pasa de tipear decenas de medidas a
+ * mirar y confirmar, corrigiendo solo lo que esté mal. La leyenda dice de dónde
+ * salió cada propuesta, porque confirmar a ciegas no es confirmar.
  *
  * La selección múltiple vive acá (es estado de la pantalla); los filtros viven
  * en la URL (`page.tsx`), así la vista es compartible y no necesita JavaScript.
@@ -17,6 +27,8 @@ import Link from 'next/link';
 import { useState, useTransition } from 'react';
 
 import {
+  buscarEnDocumentacionAction,
+  confirmarLoteAction,
   confirmarSupuestoAction,
   descartarHallazgoAction,
   descartarLoteAction,
@@ -28,7 +40,13 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import type { EstadoHallazgo, RubroId, TipoHallazgo } from '@/types/domain';
+import type {
+  BBox,
+  EstadoHallazgo,
+  OrigenPropuesto,
+  RubroId,
+  TipoHallazgo,
+} from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Vocabulario de la pantalla
@@ -90,6 +108,27 @@ export interface LaminaCitada {
   etiqueta: string;
 }
 
+/** Dónde está lo que la consulta mira: lámina + recuadro, para el visor. */
+export interface FuenteVista {
+  laminaId: string;
+  bbox: BBox;
+}
+
+/**
+ * Lo que el sistema propone, **ya formateado en es-AR** por el server: los
+ * valores entran tal cual en los inputs y el arquitecto los edita como texto,
+ * sin traducir de "0.9" a "0,90" ni al revés.
+ */
+export interface PropuestaVista {
+  /** `campo → valor` listo para el input ("0,90"). Para la escala, `escala`. */
+  valores: Record<string, string>;
+  origen: OrigenPropuesto;
+  /** 0–1, o `null` si el origen no la reporta (el rótulo, por ejemplo). */
+  confianza: number | null;
+  /** La lámina donde se leyó, con su código y su recuadro. */
+  fuente: (FuenteVista & { etiqueta: string }) | null;
+}
+
 export interface ConsultaVista {
   id: string;
   clave: string;
@@ -98,13 +137,19 @@ export interface ConsultaVista {
   descripcion: string;
   bloqueante: boolean;
   estado: EstadoHallazgo;
-  /** Campo de la entidad que se completa al responder, si lo hay. */
+  /** Todos los campos de la entidad que hay que completar, en orden. */
+  campos: string[];
+  /** El primero de `campos`, o `null`. Atajo para lo que solo mira si hay uno. */
   campo: string | null;
   /** Nombre de la entidad apuntada, para decir sobre qué es la consulta. */
   entidad: string | null;
   /** `true` si es el bloqueo por escala de una lámina (RF-201). */
   esEscala: boolean;
   laminas: LaminaCitada[];
+  /** Las fuentes con bbox: de acá sale el resaltado del visor. */
+  fuentes: FuenteVista[];
+  /** Lo que el sistema propone, o `null` si la consulta es una pregunta. */
+  valorPropuesto: PropuestaVista | null;
   respuesta: Record<string, unknown> | null;
 }
 
@@ -126,10 +171,19 @@ function textoRespuesta(consulta: ConsultaVista): string {
   const valor = respuesta.valor;
   const cabeza = ((): string => {
     switch (respuesta.tipo) {
-      case 'valor':
+      case 'valor': {
+        // Con más de un campo la respuesta guarda el mapa entero: se lista
+        // campo por campo, que es como se respondió.
+        const valores = respuesta.valores;
+        if (valores !== null && typeof valores === 'object') {
+          return Object.entries(valores as Record<string, unknown>)
+            .map(([campo, dato]) => `${etiquetaCampo(campo)}: ${String(dato)}`)
+            .join(' · ');
+        }
         return typeof respuesta.campo === 'string'
           ? `${etiquetaCampo(respuesta.campo)}: ${String(valor)}`
           : `Respondida con ${String(valor)}`;
+      }
       case 'escala':
         return valor === undefined ? 'Escala confirmada.' : `Escala confirmada: ${String(valor)}`;
       case 'existente':
@@ -150,6 +204,66 @@ function textoRespuesta(consulta: ConsultaVista): string {
 
 // ---------------------------------------------------------------------------
 
+/** La clave con la que se guarda el input de la escala (no es un campo). */
+const CLAVE_ESCALA = 'escala';
+/** La clave del input de texto libre cuando la consulta no apunta a nada. */
+const CLAVE_NOTA = 'nota';
+
+/** Qué inputs muestra la tarjeta: la escala, los campos del target, o la nota. */
+function clavesDeInput(consulta: ConsultaVista): string[] {
+  if (consulta.esEscala) return [CLAVE_ESCALA];
+  return consulta.campos.length > 0 ? consulta.campos : [CLAVE_NOTA];
+}
+
+/** Cada input arranca con lo que el sistema propone; vacío si no propone nada. */
+function valoresIniciales(consulta: ConsultaVista): Record<string, string> {
+  const propuesto = consulta.valorPropuesto?.valores ?? {};
+  return Object.fromEntries(clavesDeInput(consulta).map((clave) => [clave, propuesto[clave] ?? '']));
+}
+
+/**
+ * Identidad de la tarjeta **incluyendo lo que propone**.
+ *
+ * Los inputs se inicializan una sola vez, al montar. Si la propuesta llega
+ * después —el botón «Buscar los datos en la documentación» las escribe y la
+ * pantalla se revalida— la tarjeta se vuelve a renderizar con la misma `key` y
+ * los inputs seguirían vacíos: el dato aparecería en el server y no en la
+ * pantalla. Con la propuesta adentro de la key, React remonta la tarjeta y los
+ * inputs nacen llenos.
+ */
+function claveDeTarjeta(consulta: ConsultaVista): string {
+  const propuesto = consulta.valorPropuesto?.valores;
+  if (!propuesto) return consulta.id;
+  const firma = Object.entries(propuesto)
+    .map(([campo, valor]) => `${campo}=${valor}`)
+    .join('|');
+  return `${consulta.id}:${firma}`;
+}
+
+/**
+ * De dónde salió la propuesta, en una línea.
+ *
+ * No es decoración: confirmar sin saber si el dato lo leyó la búsqueda en la
+ * planilla o el motor con un 62 % de confianza es firmar a ciegas.
+ */
+function leyendaDeOrigen(propuesta: PropuestaVista): string {
+  const porcentaje =
+    propuesta.confianza === null ? null : `${Math.round(propuesta.confianza * 100)} %`;
+
+  switch (propuesta.origen) {
+    case 'busqueda_dirigida': {
+      const donde = propuesta.fuente ? ` en ${propuesta.fuente.etiqueta}` : ' en la documentación';
+      return `propuesto por la búsqueda${donde}${porcentaje ? ` · ${porcentaje}` : ''}`;
+    }
+    case 'lectura_baja_confianza':
+      return porcentaje === null
+        ? 'leído del plano, sin confianza suficiente para computarlo solo'
+        : `leído del plano con ${porcentaje} de confianza`;
+    case 'rotulo':
+      return 'leído del rótulo';
+  }
+}
+
 interface TarjetaProps {
   obraId: string;
   consulta: ConsultaVista;
@@ -158,39 +272,78 @@ interface TarjetaProps {
 }
 
 function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: TarjetaProps) {
-  const [texto, setTexto] = useState('');
+  const [valores, setValores] = useState<Record<string, string>>(() =>
+    valoresIniciales(consulta),
+  );
   const [error, setError] = useState<string | null>(null);
   const [confirmandoDescarte, setConfirmandoDescarte] = useState(false);
   const [pendiente, iniciar] = useTransition();
 
   const abierta = consulta.estado === 'abierto';
-  const campo = consulta.campo;
-  const esNumerico = campo !== null && !CAMPOS_DE_TEXTO.has(campo);
+  const campos = consulta.campos;
+  const propuesta = consulta.valorPropuesto;
+  const claves = clavesDeInput(consulta);
+  // **Todos** los campos, no alguno: la consulta existe porque faltan los dos.
+  // Responder solo el ancho la cerraría con la abertura igual de incomputable.
+  const completa = claves.every((clave) => (valores[clave] ?? '').trim() !== '');
 
-  const etiquetaInput = consulta.esEscala
-    ? 'Escala'
-    : campo !== null
-      ? etiquetaCampo(campo)
-      : 'Nota';
-  const placeholder = consulta.esEscala ? '1:100' : esNumerico ? '2,05' : 'Escribí tu respuesta';
+  function etiquetaDeClave(clave: string): string {
+    if (clave === CLAVE_ESCALA) return 'Escala';
+    if (clave === CLAVE_NOTA) return 'Nota';
+    return etiquetaCampo(clave);
+  }
+
+  function esNumerica(clave: string): boolean {
+    return clave !== CLAVE_ESCALA && clave !== CLAVE_NOTA && !CAMPOS_DE_TEXTO.has(clave);
+  }
+
+  function placeholderDe(clave: string): string {
+    if (clave === CLAVE_ESCALA) return '1:100';
+    if (clave === CLAVE_NOTA) return 'Escribí tu respuesta';
+    return esNumerica(clave) ? '2,05' : 'Escribí tu respuesta';
+  }
 
   function correr(accion: () => Promise<{ ok: true } | { ok: false; error: string }>): void {
     setError(null);
     iniciar(async () => {
       const resultado = await accion();
       if (!resultado.ok) setError(resultado.error);
-      else setTexto('');
+      // Si salió bien la fila se recarga desde el server (la action revalida):
+      // limpiar los inputs acá haría parpadear la propuesta antes de que llegue.
     });
   }
 
   function responder(): void {
-    // Sin `campo` ni escala, lo que se escribe es una nota: el server no
-    // escribe texto libre en un atributo que el motor lee como medida (P4).
-    const payload =
-      consulta.esEscala || campo !== null
-        ? { obraId, hallazgoId: consulta.id, valor: texto }
-        : { obraId, hallazgoId: consulta.id, nota: texto };
-    correr(() => responderHallazgoAction(payload));
+    // Tres formas de responder, según a qué apunte la consulta. Sin campos ni
+    // escala lo que se escribe es una nota: el server no escribe texto libre en
+    // un atributo que el motor lee como medida (P4).
+    if (consulta.esEscala) {
+      correr(() =>
+        responderHallazgoAction({
+          obraId,
+          hallazgoId: consulta.id,
+          valor: valores[CLAVE_ESCALA] ?? '',
+        }),
+      );
+      return;
+    }
+    if (campos.length > 0) {
+      correr(() =>
+        responderHallazgoAction({
+          obraId,
+          hallazgoId: consulta.id,
+          valores: Object.fromEntries(campos.map((campo) => [campo, valores[campo] ?? ''])),
+        }),
+      );
+      return;
+    }
+    correr(() =>
+      responderHallazgoAction({
+        obraId,
+        hallazgoId: consulta.id,
+        nota: valores[CLAVE_NOTA] ?? '',
+      }),
+    );
   }
 
   return (
@@ -256,26 +409,34 @@ function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: Tarjet
         {abierta ? (
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-end gap-2">
-              <div className="w-48">
-                <Input
-                  label={etiquetaInput}
-                  inputMode={esNumerico ? 'decimal' : undefined}
-                  placeholder={placeholder}
-                  value={texto}
-                  onChange={(evento) => setTexto(evento.target.value)}
-                  disabled={pendiente}
-                />
-              </div>
+              {claves.map((clave) => (
+                <div key={clave} className="w-48">
+                  <Input
+                    label={etiquetaDeClave(clave)}
+                    inputMode={esNumerica(clave) ? 'decimal' : undefined}
+                    placeholder={placeholderDe(clave)}
+                    value={valores[clave] ?? ''}
+                    onChange={(evento) =>
+                      setValores((previos) => ({ ...previos, [clave]: evento.target.value }))
+                    }
+                    disabled={pendiente}
+                  />
+                </div>
+              ))}
               {/* La escala se puede confirmar sin escribirla: el rótulo ya la trae. */}
               <Button
                 size="sm"
                 onClick={responder}
-                disabled={pendiente || (texto.trim() === '' && !consulta.esEscala)}
+                disabled={pendiente || (!completa && !consulta.esEscala)}
               >
-                {consulta.esEscala ? 'Confirmar escala' : 'Responder'}
+                {consulta.esEscala
+                  ? 'Confirmar escala'
+                  : propuesta !== null
+                    ? 'Confirmar'
+                    : 'Responder'}
               </Button>
 
-              {campo !== null ? (
+              {campos.length > 0 ? (
                 <Button
                   size="sm"
                   variant="secondary"
@@ -288,7 +449,10 @@ function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: Tarjet
                 </Button>
               ) : null}
 
-              {consulta.tipo === 'supuesto' ? (
+              {/* La escala también es un supuesto, pero confirmarla por acá
+                  cerraría la consulta sin marcar la lámina como confiable
+                  (decisión 7): su botón es «Confirmar escala». */}
+              {consulta.tipo === 'supuesto' && !consulta.esEscala ? (
                 <Button
                   size="sm"
                   variant="secondary"
@@ -336,6 +500,14 @@ function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: Tarjet
               )}
             </div>
 
+            {propuesta ? (
+              <p className="text-xs text-neutral-500">
+                {leyendaDeOrigen(propuesta)}
+                <span className="text-neutral-400"> · </span>
+                revisalo y corregilo si no es lo que dice el plano.
+              </p>
+            ) : null}
+
             {error ? <p className="text-sm text-red-700">{error}</p> : null}
           </div>
         ) : (
@@ -357,16 +529,22 @@ export interface BandejaConsultasProps {
 
 export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
   const [seleccion, setSeleccion] = useState<string[]>([]);
-  const [dialogo, setDialogo] = useState(false);
+  const [dialogo, setDialogo] = useState<'descartar' | 'confirmar' | null>(null);
   const [nota, setNota] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [pendiente, iniciar] = useTransition();
 
-  const abiertasVisibles = grupos.flatMap((grupo) =>
-    grupo.consultas.filter((consulta) => consulta.estado === 'abierto').map((c) => c.id),
+  const abiertas = grupos.flatMap((grupo) =>
+    grupo.consultas.filter((consulta) => consulta.estado === 'abierto'),
   );
+  const abiertasVisibles = abiertas.map((consulta) => consulta.id);
   const elegidas = seleccion.filter((id) => abiertasVisibles.includes(id));
+  // Confirmar es responder con la propuesta: las que no tienen nada propuesto
+  // el server las saltea, así que el botón se habilita con que haya UNA.
+  const conPropuesta = abiertas.filter(
+    (consulta) => consulta.valorPropuesto !== null && elegidas.includes(consulta.id),
+  ).length;
 
   function alternar(id: string, valor: boolean): void {
     setSeleccion((previa) => (valor ? [...previa, id] : previa.filter((otro) => otro !== id)));
@@ -392,7 +570,41 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
       }
       setSeleccion([]);
       setNota('');
-      setDialogo(false);
+      setDialogo(null);
+    });
+  }
+
+  function confirmarSeleccionadas(): void {
+    setError(null);
+    setAviso(null);
+    iniciar(async () => {
+      const resultado = await confirmarLoteAction({ obraId, hallazgoIds: elegidas, nota });
+      if (!resultado.ok) {
+        setError(resultado.error);
+        return;
+      }
+      // Las salteadas no son un error —una selección mezcla consultas con
+      // propuesta y sin ella— pero callarlas dejaría creer que se confirmaron.
+      if (resultado.salteadas > 0) {
+        setAviso(
+          resultado.salteadas === 1
+            ? 'Una de las seleccionadas no tenía nada propuesto: sigue abierta, respondela a mano.'
+            : `${resultado.salteadas} de las seleccionadas no tenían nada propuesto: siguen abiertas, respondelas a mano.`,
+        );
+      }
+      setSeleccion([]);
+      setNota('');
+      setDialogo(null);
+    });
+  }
+
+  function buscarEnDocumentacion(): void {
+    setError(null);
+    setAviso(null);
+    iniciar(async () => {
+      const resultado = await buscarEnDocumentacionAction({ obraId });
+      if (!resultado.ok) setError(resultado.error);
+      else setAviso('Busqué los datos que faltan en la documentación de la obra.');
     });
   }
 
@@ -430,11 +642,27 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
         </span>
         <Button
           size="sm"
+          onClick={() => setDialogo('confirmar')}
+          disabled={conPropuesta === 0 || pendiente}
+          title={
+            conPropuesta === 0
+              ? 'Ninguna de las seleccionadas trae un valor propuesto para confirmar'
+              : undefined
+          }
+        >
+          Confirmar seleccionadas ({conPropuesta})
+        </Button>
+        <Button
+          size="sm"
           variant="danger"
-          onClick={() => setDialogo(true)}
+          onClick={() => setDialogo('descartar')}
           disabled={elegidas.length === 0 || pendiente}
         >
           Descartar seleccionadas
+        </Button>
+        {/* Gasta créditos: es un botón explícito, no algo que pase solo. */}
+        <Button size="sm" variant="ghost" onClick={buscarEnDocumentacion} disabled={pendiente}>
+          Buscar los datos en la documentación
         </Button>
       </div>
 
@@ -460,7 +688,7 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
           </h2>
           {grupo.consultas.map((consulta) => (
             <TarjetaConsulta
-              key={consulta.id}
+              key={claveDeTarjeta(consulta)}
               obraId={obraId}
               consulta={consulta}
               seleccionada={seleccion.includes(consulta.id)}
@@ -471,12 +699,47 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
       ))}
 
       <Dialog
-        open={dialogo}
-        onClose={() => setDialogo(false)}
+        open={dialogo === 'confirmar'}
+        onClose={() => setDialogo(null)}
+        title="Confirmar las consultas seleccionadas"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setDialogo(null)} disabled={pendiente}>
+              Cancelar
+            </Button>
+            <Button onClick={confirmarSeleccionadas} disabled={pendiente}>
+              {pendiente ? 'Confirmando…' : 'Confirmar'}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-neutral-700">
+            {conPropuesta === 1
+              ? 'Vas a dar por bueno el valor propuesto de 1 consulta.'
+              : `Vas a dar por buenos los valores propuestos de ${conPropuesta} consultas.`}{' '}
+            Los datos entran a la documentación de la obra con tu usuario y el cómputo se rehace.
+            {elegidas.length > conPropuesta
+              ? ` Las otras ${elegidas.length - conPropuesta} de la selección no tienen nada propuesto: quedan abiertas.`
+              : ''}
+          </p>
+          <Input
+            label="Nota (opcional)"
+            placeholder="Verificado contra la planilla de carpinterías"
+            value={nota}
+            onChange={(evento) => setNota(evento.target.value)}
+            disabled={pendiente}
+          />
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={dialogo === 'descartar'}
+        onClose={() => setDialogo(null)}
         title="Descartar las consultas seleccionadas"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setDialogo(false)} disabled={pendiente}>
+            <Button variant="ghost" onClick={() => setDialogo(null)} disabled={pendiente}>
               Cancelar
             </Button>
             <Button variant="danger" onClick={descartarSeleccionadas} disabled={pendiente}>
