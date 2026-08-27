@@ -20,8 +20,16 @@ import {
  * Dos implementaciones: `crearProviderMock()` y `crearProviderClaude()`.
  */
 export interface AnalysisProvider {
-  /** Título, código, escala, disciplina, tipo y revisión del rótulo de la lámina. */
-  leerRotulo(lamina: LaminaInput): Promise<RotuloDetectado>;
+  /**
+   * Título, código, escala, disciplina, tipo y revisión del rótulo de la lámina.
+   *
+   * `ctx` es **opcional y aditivo**: el mock lo ignora y quien llama sin él
+   * obtiene exactamente lo de antes. Existe porque `claude.ts` resuelve la
+   * lámina entera en una sola llamada y cachea por `laminaId`: si el rótulo se
+   * pide sin contexto, la llamada que queda cacheada es la que no lo tenía y el
+   * `ObraContexto` no llega nunca al prompt (deuda del HANDOFF §8).
+   */
+  leerRotulo(lamina: LaminaInput, ctx?: ObraContexto): Promise<RotuloDetectado>;
   /** Entidades de la lámina, todas con bbox normalizado y confianza. */
   extraerEntidades(lamina: LaminaInput, ctx: ObraContexto): Promise<EntidadDetectada[]>;
 }
