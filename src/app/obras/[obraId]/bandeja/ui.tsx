@@ -20,6 +20,23 @@
  * mirar y confirmar, corrigiendo solo lo que esté mal. La leyenda dice de dónde
  * salió cada propuesta, porque confirmar a ciegas no es confirmar.
  *
+ * ## El plano al lado, no a un click de distancia
+ *
+ * "Sin salir de la pantalla" era mentira a medias: para entender de qué dato le
+ * están hablando, el arquitecto tenía que hacer click en la lámina citada,
+ * esperar que cargara **otra** página con el visor, mirar, volver atrás y
+ * recién ahí contestar. Ahora la lista comparte la pantalla con un `PanelVisor`
+ * a la derecha (apilado en pantallas chicas) y elegir una lámina la carga ahí,
+ * con los recuadros de **esa** consulta resaltados y sin navegar.
+ *
+ * El primer recuadro es el de la propuesta: el lugar exacto donde el sistema
+ * dice haber leído el dato. Es lo que hay que mirar para confirmar, y es a
+ * donde el overlay scrollea.
+ *
+ * Los `?highlight=` no se van: el contrato de `src/app/CLAUDE.md` §4 sigue
+ * intacto y cada consulta ofrece "Abrir en página completa" para cuando el
+ * plano necesita toda la pantalla.
+ *
  * La selección múltiple vive acá (es estado de la pantalla); los filtros viven
  * en la URL (`page.tsx`), así la vista es compartible y no necesita JavaScript.
  */
@@ -40,6 +57,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { PanelVisor } from '@/components/viewer/panel-visor';
 import type {
   BBox,
   EstadoHallazgo,
@@ -278,14 +296,146 @@ function leyendaDeOrigen(propuesta: PropuestaVista): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Qué se abre en el panel de al lado (lógica pura, testeada en
+// `tests/unit/bandeja-plano.test.ts`)
+// ---------------------------------------------------------------------------
+
+/** Una lámina que la consulta permite abrir en el panel. */
+export interface LaminaMirable {
+  laminaId: string;
+  etiqueta: string;
+  /** `true` si es la lámina donde el sistema dice haber leído lo que propone. */
+  esFuenteDeLaPropuesta: boolean;
+}
+
+/** Lo que el panel de la derecha está mostrando. */
+export interface Mirada {
+  consultaId: string;
+  laminaId: string;
+  /**
+   * Los recuadros a resaltar. **Se guarda en el estado tal cual sale de acá**,
+   * nunca se recalcula por render: `Overlay` scrollea con un
+   * `useEffect(…, [destacados])` y un array nuevo en cada render scrollearía
+   * de más.
+   */
+  destacados: BBox[];
+  etiqueta: string;
+}
+
+/**
+ * Las láminas que esta consulta puede abrir, **la primera es la que abre el
+ * botón por defecto**: la de la propuesta si el sistema propone algo, y si no
+ * la primera que la consulta cita.
+ *
+ * El orden no es capricho. Cuando la búsqueda dirigida encuentra el ancho de
+ * FP01 en la planilla de carpinterías, la consulta está citada en la planta
+ * (A-01) pero el dato se leyó en DET00: abrir A-01 mostraría el hueco del que
+ * se pregunta, no la fila de la que salió el número que hay que confirmar.
+ *
+ * Solo entran las láminas que la página supo nombrar. Una fuente que apunta a
+ * una lámina que no está en la obra tampoco se podría traer: la ruta de marcas
+ * le contestaría 404 al panel.
+ */
+export function laminasDeConsulta(consulta: ConsultaVista): LaminaMirable[] {
+  const opciones: LaminaMirable[] = [];
+  const vistas = new Set<string>();
+
+  const fuente = consulta.valorPropuesto?.fuente ?? null;
+  if (fuente !== null) {
+    vistas.add(fuente.laminaId);
+    opciones.push({
+      laminaId: fuente.laminaId,
+      etiqueta: fuente.etiqueta,
+      esFuenteDeLaPropuesta: true,
+    });
+  }
+
+  for (const lamina of consulta.laminas) {
+    if (vistas.has(lamina.laminaId)) continue;
+    vistas.add(lamina.laminaId);
+    opciones.push({ ...lamina, esFuenteDeLaPropuesta: false });
+  }
+
+  return opciones;
+}
+
+/**
+ * Los recuadros de **esta** consulta en **esa** lámina, sin repetidos.
+ *
+ * El de la propuesta va primero porque es el que el arquitecto tiene que mirar
+ * para confirmar —es el lugar exacto del que el sistema dice haber sacado el
+ * dato— y porque `Overlay` scrollea al primero.
+ */
+export function destacadosDeConsulta(consulta: ConsultaVista, laminaId: string): BBox[] {
+  const bboxes: BBox[] = [];
+  const vistos = new Set<string>();
+
+  function sumar(bbox: BBox): void {
+    const clave = bbox.join(',');
+    if (vistos.has(clave)) return;
+    vistos.add(clave);
+    bboxes.push(bbox);
+  }
+
+  const fuente = consulta.valorPropuesto?.fuente ?? null;
+  if (fuente !== null && fuente.laminaId === laminaId) sumar(fuente.bbox);
+  for (const otra of consulta.fuentes) {
+    if (otra.laminaId === laminaId) sumar(otra.bbox);
+  }
+
+  return bboxes;
+}
+
+/**
+ * Lo que hay que cargar en el panel para ver una consulta en una lámina, o
+ * `null` si esa lámina no es una de las que la consulta puede abrir.
+ *
+ * El `null` no es defensa por las dudas: la lista de láminas la arma la página
+ * con lo que hay en la obra, y una lámina borrada entre el render y el click
+ * no tiene que dejar el panel pidiendo un 404.
+ */
+export function armarMirada(consulta: ConsultaVista, laminaId: string): Mirada | null {
+  const elegida =
+    laminasDeConsulta(consulta).find((opcion) => opcion.laminaId === laminaId) ?? null;
+  if (elegida === null) return null;
+
+  return {
+    consultaId: consulta.id,
+    laminaId: elegida.laminaId,
+    destacados: destacadosDeConsulta(consulta, elegida.laminaId),
+    etiqueta: `${elegida.etiqueta} · ${consulta.entidad ?? consulta.clave}`,
+  };
+}
+
+/**
+ * El `destacados` de "no hay nada elegido", **una sola vez**.
+ *
+ * Un `?? []` acá abajo sería un array nuevo por render y volvería a disparar el
+ * efecto de scroll de `Overlay`. Es una constante de módulo, no una decoración.
+ */
+const SIN_DESTACADOS: readonly BBox[] = [];
+
+// ---------------------------------------------------------------------------
+
 interface TarjetaProps {
   obraId: string;
   consulta: ConsultaVista;
   seleccionada: boolean;
   onSeleccion: (id: string, valor: boolean) => void;
+  /** La lámina que el panel está mostrando de **esta** consulta, o `null`. */
+  laminaEnPanel: string | null;
+  onVer: (consulta: ConsultaVista, laminaId: string) => void;
 }
 
-function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: TarjetaProps) {
+function TarjetaConsulta({
+  obraId,
+  consulta,
+  seleccionada,
+  onSeleccion,
+  laminaEnPanel,
+  onVer,
+}: TarjetaProps) {
   const [valores, setValores] = useState<Record<string, string>>(() =>
     valoresIniciales(consulta),
   );
@@ -297,6 +447,7 @@ function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: Tarjet
   const campos = consulta.campos;
   const propuesta = consulta.valorPropuesto;
   const claves = clavesDeInput(consulta);
+  const mirables = laminasDeConsulta(consulta);
   // **Todos** los campos, no alguno: la consulta existe porque faltan los dos.
   // Responder solo el ancho la cerraría con la abertura igual de incomputable.
   const completa = claves.every((clave) => (valores[clave] ?? '').trim() !== '');
@@ -361,7 +512,20 @@ function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: Tarjet
   }
 
   return (
-    <Card className={consulta.bloqueante && abierta ? 'border-red-200' : undefined}>
+    <Card
+      className={[
+        // La que se está mirando en el panel, marcada: con varias tarjetas
+        // abiertas hay que saber de cuál es el recuadro rojo de la derecha.
+        // Gana al borde rojo del bloqueante — el badge sigue diciéndolo.
+        laminaEnPanel !== null
+          ? 'border-neutral-900 ring-1 ring-neutral-900'
+          : consulta.bloqueante && abierta
+            ? 'border-red-200'
+            : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
       <CardContent className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
           {abierta ? (
@@ -405,18 +569,50 @@ function TarjetaConsulta({ obraId, consulta, seleccionada, onSeleccion }: Tarjet
           <p className="text-xs text-neutral-500">Sobre: {consulta.entidad}</p>
         ) : null}
 
-        {consulta.laminas.length > 0 ? (
+        {/* Cada lámina es un botón, no un link: carga el plano en el panel de
+            al lado sin sacar al arquitecto de la consulta que está contestando.
+            El link a la página completa queda al final, para cuando el plano
+            necesita toda la pantalla (contrato `?highlight=`, app/CLAUDE.md §4). */}
+        {mirables.length > 0 ? (
           <p className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-neutral-500">Citada en:</span>
-            {consulta.laminas.map((lamina) => (
+            <span className="text-neutral-500">Ver en el plano:</span>
+            {mirables.map((lamina) => {
+              const activa = laminaEnPanel === lamina.laminaId;
+              return (
+                <button
+                  key={lamina.laminaId}
+                  type="button"
+                  aria-pressed={activa}
+                  title={
+                    lamina.esFuenteDeLaPropuesta
+                      ? 'Acá dice el sistema haber leído el dato que propone'
+                      : undefined
+                  }
+                  onClick={() => onVer(consulta, lamina.laminaId)}
+                  className={[
+                    'rounded-full border px-2 py-0.5 font-medium transition-colors',
+                    activa
+                      ? 'border-neutral-900 bg-neutral-900 text-white'
+                      : 'border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-100',
+                  ].join(' ')}
+                >
+                  {lamina.etiqueta}
+                  {lamina.esFuenteDeLaPropuesta ? ' · dato propuesto' : ''}
+                </button>
+              );
+            })}
+            {/* Va a una lámina **citada**, no a la de la propuesta: el visor
+                resuelve `?highlight=` contra las fuentes del hallazgo y en la
+                lámina donde la búsqueda leyó el dato no tiene ninguna, así que
+                abriría el plano sin resaltar nada. */}
+            {consulta.laminas.length > 0 ? (
               <Link
-                key={lamina.laminaId}
-                href={`/obras/${obraId}/laminas/${lamina.laminaId}?highlight=${consulta.id}`}
-                className="font-medium text-neutral-900 underline"
+                href={`/obras/${obraId}/laminas/${consulta.laminas[0]!.laminaId}?highlight=${consulta.id}`}
+                className="text-neutral-600 underline hover:text-neutral-900"
               >
-                {lamina.etiqueta}
+                Abrir en página completa
               </Link>
-            ))}
+            ) : null}
           </p>
         ) : null}
 
@@ -543,6 +739,7 @@ export interface BandejaConsultasProps {
 
 export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
   const [seleccion, setSeleccion] = useState<string[]>([]);
+  const [mirada, setMirada] = useState<Mirada | null>(null);
   const [dialogo, setDialogo] = useState<'descartar' | 'confirmar' | null>(null);
   const [nota, setNota] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -561,8 +758,33 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
     (consulta) => elegidas.includes(consulta.id) && propuestaCompleta(consulta),
   ).length;
 
+  /**
+   * La consulta que el panel muestra tiene que seguir estando en la lista.
+   *
+   * Confirmar o descartar revalida la pantalla y la consulta desaparece del
+   * filtro «Abiertas»: dejar el plano abierto con el nombre de algo que ya no
+   * está sería mostrar una decisión que ya se tomó. Se calcula acá y no se
+   * limpia con un efecto para no renderizar dos veces; el estado queda, así
+   * que volver al filtro donde la consulta vive la vuelve a mostrar.
+   */
+  const enPanel =
+    mirada !== null &&
+    grupos.some((grupo) => grupo.consultas.some((consulta) => consulta.id === mirada.consultaId))
+      ? mirada
+      : null;
+
   function alternar(id: string, valor: boolean): void {
     setSeleccion((previa) => (valor ? [...previa, id] : previa.filter((otro) => otro !== id)));
+  }
+
+  /**
+   * Abrir una lámina de una consulta en el panel.
+   *
+   * La `Mirada` entra **entera** al estado, con su array de destacados adentro:
+   * de ahí sale la referencia estable que `PanelVisor` necesita.
+   */
+  function ver(consulta: ConsultaVista, laminaId: string): void {
+    setMirada(armarMirada(consulta, laminaId));
   }
 
   function descartarSeleccionadas(): void {
@@ -693,25 +915,45 @@ export function BandejaConsultas({ obraId, grupos }: BandejaConsultasProps) {
         </p>
       ) : null}
 
-      {grupos.map((grupo) => (
-        <section key={grupo.rubro ?? 'generales'} className="flex flex-col gap-2">
-          <h2 className="text-sm font-semibold text-neutral-900">
-            {grupo.titulo}
-            <span className="ml-2 text-xs font-normal text-neutral-500 tabular-nums">
-              {grupo.consultas.length}
-            </span>
-          </h2>
-          {grupo.consultas.map((consulta) => (
-            <TarjetaConsulta
-              key={claveDeTarjeta(consulta)}
-              obraId={obraId}
-              consulta={consulta}
-              seleccionada={seleccion.includes(consulta.id)}
-              onSeleccion={alternar}
-            />
+      {/* Dos columnas desde `lg`: la lista a la izquierda y el plano a la
+          derecha, pegado al scroll. Apilado en pantallas chicas, con el panel
+          plegable para que no empuje la lista fuera de la vista. */}
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+        <div className="flex min-w-0 flex-col gap-4">
+          {grupos.map((grupo) => (
+            <section key={grupo.rubro ?? 'generales'} className="flex flex-col gap-2">
+              <h2 className="text-sm font-semibold text-neutral-900">
+                {grupo.titulo}
+                <span className="ml-2 text-xs font-normal text-neutral-500 tabular-nums">
+                  {grupo.consultas.length}
+                </span>
+              </h2>
+              {grupo.consultas.map((consulta) => (
+                <TarjetaConsulta
+                  key={claveDeTarjeta(consulta)}
+                  obraId={obraId}
+                  consulta={consulta}
+                  seleccionada={seleccion.includes(consulta.id)}
+                  onSeleccion={alternar}
+                  laminaEnPanel={enPanel?.consultaId === consulta.id ? enPanel.laminaId : null}
+                  onVer={ver}
+                />
+              ))}
+            </section>
           ))}
-        </section>
-      ))}
+        </div>
+
+        <div className="min-w-0 lg:sticky lg:top-4">
+          <PanelVisor
+            laminaId={enPanel?.laminaId ?? null}
+            // La referencia sale del estado o de la constante de módulo: nunca
+            // un `[]` nuevo por render (ver `SIN_DESTACADOS`).
+            destacados={enPanel?.destacados ?? SIN_DESTACADOS}
+            etiqueta={enPanel?.etiqueta ?? null}
+            colapsable
+          />
+        </div>
+      </div>
 
       <Dialog
         open={dialogo === 'confirmar'}
