@@ -205,7 +205,18 @@ export async function buscarEnDocumentacionAction(
   }
   if (!buscar) return { ok: false, error: BUSQUEDA_NO_DISPONIBLE };
 
-  await buscar(obraId);
+  // La búsqueda habla con la API de análisis: sin credenciales falla con un
+  // error que nombra la variable que falta (CLAUDE.md §8), y eso es lo que
+  // tiene que leer el arquitecto, no un 500.
+  try {
+    await buscar(obraId);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'No pude buscar en la documentación.',
+    };
+  }
+
   await revalidar(obraId);
   return { ok: true };
 }
