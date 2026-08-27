@@ -77,7 +77,7 @@ import {
 import { registrarAuditoria } from '@/lib/audit';
 import { esUuid, requireObraCore } from '@/lib/auth/guards';
 import { erroresPorCampo, zCambiosObra } from '@/lib/obras/schema';
-import { claveEscala } from '@/lib/pipeline/claves';
+import { claveEscala, claveEscalaRotulo } from '@/lib/pipeline/claves';
 import {
   borrarDeduccionesDeEntidades,
   desvincularItemsDeEntidades,
@@ -689,7 +689,13 @@ export async function eliminarDocumento(
         and(
           eq(hallazgos.obraId, obra.id),
           eq(hallazgos.estado, 'abierto'),
-          inArray(hallazgos.clave, laminaIds.map(claveEscala)),
+          // Las dos consultas que el pipeline abre por lámina: el bloqueo /
+          // supuesto de escala y el aviso de que el rótulo releído contradice
+          // la escala confirmada. Las dos hablan de una lámina que ya no está.
+          inArray(
+            hallazgos.clave,
+            laminaIds.flatMap((id) => [claveEscala(id), claveEscalaRotulo(id)]),
+          ),
         ),
       )
       .returning({ clave: hallazgos.clave });

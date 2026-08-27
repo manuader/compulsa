@@ -56,7 +56,7 @@ import { registrarAuditoria } from '@/lib/audit';
 import { separarPaginas } from '@/lib/pdf/split';
 import { extraerTexto } from '@/lib/pdf/texto';
 import { buscarDatosFaltantes } from '@/lib/pipeline/busqueda';
-import { claveEscala } from '@/lib/pipeline/claves';
+import { claveEscala, claveEscalaRotulo } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
 import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
@@ -110,8 +110,29 @@ export function descripcionEscalaAsumida(escala: string): string {
   );
 }
 
+/**
+ * Texto del aviso de relectura: el rótulo, verificado contra cotas, dice otra
+ * cosa que la escala confirmada.
+ *
+ * Dice las tres cosas en orden: **qué leí ahora**, **con qué está computada la
+ * lámina** y **que no le pisé nada**. La decisión la toma él, que es el único
+ * que sabe si el rótulo está mal impreso o si la corrección quedó vieja.
+ */
+export function descripcionEscalaRelectura(confirmada: string, releida: string): string {
+  return (
+    `Al volver a analizarla verifiqué contra cotas la escala ${releida} del rótulo, ` +
+    `y la lámina está computada con ${confirmada}, que es la escala confirmada. ` +
+    'No la pisé: si la buena es la del rótulo, confirmala y vuelvo a medir.'
+  );
+}
+
 /** Respuesta con la que el desbloqueo manual cierra el hallazgo de escala. */
 export const RESPUESTA_ESCALA_CONFIRMADA = { auto: 'escala confirmada a mano' } as const;
+
+/** Respuesta con la que se cierra el aviso de relectura cuando deja de aplicar. */
+export const RESPUESTA_RELECTURA_COINCIDE = {
+  auto: 'el rótulo volvió a leerse igual que la escala confirmada',
+} as const;
 
 /** Acción con la que queda registrado el arranque del análisis de una lámina. */
 export const ACCION_PROCESANDO = 'lamina_procesando';
@@ -627,6 +648,46 @@ export function fusionarRotulo(lamina: Lamina, rotulo: RotuloDetectado): CamposR
 }
 
 /**
+ * Dos escalas son la misma aunque no se escriban igual: `"1:20"`, `" 1:20 "` y
+ * `"1: 20"` salieron del mismo rótulo. Comparar los textos crudos avisaría de
+ * una contradicción que no existe.
+ */
+function mismaEscala(una: string, otra: string): boolean {
+  const normalizar = (texto: string): string => texto.replace(/\s+/g, '').toLowerCase();
+  return normalizar(una) === normalizar(otra);
+}
+
+/**
+ * La escala que el rótulo acaba de **verificar contra cotas** y que contradice
+ * la que la lámina tiene confirmada, o `null` si no hay contradicción.
+ *
+ * Es la red que le faltaba a `fusionarRotulo`. Que la escala confirmada no se
+ * pise está bien y está testeado —protege la corrección del arquitecto—, pero
+ * el valor descartado se iba en silencio: la lámina quedaba computada con el
+ * viejo y nada en ningún lado decía que la relectura no coincidía. Si esa
+ * relectura es la verificada, el cómputo entero puede estar corrido por el
+ * factor entre las dos escalas.
+ *
+ * Las dos condiciones que evitan que esto sea ruido:
+ *
+ *  - **la relectura tiene que venir verificada** (`rotulo.escalaConfiable`). Una
+ *    lectura no verificada que difiere es el caso normal del rótulo mal impreso
+ *    que el arquitecto ya corrigió: insistir con eso en cada reproceso sería
+ *    pedirle que vuelva a descartar lo mismo para siempre.
+ *  - **la lámina tiene que tener una escala confirmada** que contradecir. Con
+ *    `escala` en `null`, `fusionarRotulo` adopta la del rótulo y no se descarta
+ *    nada.
+ */
+export function escalaRelectura(
+  lamina: Pick<Lamina, 'escala' | 'escalaConfiable'>,
+  rotulo: Pick<RotuloDetectado, 'escala' | 'escalaConfiable'>,
+): string | null {
+  if (!lamina.escalaConfiable || lamina.escala === null) return null;
+  if (!rotulo.escalaConfiable || rotulo.escala === null) return null;
+  return mismaEscala(lamina.escala, rotulo.escala) ? null : rotulo.escala;
+}
+
+/**
  * Las tres salidas de escala de una lámina (decisión 1 del plan).
  *
  *  - `confiable`: el modelo verificó la escala declarada contra las cotas (o el
@@ -854,6 +915,93 @@ async function upsertHallazgoEscala(
     tipo: { antes: previo.tipo, despues: campos.tipo },
     bloqueante: { antes: previo.bloqueante, despues: campos.bloqueante },
     modo,
+  });
+}
+
+/**
+ * Abre —o cierra— el aviso de que la relectura del rótulo contradice la escala
+ * confirmada de la lámina (`escala.<laminaId>.rotulo`).
+ *
+ * No pisa nada: la lámina sigue computada con la escala confirmada, que es lo
+ * que decidió el arquitecto. Lo único que cambia es que el valor descartado
+ * deja de irse en silencio.
+ *
+ * `releida === null` ⇒ la contradicción ya no existe (la relectura coincide, o
+ * él confirmó una de las dos) y el aviso abierto se cierra solo. Y **lo que él
+ * cerró no se reabre**, igual que en `upsertHallazgoEscala`: descartar el aviso
+ * es decir "la buena es la mía", y volver a preguntárselo en cada reproceso
+ * sería exactamente el ruido que hay que evitar.
+ */
+async function sincronizarHallazgoRelectura(
+  db: Db,
+  lamina: Lamina,
+  releida: string | null,
+  confianza: number | null,
+): Promise<void> {
+  const clave = claveEscalaRotulo(lamina.id);
+  const [previo] = await db
+    .select()
+    .from(hallazgos)
+    .where(and(eq(hallazgos.obraId, lamina.obraId), eq(hallazgos.clave, clave)));
+
+  if (releida === null) {
+    if (!previo || previo.estado !== 'abierto') return;
+    await db
+      .update(hallazgos)
+      .set({ estado: 'descartado', respuestaJson: { ...RESPUESTA_RELECTURA_COINCIDE } })
+      .where(eq(hallazgos.id, previo.id));
+    await auditarAgente(lamina.obraId, 'hallazgo_descartado', `hallazgos:${clave}`, {
+      ...RESPUESTA_RELECTURA_COINCIDE,
+    });
+    return;
+  }
+
+  const campos = {
+    tipo: 'inconsistencia' as TipoHallazgo,
+    // NO bloqueante: la lámina se computó, y con la escala que él confirmó. Es
+    // un aviso, no un freno — frenar la obra por una relectura sería el
+    // problema que el plan entero vino a sacar.
+    bloqueante: false,
+    descripcion: descripcionEscalaRelectura(lamina.escala ?? '', releida),
+    valorPropuestoJson: {
+      valores: { escala: releida },
+      origen: 'rotulo',
+      ...(confianza !== null ? { confianza } : {}),
+    } satisfies ValorPropuesto,
+  };
+
+  if (!previo) {
+    await db.insert(hallazgos).values({
+      obraId: lamina.obraId,
+      clave,
+      rubro: null,
+      checklistItem: 'escala',
+      laminasJson: [{ laminaId: lamina.id, bbox: [0, 0, 1, 1], detalle: 'Lámina completa' }],
+      targetRef: null,
+      ...campos,
+    });
+    await auditarAgente(lamina.obraId, 'hallazgo_abierto', `hallazgos:${clave}`, {
+      tipo: campos.tipo,
+      bloqueante: campos.bloqueante,
+      escalaConfirmada: lamina.escala,
+      escalaReleida: releida,
+    });
+    return;
+  }
+
+  if (previo.estado !== 'abierto') return;
+
+  // Sin cambios no se escribe: un reproceso idéntico no puede dejar un diff
+  // fantasma en `auditoria`.
+  const igual =
+    previo.descripcion === campos.descripcion &&
+    igualJson(previo.valorPropuestoJson, campos.valorPropuestoJson);
+  if (igual) return;
+
+  await db.update(hallazgos).set(campos).where(eq(hallazgos.id, previo.id));
+  await auditarAgente(lamina.obraId, 'hallazgo_actualizado', `hallazgos:${clave}`, {
+    escalaConfirmada: lamina.escala,
+    escalaReleida: releida,
   });
 }
 
@@ -1163,6 +1311,14 @@ async function analizarLamina(laminaId: string, deps: DepsPipeline): Promise<voi
     } else {
       await cerrarHallazgoEscala(db, lamina);
     }
+    // Y la red de `fusionarRotulo`: la escala confirmada no se pisa, pero si la
+    // relectura verificada dice otra cosa, eso deja de irse en silencio.
+    await sincronizarHallazgoRelectura(
+      db,
+      lamina,
+      escalaRelectura(lamina, rotulo),
+      confianzaEscala,
+    );
     const recomputado = await recomputarTolerante(entorno, lamina);
 
     await auditarAgente(lamina.obraId, 'lamina_analizada', `laminas:${laminaId}`, {

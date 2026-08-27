@@ -39,6 +39,7 @@ import {
   ACCION_PROCESANDO,
   actualizarLamina,
   descripcionEscalaAsumida,
+  descripcionEscalaRelectura,
   PREFIJO_RECOMPUTO_FALLIDO,
   procesarDocumento,
   procesarLamina,
@@ -940,6 +941,175 @@ describe('confirmar la escala asumida', () => {
     // La bandeja cierra la consulta antes de reprocesar, así que queda como
     // respondida por él y no descartada por el pipeline.
     expect((await hallazgoPorClave(`escala.${lamina.id}`)).estado).toBe('respondido');
+  });
+});
+
+/**
+ * La red que le faltaba a `fusionarRotulo`.
+ *
+ * Que la escala confirmada no se pise está bien y ya estaba testeado: protege
+ * la corrección del arquitecto de un rótulo mal impreso. Lo que no estaba
+ * fijado por ningún test es **qué pasa con el valor que se descarta**. Hasta
+ * acá se iba en silencio: "Reprocesar" sobre una lámina ya confiable podía leer
+ * otra escala, tirarla, y dejar la lámina computada con la vieja sin que nada
+ * en ninguna pantalla lo dijera. Si esa relectura es la verificada contra
+ * cotas, el cómputo entero puede estar corrido por el factor entre las dos.
+ *
+ * La decisión, escrita: el valor no se pisa (eso no cambia) **y** deja de irse
+ * en silencio — sale un aviso no bloqueante con la escala releída como
+ * propuesta. Solo cuando la relectura viene verificada: una lectura sin
+ * verificar que difiere es el caso del rótulo mal impreso, y volver a
+ * preguntar por eso en cada reproceso es el ruido que el plan vino a sacar.
+ */
+describe('la relectura del rótulo contra la escala confirmada', () => {
+  const ARQUITECTA = { usuarioId: '', email: 'arq@estudionorte.ar' };
+
+  /** Un rótulo con esta escala y ninguna entidad: lo que interesa es la escala. */
+  function providerConRotulo(escala: string, escalaConfiable: boolean): AnalysisProvider {
+    return {
+      async leerRotulo() {
+        return { ...rotuloNulo(), escala, escalaConfiable, confianza: 0.95 };
+      },
+      async extraerEntidades() {
+        return [];
+      },
+    };
+  }
+
+  /** La lámina de `escala-declarada.pdf` con la escala corregida a mano y confirmada. */
+  async function conEscalaConfirmada(escala: string): Promise<Lamina> {
+    const documento = await subirYProcesar('escala-declarada.pdf');
+    const [lamina] = await laminasDe(documento.id);
+    await actualizarLamina(db, lamina.id, { escala, escalaConfiable: true }, ARQUITECTA, {
+      db,
+      storage,
+    });
+    const [confirmada] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    return confirmada;
+  }
+
+  function reprocesarCon(laminaId: string, escala: string, confiable: boolean): Promise<void> {
+    return procesarLamina(laminaId, { db, storage, provider: providerConRotulo(escala, confiable) });
+  }
+
+  it('la escala confirmada no se pisa, y la relectura verificada queda avisada', async () => {
+    ARQUITECTA.usuarioId = usuarioId;
+    const lamina = await conEscalaConfirmada('1:25');
+
+    await reprocesarCon(lamina.id, '1:50', true);
+
+    // Lo de siempre: la corrección del arquitecto manda.
+    const [despues] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(despues.escala).toBe('1:25');
+    expect(despues.escalaConfiable).toBe(true);
+
+    // Lo nuevo: el valor descartado tiene dónde verse.
+    const aviso = await hallazgoPorClave(`escala.${lamina.id}.rotulo`);
+    expect(aviso.estado).toBe('abierto');
+    expect(aviso.tipo).toBe('inconsistencia');
+    expect(aviso.bloqueante).toBe(false);
+    expect(aviso.descripcion).toBe(descripcionEscalaRelectura('1:25', '1:50'));
+    expect(aviso.valorPropuestoJson).toEqual({
+      valores: { escala: '1:50' },
+      origen: 'rotulo',
+      confianza: 0.95,
+    });
+  });
+
+  it('avisa sin frenar: el rubro se sigue pudiendo aprobar (RF-404)', async () => {
+    ARQUITECTA.usuarioId = usuarioId;
+    const lamina = await conEscalaConfirmada('1:25');
+    await reprocesarCon(lamina.id, '1:50', true);
+
+    const filas = await db.select().from(hallazgos).where(eq(hallazgos.obraId, obraId));
+    expect(filas.some((f) => f.clave.endsWith('.rotulo') && f.estado === 'abierto')).toBe(true);
+    expect(puedeAprobarRubro('seco', filas)).toEqual({ ok: true, bloqueantes: 0 });
+  });
+
+  it('una relectura SIN verificar que difiere no dice nada: es el rótulo que él ya corrigió', async () => {
+    ARQUITECTA.usuarioId = usuarioId;
+    const lamina = await conEscalaConfirmada('1:25');
+
+    // El rótulo sigue diciendo 1:20 y el modelo sigue sin poder verificarlo:
+    // insistir con eso en cada reproceso es pedirle que descarte lo mismo para
+    // siempre.
+    await reprocesarCon(lamina.id, '1:20', false);
+
+    expect(await hallazgoPorClave(`escala.${lamina.id}.rotulo`)).toBeUndefined();
+  });
+
+  it('la misma escala escrita distinto no es una contradicción', async () => {
+    ARQUITECTA.usuarioId = usuarioId;
+    const lamina = await conEscalaConfirmada('1:25');
+
+    await reprocesarCon(lamina.id, ' 1: 25 ', true);
+
+    expect(await hallazgoPorClave(`escala.${lamina.id}.rotulo`)).toBeUndefined();
+  });
+
+  it('reprocesar dos veces no duplica el aviso ni deja un diff fantasma', async () => {
+    ARQUITECTA.usuarioId = usuarioId;
+    const lamina = await conEscalaConfirmada('1:25');
+    await reprocesarCon(lamina.id, '1:50', true);
+
+    const antes = (await todaLaAuditoria()).length;
+    await reprocesarCon(lamina.id, '1:50', true);
+
+    const avisos = (await db.select().from(hallazgos).where(eq(hallazgos.obraId, obraId))).filter(
+      (fila) => fila.clave === `escala.${lamina.id}.rotulo`,
+    );
+    expect(avisos).toHaveLength(1);
+    const escrituras = (await todaLaAuditoria())
+      .slice(antes)
+      .filter((fila) => ESCRITURAS_DE_DATOS.has(fila.accion));
+    expect(escrituras).toEqual([]);
+  });
+
+  it('cuando la relectura vuelve a coincidir, el aviso se cierra solo', async () => {
+    ARQUITECTA.usuarioId = usuarioId;
+    const lamina = await conEscalaConfirmada('1:25');
+    await reprocesarCon(lamina.id, '1:50', true);
+
+    await reprocesarCon(lamina.id, '1:25', true);
+
+    expect((await hallazgoPorClave(`escala.${lamina.id}.rotulo`)).estado).toBe('descartado');
+  });
+
+  it('lo que él descartó no se reabre en el próximo reproceso', async () => {
+    ARQUITECTA.usuarioId = usuarioId;
+    const lamina = await conEscalaConfirmada('1:25');
+    await reprocesarCon(lamina.id, '1:50', true);
+
+    const aviso = await hallazgoPorClave(`escala.${lamina.id}.rotulo`);
+    await db.update(hallazgos).set({ estado: 'descartado' }).where(eq(hallazgos.id, aviso.id));
+
+    await reprocesarCon(lamina.id, '1:50', true);
+
+    expect((await hallazgoPorClave(`escala.${lamina.id}.rotulo`)).estado).toBe('descartado');
+  });
+
+  it('confirmarlo desde la bandeja adopta la escala del rótulo y vuelve a medir', async () => {
+    ARQUITECTA.usuarioId = usuarioId;
+    const lamina = await conEscalaConfirmada('1:25');
+    await reprocesarCon(lamina.id, '1:50', true);
+    const procesamientosPrevios = await procesamientosDe(lamina.id);
+
+    const aviso = await hallazgoPorClave(`escala.${lamina.id}.rotulo`);
+    // La tarjeta lo trata como lo que es —una consulta de escala— y manda la
+    // propuesta tal cual: un click.
+    const resultado = await responderHallazgo(
+      { obraId, hallazgoId: aviso.id, valores: { escala: '1:50' } },
+      ARQUITECTA,
+      { storage, provider: providerConRotulo('1:50', true) },
+    );
+
+    expect(resultado).toEqual({ ok: true });
+    const [despues] = await db.select().from(laminas).where(eq(laminas.id, lamina.id));
+    expect(despues.escala).toBe('1:50');
+    expect(despues.escalaConfiable).toBe(true);
+    // La escala cambió: todo lo que se midió con la anterior hay que rehacerlo.
+    expect(await procesamientosDe(lamina.id)).toBe(procesamientosPrevios + 1);
+    expect((await hallazgoPorClave(`escala.${lamina.id}.rotulo`)).estado).toBe('respondido');
   });
 });
 
