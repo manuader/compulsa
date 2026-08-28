@@ -67,7 +67,7 @@ const COLUMNAS: Record<string, CampoPrecio> = {
   unidad: 'unidad',
   un: 'unidad',
   um: 'unidad',
-  unidad_medida: 'unidad',
+  'unidad medida': 'unidad',
   precio: 'precio',
   'precio unitario': 'precio',
   unitario: 'precio',
@@ -287,14 +287,17 @@ export function importarCsvPrecios(texto: string): ResultadoImportPrecios {
 
   const separador = detectarSeparador(lineas[indiceCabecera]);
   const cabecera = partirLinea(lineas[indiceCabecera], separador).map((celda) =>
-    // `clave_item` y `clave-item` son la misma columna que `clave item`; el
-    // alias `unidad_medida` se guarda con guion bajo porque acá ya no lo tiene.
+    // `clave_item`, `clave-item` y `Clave Item` son la misma columna: los guiones
+    // y los guiones bajos caen a espacio antes de buscar el alias, así `COLUMNAS`
+    // se escribe una sola vez y con espacios.
     normalizar(celda.replace(/[-_]/g, ' ')),
   );
 
+  // La primera columna que reclama un campo gana: un CSV con `precio` y
+  // `unitario` no tiene por qué elegir, se queda con la primera.
   const columnas = new Map<CampoPrecio, number>();
   cabecera.forEach((titulo, indice) => {
-    const campo = COLUMNAS[titulo] ?? COLUMNAS[titulo.replace(/ /g, '_')];
+    const campo = COLUMNAS[titulo];
     if (campo && !columnas.has(campo)) columnas.set(campo, indice);
   });
 
