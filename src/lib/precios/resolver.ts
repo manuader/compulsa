@@ -29,13 +29,14 @@
 import type { PrecioEstimado } from '@/types/domain';
 
 /**
- * La moneda del índice.
+ * La moneda por defecto del estudio: la del índice y la de una fila nueva de
+ * la lista.
  *
- * `price_index` no guarda moneda: el índice se arma con las cotizaciones del
- * estudio, que en la práctica son pesos. La lista de referencia sí la guarda
- * (`precios_referencia.moneda`, default `ARS`) y esa viaja tal cual al ítem.
- * El día que el índice se abra por moneda, esta constante se cambia por un
- * campo de la fila y el `fuente: 'indice'` sigue igual.
+ * `price_index` no guarda moneda —el índice se arma con las cotizaciones del
+ * estudio, que en la práctica son pesos—, así que el `fuente: 'indice'` usa
+ * esta. La lista de referencia sí la guarda (`precios_referencia.moneda`) y esa
+ * viaja tal cual al ítem. El día que el índice se abra por moneda, esta
+ * constante se cambia por un campo de la fila y la cascada no se entera.
  */
 export const MONEDA_DEFAULT = 'ARS';
 
