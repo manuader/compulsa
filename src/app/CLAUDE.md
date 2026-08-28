@@ -68,6 +68,10 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
 /api/obras/[obraId]/documentos                      upload y borrado de documentos
 /api/obras/[obraId]/export                          XLSX del cómputo (consolidado o por rubro)
 /api/obras/[obraId]/planilla-carpinterias           XLSX de la planilla derivada
+/api/obras/[obraId]/memoria                         memoria de obra (.md, §27): documentación
+                                                    analizada, datos de obra, elementos,
+                                                    relaciones, conflictos, qué falta y qué se
+                                                    infirió midiendo el dibujo
 /api/obras/[obraId]/deducciones/memoria             memoria de deducciones (.md)
 /api/obras/[obraId]/compulsas/[compulsaId]/reporte  comparativa (.xlsx) y orden de compra (.pdf,
                                                     con `?documento=orden-compra`)
