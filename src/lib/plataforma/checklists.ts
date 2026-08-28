@@ -209,6 +209,11 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
   ],
   electrica: [
     {
+      itemId: 'electrica.tipo_bocas',
+      descripcion: 'Cada boca declara de qué tipo es (toma, luz, caja, tablero o datos).',
+      bloqueante: true,
+    },
+    {
       itemId: 'electrica.baja_confianza',
       descripcion:
         'Ningún ítem de instalación eléctrica se apoya en datos por debajo del umbral de confianza.',
