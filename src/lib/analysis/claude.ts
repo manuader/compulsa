@@ -50,15 +50,20 @@ Reglas que no se negocian:
 5. Medidas en metros y metros cuadrados. Textos y nombres en español rioplatense (es-AR).
 6. \`estadoReforma\`: usá \`na\` en obra nueva. En reforma o ampliación, \`existente\`, \`demoler\` o \`nueva\` según lo que la lámina indique explícitamente (rayado de demolición, referencias, etc.); si la lámina no lo dice, \`na\`.
 7. Claves exactas de \`atributos\` según el tipo de entidad:
-   - ambiente: superficieM2, perimetroM, alturaM, vanosM2
+   - ambiente: superficieM2, perimetroM, alturaM, vanosM2, nivel, solado, zocalo, cielorraso, revestimiento, alturaRevestimientoM — \`nivel\` es el piso donde está el ambiente, nombrado como lo nombra el proyecto ("PB", "1º", "subsuelo"). Las cuatro terminaciones (\`solado\`, \`zocalo\`, \`cielorraso\`, \`revestimiento\`) son texto libre tal como las escribe la lámina ("porcelanato 60×60", "madera", "yeso aplicado", "cerámica"), y \`alturaRevestimientoM\` es hasta qué altura llega el revestimiento de pared, en metros.
    - abertura: tag, tipologia ('ventana' | 'puerta' | 'paño fijo'), anchoM, altoM, material, vidrio, cantidad — \`material\` y \`vidrio\` son texto libre tal como los escribe la lámina ("aluminio línea Módena", "DVH 4/9/4"). \`cantidad\` es SOLO de las filas de una planilla de carpinterías, donde la tabla dice cuántas hay de esa tipología: una abertura dibujada en una planta es una, y ahí la clave no va.
    - tabique: tipo ('durlock'), largoM, alturaM, caras
    - muro: tipo ('mamposteria'), largoM, alturaM
-   - terminacion: superficieM2, ubicacion ('piso' | 'cielorraso' | 'pared'), ambiente (nombre del ambiente)
+   - terminacion: superficieM2, ubicacion ('piso' | 'cielorraso' | 'pared'), ambiente (nombre del ambiente), material
+   - tramo (un tramo de cañería): sistema ('af' | 'ac' | 'cloacal' | 'pluvial'), diametro, longitudM, material — \`af\` es agua fría y \`ac\` agua caliente. \`diametro\` es TEXTO y va tal como está escrito, sin el símbolo ni la unidad: de "Ø110" devolvés "110", de '1/2"' devolvés "1/2". \`longitudM\` solo cuando la lámina la trae (regla 9).
+   - accesorio (una pieza de la cañería): tipo ('codo90' | 'codo45' | 'te' | 'valvula'), sistema, diametro — \`sistema\` y \`diametro\` se escriben igual que en el tramo.
+   - boca (un punto de la instalación eléctrica): tipo ('toma' | 'luz' | 'caja' | 'tablero' | 'datos'), circuito — \`circuito\` es la identificación del circuito tal como la escribe la lámina ("C1", "IUG"), y va solo si está escrita.
    No inventes claves nuevas y no incluyas una clave cuyo valor no leíste.
 8. Cuando la lámina no es un plano con entidades dibujadas, fijate bien qué es antes de darla por vacía:
    - **Planilla de carpinterías** (la tabla de aberturas del proyecto: una fila por tipología, con sus medidas): extraé **una entidad \`abertura\` por fila de la tabla**, con \`bbox\` = la fila. Es la lámina donde el estudio escribe las medidas que en la planta no están: saltearla es perder el dato. De cada fila devolvé **solo las claves que esa fila trae escritas** (\`tag\`, \`tipologia\`, \`anchoM\`, \`altoM\`, \`material\`, \`vidrio\`, \`cantidad\`); la clave que no está escrita no va (regla 1). \`cantidad\` es informativa y **no computa**: cuántas se compran lo dice la planta, no la planilla.
-   - **Carátula, memoria descriptiva, índice de láminas o cualquier otra lámina sin nada computable**: devolvé el rótulo que puedas leer y \`entidades: []\`.`;
+   - **Cuadro de locales** (la tabla de ambientes con sus terminaciones: una fila por local, con solado, zócalo, cielorraso, revestimiento y a veces la superficie): extraé **una entidad \`ambiente\` por fila de la tabla**, con \`bbox\` = la fila. Es la planilla de carpinterías de las terminaciones: ahí es donde el estudio escribe con qué se termina cada ambiente, y la planta no lo dice. De cada fila devolvé **solo las claves que esa fila trae escritas**.
+   - **Carátula, memoria descriptiva, índice de láminas o cualquier otra lámina sin nada computable**: devolvé el rótulo que puedas leer y \`entidades: []\`.
+9. **Planos de instalaciones** (sanitaria, eléctrica): las cañerías son \`tramo\`, sus piezas son \`accesorio\`, los puntos de la eléctrica son \`boca\` y los artefactos (inodoro, bacha, bañera, pileta de cocina) son \`artefacto\`. Una regla propia y sin excepciones: **\`longitudM\` de un tramo va SOLO si la lámina la trae acotada o escrita**. Un recorrido de cañería no se mide a ojo ni se calcula con la escala — es la regla 1 aplicada justo donde más tienta romperla. Un tramo sin longitud se devuelve igual, con su sistema y su diámetro: cuánto mide se resuelve después o se le pregunta al proyectista.`;
 
 /**
  * El prompt del **inventario**: el rótulo y nada más.
