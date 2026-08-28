@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { plantillaPintura } from '@/lib/rubros/pintura';
-import type { ItemComputo } from '@/types/domain';
+import type { DatoObraResuelto, Fuente, ItemComputo } from '@/types/domain';
 
 function ambiente(over: Partial<EntidadPersistida> & { id: string }): EntidadPersistida {
   return {
@@ -54,7 +54,7 @@ describe('plantilla pintura: ambiente de 4 × 3 m (per. 14 m, alto 2,60 m, vanos
 });
 
 describe('plantilla pintura: huecos de documentación', () => {
-  it('sin alturaM no computa las paredes: hallazgo bloqueante (el cielorraso sí se computa)', () => {
+  it('sin alturaM no computa las paredes: consulta de dato de obra (el cielorraso sí se computa)', () => {
     const sinAltura = ambiente({
       id: 'a2',
       nombre: 'Dormitorio 1',
@@ -64,10 +64,13 @@ describe('plantilla pintura: huecos de documentación', () => {
 
     expect(items.map((i) => i.claveItem)).toEqual(['pintura.latex_cielorrasos']);
     expect(hallazgos).toHaveLength(1);
-    expect(hallazgos[0]!.clave).toBe('pintura.altura_ambiente.Dormitorio 1');
+    expect(hallazgos[0]!.clave).toBe('dato_obra.altura_local.general');
     expect(hallazgos[0]!.tipo).toBe('faltante');
-    expect(hallazgos[0]!.bloqueante).toBe(true);
-    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'a2', campos: ['alturaM'] });
+    expect(hallazgos[0]!.targetDato).toEqual({
+      clave: 'altura_local.general',
+      unidad: 'm',
+      entidades: ['a2'],
+    });
   });
 
   it('sin vanosM2 computa bruto, avisa con un supuesto NO bloqueante y degrada el origen', () => {
@@ -127,5 +130,64 @@ describe('plantilla pintura: huecos de documentación', () => {
     const { items, hallazgos } = plantillaPintura.computar([existente], 'reforma');
     expect(items).toEqual([]);
     expect(hallazgos).toEqual([]);
+  });
+});
+
+describe('plantilla pintura: la altura la pone el dato de obra', () => {
+  const CORTE: Fuente = { laminaId: 'L9', bbox: [0.2, 0.3, 0.5, 0.4], detalle: 'Corte A-A' };
+  const datos = new Map<string, DatoObraResuelto>([
+    [
+      'altura_local.general',
+      {
+        clave: 'altura_local.general',
+        valor: 2.6,
+        unidad: 'm',
+        origen: 'deducido',
+        fuentes: [CORTE],
+        confianza: 0.9,
+      },
+    ],
+  ]);
+
+  const sinAltura = ambiente({
+    id: 'a7',
+    atributos: { superficieM2: 12, perimetroM: 14, vanosM2: 3.5 },
+  });
+  const { items, hallazgos, origenPorEntidad } = plantillaPintura.computar(
+    [sinAltura],
+    'nueva',
+    undefined,
+    datos,
+  );
+  const item = porClave(items);
+
+  it('da los mismos números que con la altura escrita en el ambiente', () => {
+    expect(hallazgos).toEqual([]);
+    expect(item['pintura.latex_paredes']!.cantNeta).toBe(6.58); // 14 × 2,60 − 3,5
+    expect(item['pintura.latex_cielorrasos']!.cantNeta).toBe(2.4);
+  });
+
+  it('las paredes citan el corte; el cielorraso, que no usa la altura, no', () => {
+    expect(item['pintura.latex_paredes']!.fuentes).toHaveLength(2);
+    expect(item['pintura.latex_paredes']!.fuentes.at(-1)).toEqual(CORTE);
+    expect(item['pintura.latex_cielorrasos']!.fuentes).toHaveLength(1);
+  });
+
+  it('anota alturaM con el origen del dato', () => {
+    expect(origenPorEntidad!.get('a7')!.get('alturaM')).toBe('deducido');
+  });
+
+  it('agrupa a todos los ambientes sin altura en una sola consulta', () => {
+    const otro = ambiente({
+      id: 'a8',
+      nombre: 'Cocina',
+      bbox: [0.6, 0.2, 0.2, 0.2],
+      atributos: { superficieM2: 8, perimetroM: 12, vanosM2: 2 },
+    });
+    const { hallazgos: consultas } = plantillaPintura.computar([sinAltura, otro], 'nueva');
+
+    expect(consultas.map((h) => h.clave)).toEqual(['dato_obra.altura_local.general']);
+    expect(consultas[0]!.targetDato?.entidades).toEqual(['a7', 'a8']);
+    expect(consultas[0]!.descripcion).toContain('Living y Cocina');
   });
 });
