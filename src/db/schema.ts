@@ -44,13 +44,17 @@ import {
   UNIDADES,
   type CondicionesRfq,
   type ConfigEstudio,
+  type DatoObraValor,
   type EntidadDetectada,
+  type FaseAnalisis,
   type Fuente,
   type ItemRfq,
   type LineaPresupuesto,
   type Mandato,
   type MarcaBusqueda,
+  type PrecioEstimado,
   type RolUsuario,
+  type TargetDato,
   type TargetRefPersistido,
   type ValorPropuesto,
   // Import relativo a propósito: `drizzle-kit generate` bundlea este archivo con
@@ -71,6 +75,8 @@ export const ACTORES = ['usuario', 'agente'] as const;
 export const ORIGENES_PROVEEDOR = ['agenda', 'manual', 'historico'] as const;
 export const DIRECCIONES_MENSAJE = ['saliente', 'entrante'] as const;
 export const ESTADOS_COTIZACION = ['recibida', 'conciliada', 'descartada'] as const;
+/** De dónde salió una fila de `precios_referencia`: el CSV importado o el alta a mano. */
+export const ORIGENES_PRECIO = ['csv', 'manual'] as const;
 export const RESULTADOS_NEGOCIACION = [
   'pendiente',
   'aceptada',
@@ -85,6 +91,7 @@ export type ActorTipo = (typeof ACTORES)[number];
 export type OrigenProveedor = (typeof ORIGENES_PROVEEDOR)[number];
 export type DireccionMensaje = (typeof DIRECCIONES_MENSAJE)[number];
 export type EstadoCotizacion = (typeof ESTADOS_COTIZACION)[number];
+export type OrigenPrecio = (typeof ORIGENES_PRECIO)[number];
 export type ResultadoNegociacion = (typeof RESULTADOS_NEGOCIACION)[number];
 
 // --- pgEnums ---------------------------------------------------------------
@@ -117,6 +124,7 @@ export const matchConciliacionEnum = pgEnum('match_conciliacion', MATCHES_CONCIL
 export const resultadoNegociacionEnum = pgEnum('resultado_negociacion', RESULTADOS_NEGOCIACION);
 export const reglaDeduccionEnum = pgEnum('regla_deduccion', REGLAS_DEDUCCION);
 export const estadoDeduccionEnum = pgEnum('estado_deduccion', ESTADOS_DEDUCCION);
+export const origenPrecioEnum = pgEnum('origen_precio', ORIGENES_PRECIO);
 
 // --- Tablas ----------------------------------------------------------------
 
@@ -185,6 +193,12 @@ export const obras = pgTable('obras', {
   estado: estadoObraEnum('estado').notNull().default('activa'),
   /** Resumen cacheado del tablero (totales por rubro, ahorro). `null` ⇒ sin calcular. */
   resumenJson: jsonb('resumen_json').$type<Record<string, unknown>>(),
+  /**
+   * En qué anda el análisis del expediente ahora mismo ("analizando 12/25",
+   * "cruzando información"). `null` ⇒ nunca se analizó, o terminó hace tanto
+   * que ya no hay nada que mostrar.
+   */
+  analisisJson: jsonb('analisis_json').$type<FaseAnalisis>(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -258,6 +272,16 @@ export const entidades = pgTable(
     /** Provenance (P1): lámina + bbox normalizado. Nunca vacío para datos de agente. */
     fuentesJson: jsonb('fuentes_json').$type<Fuente[]>().notNull(),
     confianza: real('confianza').notNull(),
+    /**
+     * El mismo elemento físico dibujado en varias láminas (§15): la puerta de
+     * la planta y la de la planilla comparten `elemento_id`.
+     *
+     * **Sin FK a propósito**: es un id de grupo, no apunta a ninguna fila. La
+     * primera entidad del grupo no es "la buena" —si lo fuera, borrarla dejaría
+     * al resto huérfano— y no hay tabla de elementos que valga la pena crear
+     * para guardar un uuid y nada más. `null` ⇒ todavía no se unificó.
+     */
+    elementoId: uuid('elemento_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('entidades_obra_idx').on(t.obraId)],
@@ -284,6 +308,13 @@ export const computoItems = pgTable(
     fuentesJson: jsonb('fuentes_json').$type<Fuente[]>().notNull(),
     confianza: real('confianza').notNull(),
     estado: estadoItemEnum('estado').notNull().default('activo'),
+    /**
+     * El precio unitario del ítem con de dónde salió (`PrecioEstimado`). Lo
+     * recalcula cada recompute por la cascada de precios —manual del ítem →
+     * lista del estudio → índice—, y la IA no participa: un precio que un
+     * modelo "recuerda" no es un precio. `null` ⇒ no hay con qué valorizarlo.
+     */
+    precioJson: jsonb('precio_json').$type<PrecioEstimado>(),
     /** `null` ⇒ ítem de agente: el recompute puede reemplazarlo. Seteado ⇒ intocable. */
     editadoPor: uuid('editado_por').references(() => usuarios.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -362,6 +393,15 @@ export const hallazgos = pgTable(
      * (`MarcaBusqueda`). `null` ⇒ nunca se buscó.
      */
     busquedaJson: jsonb('busqueda_json').$type<MarcaBusqueda>(),
+    /**
+     * La otra cosa a la que puede apuntar una consulta: un **dato de obra**
+     * (`altura_local.PB`) en vez de una entidad. Responderla escribe
+     * `datos_obra` y el recompute lo propaga a todas las entidades que lo
+     * necesitaban — por eso `entidades` adentro es informativo, para que la
+     * tarjeta pueda decir a quiénes afecta. `null` ⇒ la consulta es de entidad
+     * (`target_ref`) o de ninguna de las dos.
+     */
+    targetDato: jsonb('target_dato').$type<TargetDato>(),
     bloqueante: boolean('bloqueante').notNull(),
     estado: estadoHallazgoEnum('estado').notNull().default('abierto'),
     respuestaJson: jsonb('respuesta_json').$type<Record<string, unknown>>(),
@@ -654,6 +694,75 @@ export const deducciones = pgTable(
   ],
 );
 
+/**
+ * Un hecho que vale para **toda la obra**, no para una entidad: la altura de
+ * local de PB, el nivel de un piso, la altura de revestimiento de un baño.
+ *
+ * Existe porque preguntar cuatro veces la altura de los cuatro tabiques de PB
+ * es preguntar cuatro veces lo mismo. Las plantillas lo consultan como respaldo
+ * cuando a la entidad le falta el campo (cadena: atributo explícito → dato de
+ * obra → inferencia gráfica → pregunta), y el ítem hereda su origen, sus
+ * fuentes y su confianza — P1 no se negocia porque el dato sea de la obra
+ * entera.
+ *
+ * `definido_por` es la línea que el pipeline no cruza: un dato que cargó o
+ * corrigió una persona **no se pisa jamás** por un cruce ni por una inferencia.
+ * `metodo` es la contracara: cómo se llegó a un dato `inferido`, en castellano,
+ * para que la memoria de obra lo pueda contar.
+ */
+export const datosObra = pgTable(
+  'datos_obra',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    obraId: uuid('obra_id')
+      .notNull()
+      .references(() => obras.id),
+    /** Convencional: `altura_local.<nivel|general>`, `nivel.<nombre>`, `altura_revestimiento.<ambiente|general>`. */
+    clave: text('clave').notNull(),
+    valorJson: jsonb('valor_json').$type<DatoObraValor>().notNull(),
+    origen: origenItemEnum('origen').notNull(),
+    /** Provenance (P1). Vacío solo cuando lo cargó una persona (`definido_por`). */
+    fuentesJson: jsonb('fuentes_json').$type<Fuente[]>().notNull(),
+    confianza: real('confianza').notNull(),
+    /** Cómo se llegó al dato, para los `inferido`. `null` ⇒ no hace falta explicarlo. */
+    metodo: text('metodo'),
+    /** `null` ⇒ lo puso el sistema. Seteado ⇒ intocable para el pipeline. */
+    definidoPor: uuid('definido_por').references(() => usuarios.id),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('datos_obra_obra_clave_uq').on(t.obraId, t.clave),
+    index('datos_obra_obra_idx').on(t.obraId),
+  ],
+);
+
+/**
+ * La lista de precios de referencia del estudio (`clave_item` → precio).
+ *
+ * Es el segundo escalón de la cascada de precios, entre el precio manual del
+ * ítem y el índice propio. Una sola fila por `(estudio, clave_item)`: si la
+ * misma clave pudiera tener dos precios, la cascada tendría que elegir uno y
+ * cualquier criterio sería arbitrario. Reimportar el CSV **actualiza** la fila.
+ */
+export const preciosReferencia = pgTable(
+  'precios_referencia',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    estudioId: uuid('estudio_id')
+      .notNull()
+      .references(() => estudios.id),
+    claveItem: text('clave_item').notNull(),
+    descripcion: text('descripcion').notNull(),
+    unidad: unidadEnum('unidad').notNull(),
+    precio: numeric('precio', { precision: 14, scale: 2, mode: 'number' }).notNull(),
+    moneda: text('moneda').notNull().default('ARS'),
+    /** Fecha del precio (`YYYY-MM-DD`): viaja al ítem como `PrecioEstimado.fechaPrecio`. */
+    fecha: text('fecha').notNull(),
+    origen: origenPrecioEnum('origen').notNull(),
+  },
+  (t) => [unique('precios_referencia_estudio_clave_uq').on(t.estudioId, t.claveItem)],
+);
+
 /** Checklist por rubro que el estudio ajusta (RF-405). `activo=false` ⇒ no se chequea. */
 export const checklistsEstudio = pgTable(
   'checklists_estudio',
@@ -728,6 +837,8 @@ export type Negociacion = typeof negociaciones.$inferSelect;
 export type Adjudicacion = typeof adjudicaciones.$inferSelect;
 export type PrecioIndice = typeof priceIndex.$inferSelect;
 export type Deduccion = typeof deducciones.$inferSelect;
+export type DatoObra = typeof datosObra.$inferSelect;
+export type PrecioReferencia = typeof preciosReferencia.$inferSelect;
 export type ChecklistEstudio = typeof checklistsEstudio.$inferSelect;
 export type Notificacion = typeof notificaciones.$inferSelect;
 
@@ -751,5 +862,7 @@ export type NuevaNegociacion = typeof negociaciones.$inferInsert;
 export type NuevaAdjudicacion = typeof adjudicaciones.$inferInsert;
 export type NuevoPrecioIndice = typeof priceIndex.$inferInsert;
 export type NuevaDeduccion = typeof deducciones.$inferInsert;
+export type NuevoDatoObra = typeof datosObra.$inferInsert;
+export type NuevoPrecioReferencia = typeof preciosReferencia.$inferInsert;
 export type NuevoChecklistEstudio = typeof checklistsEstudio.$inferInsert;
 export type NuevaNotificacion = typeof notificaciones.$inferInsert;
