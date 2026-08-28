@@ -216,7 +216,8 @@ function pareceMiles(grupos: string[]): boolean {
  */
 export function parsearPrecio(crudo: string): number | null {
   const limpio = crudo
-    .replace(/[$\s  ]/g, '')
+    // `\s` ya cubre el espacio duro y el fino que mete el Excel.
+    .replace(/[$\s]/g, '')
     .replace(/^ars/i, '')
     .trim();
   if (limpio === '') return null;
