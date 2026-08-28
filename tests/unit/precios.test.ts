@@ -179,6 +179,22 @@ describe('importarCsvPrecios: el CSV de la lista del estudio', () => {
     expect(filas[0].precio).toBe(1234.5);
   });
 
+  it('con los dos separadores manda el último: el CSV puede venir de un Excel en inglés', () => {
+    const { filas, errores } = importarCsvPrecios(
+      [
+        'clave_item,descripcion,unidad,precio',
+        'a.b,Local,u,"1.234,50"',
+        'c.d,Inglés,u,"1,234.50"',
+        'e.f,Inglés con miles,u,"1,234,500.75"',
+      ].join('\n'),
+    );
+
+    expect(errores).toEqual([]);
+    // Leer «1,234.50» con la regla local daría 1,2345: un precio dividido por
+    // mil, en silencio. Por eso el último separador es el decimal.
+    expect(filas.map((fila) => fila.precio)).toEqual([1234.5, 1234.5, 1234500.75]);
+  });
+
   it('un punto con dos decimales es decimal; con tres dígitos, separador de miles', () => {
     const { filas } = importarCsvPrecios(
       [
@@ -186,10 +202,23 @@ describe('importarCsvPrecios: el CSV de la lista del estudio', () => {
         'a.b,Uno,u,12.50',
         'c.d,Dos,u,1.234',
         'e.f,Tres,u,$ 2 500',
+        'g.h,Cuatro,u,"1,234"',
+        'i.j,Cinco,u,"0,1234"',
       ].join('\n'),
     );
 
-    expect(filas.map((fila) => fila.precio)).toEqual([12.5, 1234, 2500]);
+    // Un grupo de tres es separador de miles en los dos idiomas; uno de otro
+    // tamaño es el decimal, que es la única lectura posible de «0,1234».
+    expect(filas.map((fila) => fila.precio)).toEqual([12.5, 1234, 2500, 1234, 0.1234]);
+  });
+
+  it('dos separadores del mismo tipo que no son miles no son un número', () => {
+    const { filas, errores } = importarCsvPrecios(
+      ['clave_item,descripcion,unidad,precio', 'a.b,Roto,u,1.2.3'].join('\n'),
+    );
+
+    expect(filas).toEqual([]);
+    expect(errores[0].linea).toBe(2);
   });
 
   it('una unidad que no existe se reporta con su línea y esa fila no entra', () => {

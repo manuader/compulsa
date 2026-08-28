@@ -188,22 +188,31 @@ function estaVacia(campos: string[]): boolean {
   return campos.every((campo) => campo.trim() === '');
 }
 
+/** `true` si los separadores parten el número en grupos de miles bien formados. */
+function pareceMiles(grupos: string[]): boolean {
+  if (grupos.length < 2) return false;
+  if (!/^\d{1,3}$/.test(grupos[0])) return false;
+  return grupos.slice(1).every((grupo) => /^\d{3}$/.test(grupo));
+}
+
 /**
- * Un precio escrito por un humano → número.
+ * Un precio escrito por un humano → número, o `null` si no se puede leer sin
+ * adivinar.
  *
- * Reglas, en orden:
+ * El CSV sale de un Excel argentino, pero también puede salir de uno en inglés,
+ * y las dos convenciones usan los mismos dos caracteres al revés. Adivinar mal
+ * acá multiplica o divide un precio por mil **en silencio**, así que la regla se
+ * escribe entera:
  *
- *  1. Se sacan el símbolo de moneda, los espacios (incluido el duro del Excel)
- *     y nada más: una letra suelta hace que la línea falle, no que se ignore.
- *  2. **Si hay coma, la coma es el decimal** y los puntos son separadores de
- *     miles: `"1.234,50"` ⇒ `1234.5`. Es la convención local.
- *  3. Si no hay coma y hay **un solo** punto con 1 o 2 dígitos atrás, el punto
- *     es decimal: `"12.50"` ⇒ `12.5`. Es lo que exporta un Excel en inglés, y
- *     leerlo como miles multiplicaría el precio por cien en silencio.
- *  4. Cualquier otro punto es separador de miles: `"1.234"` ⇒ `1234`,
- *     `"1.234.500"` ⇒ `1234500`.
- *
- * Devuelve `null` si lo que quedó no es un número finito.
+ *  1. Se sacan el símbolo de moneda y los espacios (incluido el duro del Excel).
+ *     Una letra suelta no se limpia: hace que la línea falle, que es lo correcto.
+ *  2. **Si están los dos separadores, el último manda:** `"1.234,50"` ⇒ `1234.5`
+ *     (local) y `"1,234.50"` ⇒ `1234.5` (inglés). El otro es el de miles.
+ *  3. **Con uno solo, decide la forma de los grupos:** si parte el número en
+ *     grupos de tres es separador de miles (`"1.234"` ⇒ `1234`, `"1.234.500"` ⇒
+ *     `1234500`); si no, es el decimal (`"12,50"` ⇒ `12.5`, `"12.50"` ⇒ `12.5`,
+ *     `"0,1234"` ⇒ `0.1234`).
+ *  4. Lo que sale de eso tiene que ser un número: `"1.2.3"` no lo es.
  */
 export function parsearPrecio(crudo: string): number | null {
   const limpio = crudo
@@ -212,12 +221,24 @@ export function parsearPrecio(crudo: string): number | null {
     .trim();
   if (limpio === '') return null;
 
+  const ultimaComa = limpio.lastIndexOf(',');
+  const ultimoPunto = limpio.lastIndexOf('.');
+  const signo = limpio.startsWith('-') ? '-' : '';
+  const digitos = limpio.replace(/^-/, '');
+
   let normalizado: string;
-  if (limpio.includes(',')) {
-    normalizado = limpio.replace(/\./g, '').replace(',', '.');
+  if (ultimaComa >= 0 && ultimoPunto >= 0) {
+    const decimal = ultimaComa > ultimoPunto ? ',' : '.';
+    const miles = decimal === ',' ? '.' : ',';
+    normalizado = `${signo}${digitos.split(miles).join('').replace(decimal, '.')}`;
+  } else if (ultimaComa >= 0 || ultimoPunto >= 0) {
+    const separador = ultimaComa >= 0 ? ',' : '.';
+    const grupos = digitos.split(separador);
+    normalizado = pareceMiles(grupos)
+      ? `${signo}${grupos.join('')}`
+      : `${signo}${digitos.replace(separador, '.')}`;
   } else {
-    const decimalConPunto = /^-?\d+\.\d{1,2}$/.test(limpio);
-    normalizado = decimalConPunto ? limpio : limpio.replace(/\./g, '');
+    normalizado = limpio;
   }
 
   if (!/^-?\d+(\.\d+)?$/.test(normalizado)) return null;
