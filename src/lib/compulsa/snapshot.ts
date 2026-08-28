@@ -38,9 +38,14 @@ export const SPECS_CRITICAS_POR_RUBRO: Record<RubroId, readonly string[]> = {
   gruesa: ['tipo'],
   pintura: [],
   // Sanitaria es el caso más claro de spec crítica: cambiar el material de una
-  // cañería no es un descuento, es otra instalación.
-  sanitaria: ['material', 'sistema'],
+  // cañería no es un descuento, es otra instalación. El `sistema` no está: la
+  // cañería de agua fría y la de caliente son el mismo caño (lo que cambia es
+  // el material), y además el sistema ya viaja en la clave y en la descripción
+  // del ítem — `sanitaria.canieria.ac.20`, "Cañería de agua caliente Ø 20".
+  sanitaria: ['material', 'diametro'],
   terminaciones: ['material'],
+  // Eléctrica no tiene spec de compra: el tipo de boca ES el ítem y el circuito
+  // es información de proyecto, no algo que el proveedor pueda sustituir.
   electrica: [],
   demolicion: [],
 };
