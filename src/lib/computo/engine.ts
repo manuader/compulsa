@@ -12,8 +12,8 @@
  *      umbral no se emite y se degrada a consulta bloqueante;
  *   3. suma los sanity checks de obra;
  *   4. deduplica hallazgos por clave, que es única por obra (idempotencia);
- *   5. marca `origen: 'deducido'` los ítems que se apoyaron en un dato que entró
- *      por una deducción validada (§11, P6).
+ *   5. marca con el **peor origen de los campos que usó** cada ítem que se apoyó
+ *      en un dato que no está escrito en la documentación (§11, P6 y §5.5).
  */
 import { sanityChecks } from '@/lib/computo/sanity';
 import {
@@ -26,6 +26,7 @@ import type {
   EntidadDetectada,
   HallazgoDetectado,
   ItemComputo,
+  Origen,
   RubroId,
   TipoLamina,
   TipoObra,
@@ -108,28 +109,57 @@ export function computarRubro(
 }
 
 // ---------------------------------------------------------------------------
-// Origen deducido (§11): qué ítems se apoyaron en un dato deducido
+// Origen por campo (§11, §5.5): qué ítems se apoyaron en un dato no escrito
 // ---------------------------------------------------------------------------
 
 /**
- * Atributos de cada entidad cuyo valor NO está escrito en la documentación sino
- * que entró por una deducción que el arquitecto validó: `entidadId → campos`.
+ * Atributos de cada entidad cuyo valor NO está escrito en la documentación,
+ * **con el origen de cada uno**: `entidadId → campo → origen`.
+ *
+ * Un campo puede haber entrado por una deducción que el arquitecto validó
+ * (`deducido`), por una medición sobre el dibujo (`inferido`, §5.5) o por un
+ * supuesto declarado (`supuesto`). Un campo mapeado a `explicito` está en el
+ * mapa pero no ensucia nada: es lo que dice la documentación.
  *
  * El engine no sabe de la tabla `deducciones` ni quiere saber: recibe el mapa ya
  * armado (lo arma `recomputarObra`) y con eso alcanza.
  */
-export type CamposDeducidos = ReadonlyMap<string, ReadonlySet<string>>;
+export type CamposDeducidos = ReadonlyMap<string, ReadonlyMap<string, Origen>>;
 
 /** Default de `computarObra`: sin deducciones validadas nada cambia de origen. */
 const SIN_DEDUCCIONES: CamposDeducidos = new Map();
 
-/** Las mismas entidades, pero sin los atributos que aportó una deducción. */
-function sinCamposDeducidos(
-  entidades: readonly EntidadPersistida[],
+/**
+ * Los orígenes que un campo le puede contagiar a un ítem, **del peor al mejor**.
+ *
+ * La precedencia del §5.5 es `explicito < supuesto < deducido < inferido`: el
+ * ítem sale con el peor origen de los campos que usó. `explicito` no está en la
+ * lista porque no contagia nada —es el piso—, y por eso el orden de las pasadas
+ * de control es exactamente este: la primera que marca un ítem gana.
+ */
+const ORIGENES_CONTAGIOSOS = ['inferido', 'deducido', 'supuesto'] as const;
+
+/** `entidadId → campos` con exactamente ese origen (vacío si no hay ninguno). */
+function camposConOrigen(
   camposDeducidos: CamposDeducidos,
+  origen: Origen,
+): Map<string, Set<string>> {
+  const porEntidad = new Map<string, Set<string>>();
+  for (const [entidadId, campos] of camposDeducidos) {
+    const suyos = new Set<string>();
+    for (const [campo, suyo] of campos) if (suyo === origen) suyos.add(campo);
+    if (suyos.size > 0) porEntidad.set(entidadId, suyos);
+  }
+  return porEntidad;
+}
+
+/** Las mismas entidades, pero sin los atributos que aportó una deducción. */
+function sinCampos(
+  entidades: readonly EntidadPersistida[],
+  porEntidad: ReadonlyMap<string, ReadonlySet<string>>,
 ): EntidadPersistida[] {
   return entidades.map((entidad) => {
-    const campos = camposDeducidos.get(entidad.id);
+    const campos = porEntidad.get(entidad.id);
     if (campos === undefined || campos.size === 0) return entidad;
     const atributos = { ...entidad.atributos };
     for (const campo of campos) delete atributos[campo];
@@ -153,28 +183,33 @@ function huellaDeItem(item: ItemComputo): string {
 }
 
 /**
- * Marca `deducido` los ítems que **efectivamente** usaron un dato deducido.
+ * Marca con `origen` los ítems que **efectivamente** usaron un campo de ese
+ * origen.
  *
  * La prueba no es "la entidad tiene algún campo deducido" sino "el ítem sale
- * distinto sin ese campo": se computa una segunda vez con los campos deducidos
- * borrados y se comparan las dos salidas. Un ítem que no cambia no se apoyó en
- * la deducción y sigue siendo explícito —una altura deducida no vuelve deducidos
- * a los ítems de pintura que solo miran la superficie—, y una deducción que
- * repite el default de la plantilla (`caras: 2`) tampoco ensucia nada.
+ * distinto sin ese campo": se computa una segunda vez con esos campos borrados
+ * y se comparan las dos salidas. Un ítem que no cambia no se apoyó en el dato y
+ * sigue siendo explícito —una altura deducida no vuelve deducidos a los ítems de
+ * pintura que solo miran la superficie—, y una deducción que repite el default
+ * de la plantilla (`caras: 2`) tampoco ensucia nada.
  *
- * Un ítem `supuesto` no se toca: decir "se computó sobre un supuesto declarado"
- * es más fuerte que decir "se dedujo", y es lo que manda a la bandeja.
+ * Un ítem que ya no es `explicito` no se toca, y eso hace dos cosas a la vez:
+ * mantiene la precedencia (las pasadas van del peor origen al mejor, así que la
+ * primera marca es la que manda) y respeta que un ítem `supuesto` no se degrade
+ * —decir "se computó sobre un supuesto declarado" es más fuerte que decir "se
+ * dedujo", y es lo que manda a la bandeja—.
  */
-function marcarDeducidos(
+function marcarOrigen(
   items: readonly ItemComputo[],
-  sinDeduccion: readonly ItemComputo[],
+  control: readonly ItemComputo[],
+  origen: Origen,
 ): ItemComputo[] {
-  const huellas = new Map(sinDeduccion.map((item) => [item.claveItem, huellaDeItem(item)]));
+  const huellas = new Map(control.map((item) => [item.claveItem, huellaDeItem(item)]));
   return items.map((item) => {
     if (item.origen !== 'explicito') return item;
     const previa = huellas.get(item.claveItem);
     if (previa !== undefined && previa === huellaDeItem(item)) return item;
-    return { ...item, origen: 'deducido' };
+    return { ...item, origen };
   });
 }
 
@@ -225,8 +260,9 @@ function correrPlantillas(
  *
  * `camposDeducidos` es opcional y por defecto está vacío: sin deducciones
  * validadas el motor corre exactamente una vez y devuelve lo mismo de siempre.
- * Con deducciones validadas corre una segunda pasada "de control" sin esos datos
- * para saber qué ítems dependen de ellos y marcarlos `origen: 'deducido'`.
+ * Con deducciones validadas corre una pasada "de control" por cada origen en
+ * juego, sin esos datos, para saber qué ítems dependen de ellos y marcarlos con
+ * el peor origen de los campos que usaron.
  *
  * `laminas` también es opcional y por defecto está vacío: sin él, una plantilla
  * que mira el tipo de lámina (hoy solo aberturas) se comporta como antes de que
@@ -277,14 +313,24 @@ export function computarObraConPlantillas(
   const resultado = correrPlantillas(entidades, tipoObra, plantillas, rubros, laminas);
   if (camposDeducidos.size === 0) return resultado;
 
-  const control = correrPlantillas(
-    sinCamposDeducidos(entidades, camposDeducidos),
-    tipoObra,
-    plantillas,
-    rubros,
-    laminas,
-  );
+  // Una pasada de control por origen presente, del peor al mejor: cada una
+  // responde "¿este ítem cambia si le saco los campos de ESTE origen?". Con un
+  // solo origen en juego —el caso de siempre— es exactamente una pasada extra.
+  let items = resultado.items;
+  for (const origen of ORIGENES_CONTAGIOSOS) {
+    const campos = camposConOrigen(camposDeducidos, origen);
+    if (campos.size === 0) continue;
+    const control = correrPlantillas(
+      sinCampos(entidades, campos),
+      tipoObra,
+      plantillas,
+      rubros,
+      laminas,
+    );
+    items = marcarOrigen(items, control.items, origen);
+  }
+
   // Los hallazgos son los de la pasada real: la de control es una hipótesis
   // ("¿qué pasaría si el dato deducido no estuviera?"), no el estado de la obra.
-  return { items: marcarDeducidos(resultado.items, control.items), hallazgos: resultado.hallazgos };
+  return { items, hallazgos: resultado.hallazgos };
 }
