@@ -13,7 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { EntidadDetectada, RotuloDetectado } from '@/types/domain';
+import type { EntidadDetectada, LaminaInput, RotuloDetectado } from '@/types/domain';
 import {
   claveFixture,
   rotuloNulo,
@@ -132,15 +132,29 @@ export function crearProviderMock(
   const dir = comoDirectorio(dirFixtures);
   const sufijo = opciones.sufijoClave ?? '';
 
+  /** Copia: el fixture queda cacheado y el pipeline no debería poder ensuciarlo. */
+  function rotuloDe(lamina: LaminaInput): RotuloDetectado {
+    const analisis = cargarConSufijo(
+      dir,
+      claveFixture(lamina.documentoNombre, lamina.numeroPagina),
+      sufijo,
+    );
+    return analisis ? structuredClone(analisis.rotulo) : rotuloNulo();
+  }
+
   return {
     async leerRotulo(lamina): Promise<RotuloDetectado> {
-      const analisis = cargarConSufijo(
-        dir,
-        claveFixture(lamina.documentoNombre, lamina.numeroPagina),
-        sufijo,
-      );
-      // Copia: el fixture queda cacheado y el pipeline no debería poder ensuciarlo.
-      return analisis ? structuredClone(analisis.rotulo) : rotuloNulo();
+      return rotuloDe(lamina);
+    },
+
+    /**
+     * El inventario del mock es el **mismo rótulo del mismo fixture** que
+     * `leerRotulo`: acá no hay una llamada que ahorrar, y tener dos fuentes de
+     * verdad para el rótulo de una lámina sería inventar una diferencia que el
+     * provider real no tiene (el fixture es lo que la lámina dice, y punto).
+     */
+    async inventariar(lamina): Promise<RotuloDetectado> {
+      return rotuloDe(lamina);
     },
 
     async extraerEntidades(lamina): Promise<EntidadDetectada[]> {
