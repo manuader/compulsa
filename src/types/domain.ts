@@ -10,12 +10,31 @@ import { z } from 'zod';
 
 export type BBox = [number, number, number, number]; // [x, y, ancho, alto] normalizados 0–1, origen arriba-izquierda
 export interface Fuente { laminaId: string; bbox: BBox; detalle?: string }
-export type Origen = 'explicito' | 'deducido' | 'supuesto';
+export type Origen = 'explicito' | 'deducido' | 'supuesto' | 'inferido';
 export type EstadoReforma = 'existente' | 'demoler' | 'nueva' | 'na';
 export type TipoObra = 'nueva' | 'reforma' | 'ampliacion';
-export type RubroId = 'aberturas' | 'seco' | 'pintura' | 'gruesa';
+export type RubroId =
+  | 'aberturas'
+  | 'seco'
+  | 'pintura'
+  | 'gruesa'
+  | 'terminaciones'
+  | 'sanitaria'
+  | 'electrica'
+  | 'demolicion';
 export type Unidad = 'u' | 'm' | 'ml' | 'm2' | 'm3' | 'l' | 'kg';
-export type TipoEntidad = 'ambiente' | 'muro' | 'tabique' | 'abertura' | 'artefacto' | 'terminacion' | 'cota' | 'otro';
+export type TipoEntidad =
+  | 'ambiente'
+  | 'muro'
+  | 'tabique'
+  | 'abertura'
+  | 'artefacto'
+  | 'terminacion'
+  | 'cota'
+  | 'otro'
+  | 'tramo'
+  | 'accesorio'
+  | 'boca';
 export type Disciplina = 'arquitectura' | 'estructura' | 'instalaciones' | 'otra';
 export type TipoLamina = 'planta' | 'corte' | 'vista' | 'detalle' | 'planilla' | 'otra';
 export type EstadoAnalisis = 'pendiente' | 'procesando' | 'analizada' | 'bloqueada_escala' | 'error';
@@ -32,11 +51,15 @@ export interface EntidadDetectada {
   atributos: Record<string, number | string | boolean | null>;
 }
 // Atributos convencionales por tipo (claves exactas):
-//   ambiente:  superficieM2, perimetroM, alturaM?, vanosM2?
+//   ambiente:  superficieM2, perimetroM, alturaM?, vanosM2?,
+//              nivel?, solado?, zocalo?, cielorraso?, revestimiento?, alturaRevestimientoM?
 //   abertura:  tag, tipologia ('ventana'|'puerta'|'paño fijo'), anchoM?, altoM?, material?, vidrio?
 //   tabique:   largoM, alturaM?, caras? (default 2), tipo ('durlock')
 //   muro:      largoM, alturaM?, espesorM?, tipo ('mamposteria')
 //   terminacion: superficieM2, ubicacion ('piso'|'cielorraso'|'pared'), ambiente (nombre), material?
+//   tramo:     sistema ('af'|'ac'|'cloacal'|'pluvial'), diametro (string, ej. "20", "110"), longitudM?, material?
+//   accesorio: tipo ('codo90'|'codo45'|'te'|'valvula'), sistema, diametro
+//   boca:      tipo ('toma'|'luz'|'caja'|'tablero'|'datos'), circuito?
 
 export interface RotuloDetectado {
   titulo: string | null; codigo: string | null;
@@ -180,7 +203,38 @@ export interface HallazgoDetectado {
   checklistItem?: string; bloqueante: boolean; fuentes: Fuente[];
   targetRef?: TargetRef;            // si responderlo actualiza una entidad
   valorPropuesto?: ValorPropuesto;  // lo que el sistema propone para esos campos
+  targetDato?: TargetDato;          // si responderlo escribe un dato de obra en vez de una entidad
 }
+
+// ---------------------------------------------------------------------------
+// El expediente como conjunto: datos de obra, precios y fases del análisis.
+// Contratos copiados verbatim del plan (`task-1-brief.md` §«Contratos
+// compartidos nuevos»): los consumen T2–T11. No los renombres.
+// ---------------------------------------------------------------------------
+
+/** Un hecho que vale para toda la obra. Clave convencional: `altura_local.PB`, `nivel.PB`, `altura_revestimiento.general`. */
+export interface DatoObraValor { valor: number | string; unidad?: Unidad }
+
+/**
+ * Un dato de obra ya resuelto, listo para que una plantilla lo use como
+ * respaldo: trae su origen, sus fuentes y su confianza, que se suman al ítem
+ * que se apoye en él (P1: nada entra al cómputo sin provenance).
+ */
+export interface DatoObraResuelto { clave: string; valor: number | string; unidad?: Unidad; origen: Origen; fuentes: Fuente[]; confianza: number; metodo?: string }
+
+/** Un hallazgo puede apuntar a un dato de obra en vez de a una entidad. Responderlo escribe `datos_obra` y el recompute propaga. */
+export interface TargetDato { clave: string; unidad?: Unidad; entidades: string[] }  // entidades = ids afectadas (informativo, para la tarjeta)
+
+/**
+ * El precio unitario que el sistema le pone a un ítem, con de dónde salió.
+ *
+ * La IA **jamás** pone un precio: `fuente` solo puede ser el precio manual del
+ * ítem, la lista de referencia del estudio o el índice de precios propio.
+ */
+export interface PrecioEstimado { unitario: number; moneda: string; fuente: 'manual' | 'lista' | 'indice'; fechaPrecio: string }
+
+/** Fase del análisis en curso, para la UI del expediente (`obras.analisis_json`). */
+export interface FaseAnalisis { fase: 'inventario' | 'extraccion' | 'cruce' | 'relectura' | 'listo' | 'error'; total?: number; completadas?: number; detalle?: string }
 
 // ---------------------------------------------------------------------------
 // Contratos de F1–F4 (compulsa, conciliación, negociación, deducción).
@@ -193,7 +247,14 @@ export type EstadoContacto = 'pendiente' | 'contactado' | 'cotizo' | 'negociando
 export type Canal = 'manual' | 'whatsapp' | 'voz' | 'email';
 export type MatchConciliacion = 'exacto' | 'parcial' | 'sustituto' | 'no_cotizado' | 'extra';
 export type EstadoDeduccion = 'propuesta' | 'validada' | 'rechazada';
-export type ReglaDeduccion = 'planilla_plano' | 'planta_corte' | 'continuidad' | 'idem_tipologia' | 'cierre_cotas';
+export type ReglaDeduccion =
+  | 'planilla_plano'
+  | 'planta_corte'
+  | 'continuidad'
+  | 'idem_tipologia'
+  | 'cierre_cotas'
+  | 'cruce'
+  | 'medicion_grafica';
 export type RolUsuario = 'titular' | 'colaborador' | 'lectura'; // ya existe como enum de DB; exportar acá
 
 export interface CondicionesRfq {
@@ -269,16 +330,41 @@ export interface ConfigEstudio {
 // providers para sus schemas Zod: una sola lista por tipo, en un solo lugar.
 // ---------------------------------------------------------------------------
 
-export const ORIGENES = ['explicito', 'deducido', 'supuesto'] as const satisfies readonly Origen[];
+// Todas estas listas son el orden de valores de su `pgEnum`: lo nuevo va
+// SIEMPRE al final (`ALTER TYPE … ADD VALUE`). Reordenarlas rompe la migración
+// sobre datos vivos.
+export const ORIGENES = ['explicito', 'deducido', 'supuesto', 'inferido'] as const satisfies readonly Origen[];
 export const ESTADOS_REFORMA = ['existente', 'demoler', 'nueva', 'na'] as const satisfies readonly EstadoReforma[];
 export const TIPOS_OBRA = ['nueva', 'reforma', 'ampliacion'] as const satisfies readonly TipoObra[];
-export const RUBROS = ['aberturas', 'seco', 'pintura', 'gruesa'] as const satisfies readonly RubroId[];
+export const RUBROS = [
+  'aberturas',
+  'seco',
+  'pintura',
+  'gruesa',
+  'terminaciones',
+  'sanitaria',
+  'electrica',
+  'demolicion',
+] as const satisfies readonly RubroId[];
 export const UNIDADES = ['u', 'm', 'ml', 'm2', 'm3', 'l', 'kg'] as const satisfies readonly Unidad[];
 // `'cota'` va al final a propósito: el orden de esta lista es el orden de valores
 // del `pgEnum` `tipo_entidad`, y agregar al final es lo que hace que la migración
 // sea un `ALTER TYPE … ADD VALUE` y no una recreación del tipo (F1, regla de
 // cierre de cotas). Reordenarla rompería la migración sobre datos vivos.
-export const TIPOS_ENTIDAD = ['ambiente', 'muro', 'tabique', 'abertura', 'artefacto', 'terminacion', 'otro', 'cota'] as const satisfies readonly TipoEntidad[];
+export const TIPOS_ENTIDAD = [
+  'ambiente',
+  'muro',
+  'tabique',
+  'abertura',
+  'artefacto',
+  'terminacion',
+  'otro',
+  'cota',
+  // Los tres de instalaciones, después de `cota` y por la misma razón.
+  'tramo',
+  'accesorio',
+  'boca',
+] as const satisfies readonly TipoEntidad[];
 export const DISCIPLINAS = ['arquitectura', 'estructura', 'instalaciones', 'otra'] as const satisfies readonly Disciplina[];
 export const TIPOS_LAMINA = ['planta', 'corte', 'vista', 'detalle', 'planilla', 'otra'] as const satisfies readonly TipoLamina[];
 export const ESTADOS_ANALISIS = ['pendiente', 'procesando', 'analizada', 'bloqueada_escala', 'error'] as const satisfies readonly EstadoAnalisis[];
@@ -298,7 +384,17 @@ export const ESTADOS_CONTACTO = ['pendiente', 'contactado', 'cotizo', 'negociand
 export const CANALES = ['manual', 'whatsapp', 'voz', 'email'] as const satisfies readonly Canal[];
 export const MATCHES_CONCILIACION = ['exacto', 'parcial', 'sustituto', 'no_cotizado', 'extra'] as const satisfies readonly MatchConciliacion[];
 export const ESTADOS_DEDUCCION = ['propuesta', 'validada', 'rechazada'] as const satisfies readonly EstadoDeduccion[];
-export const REGLAS_DEDUCCION = ['planilla_plano', 'planta_corte', 'continuidad', 'idem_tipologia', 'cierre_cotas'] as const satisfies readonly ReglaDeduccion[];
+export const REGLAS_DEDUCCION = [
+  'planilla_plano',
+  'planta_corte',
+  'continuidad',
+  'idem_tipologia',
+  'cierre_cotas',
+  // Las dos que no son reglas documentales del §11: la primera la propone el
+  // provider de cruce, la segunda la medición gráfica sobre el dibujo.
+  'cruce',
+  'medicion_grafica',
+] as const satisfies readonly ReglaDeduccion[];
 export const PALANCAS = ['volumen', 'plazo_pago', 'fecha', 'adjudicacion_inmediata'] as const satisfies readonly Mandato['palancas'][number][];
 
 // ---------------------------------------------------------------------------
@@ -378,6 +474,27 @@ export const zEntidadDetectada = z.object({
   confianza: z.number().min(0).max(1),
   estadoReforma: z.enum(ESTADOS_REFORMA),
   atributos: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])),
+});
+
+/** `datos_obra.valor_json`: el hecho, con su unidad si la tiene. */
+export const zDatoObraValor = z.object({
+  valor: z.union([z.number(), z.string()]),
+  unidad: z.enum(UNIDADES).optional(),
+});
+
+/** `hallazgos.target_dato`: a qué dato de obra apunta la consulta y a quiénes afecta. */
+export const zTargetDato = z.object({
+  clave: z.string().min(1),
+  unidad: z.enum(UNIDADES).optional(),
+  entidades: z.array(z.string()),
+});
+
+/** `computo_items.precio_json`: el precio con su procedencia. La IA no entra acá. */
+export const zPrecioEstimado = z.object({
+  unitario: z.number(),
+  moneda: z.string(),
+  fuente: z.enum(['manual', 'lista', 'indice']),
+  fechaPrecio: z.string(),
 });
 
 export const zRotuloDetectado = z.object({
@@ -512,6 +629,9 @@ type Difiere<A, B, Nombre extends string> = [A] extends [B]
 type _SchemasAlineados = Assert<
   | Difiere<z.infer<typeof zFuente>, Fuente, 'zFuente'>
   | Difiere<z.infer<typeof zValorPropuesto>, ValorPropuesto, 'zValorPropuesto'>
+  | Difiere<z.infer<typeof zDatoObraValor>, DatoObraValor, 'zDatoObraValor'>
+  | Difiere<z.infer<typeof zTargetDato>, TargetDato, 'zTargetDato'>
+  | Difiere<z.infer<typeof zPrecioEstimado>, PrecioEstimado, 'zPrecioEstimado'>
   | Difiere<z.infer<typeof zInstruccionesExtraccion>, InstruccionesExtraccion, 'zInstruccionesExtraccion'>
   | Difiere<z.infer<typeof zEntidadDetectada>, EntidadDetectada, 'zEntidadDetectada'>
   | Difiere<z.infer<typeof zRotuloDetectado>, RotuloDetectado, 'zRotuloDetectado'>
