@@ -16,11 +16,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { registrarAuditoria } from '@/lib/audit';
-import type { LaminaInput, ObraContexto } from '@/types/domain';
+import type { LaminaInput, ObraContexto, RotuloDetectado } from '@/types/domain';
 import { armarContextoObra } from './prompt';
 import {
   sanearAnalisis,
+  sanearRotulo,
   zAnalisisLaminaCrudo,
+  zRotuloCrudo,
   type AnalisisLamina,
   type AnalysisProvider,
 } from './tipos';
@@ -57,6 +59,98 @@ Reglas que no se negocian:
 8. Cuando la lámina no es un plano con entidades dibujadas, fijate bien qué es antes de darla por vacía:
    - **Planilla de carpinterías** (la tabla de aberturas del proyecto: una fila por tipología, con sus medidas): extraé **una entidad \`abertura\` por fila de la tabla**, con \`bbox\` = la fila. Es la lámina donde el estudio escribe las medidas que en la planta no están: saltearla es perder el dato. De cada fila devolvé **solo las claves que esa fila trae escritas** (\`tag\`, \`tipologia\`, \`anchoM\`, \`altoM\`, \`material\`, \`vidrio\`, \`cantidad\`); la clave que no está escrita no va (regla 1). \`cantidad\` es informativa y **no computa**: cuántas se compran lo dice la planta, no la planilla.
    - **Carátula, memoria descriptiva, índice de láminas o cualquier otra lámina sin nada computable**: devolvé el rótulo que puedas leer y \`entidades: []\`.`;
+
+/**
+ * El prompt del **inventario**: el rótulo y nada más.
+ *
+ * Es corto a propósito y no repite ninguna de las reglas de extracción: en esta
+ * pasada no hay entidades que devolver, así que las reglas de bbox, de
+ * atributos y de tipos de lámina no aplican. Lo único que se comparte con
+ * `SISTEMA` es la regla de la escala (regla 4 allá), porque el rótulo es
+ * exactamente donde se juega, y es lo que el pipeline usa después para decidir
+ * si la lámina se analiza asumiendo la escala declarada o queda bloqueada.
+ */
+const SISTEMA_INVENTARIO = `Sos un asistente que lee el rótulo de una lámina de un proyecto de arquitectura argentino. Esta pasada es un inventario del expediente: te interesa saber QUÉ ES esta lámina, no qué hay dibujado adentro.
+
+Devolvé únicamente lo que el rótulo (o la carátula) diga:
+
+1. NO ESTIMES NADA. El campo que el rótulo no trae escrito va \`null\`. No deduzcas el código de lámina de la numeración de páginas, no adivines la disciplina por el dibujo, no inventes una revisión.
+2. \`escala\`: la que el rótulo DECLARA, tal como está escrita ("1:100"), y \`null\` si no declara ninguna. Es la que después se le propone al usuario para que la confirme de un click, así que copiarla mal es peor que no traerla.
+3. \`escalaConfiable\` es SIEMPRE \`false\` en esta pasada: confiar en una escala exige verificarla contra al menos dos cotas del plano, y acá no estás mirando el plano.
+4. \`tipoLamina\`: qué clase de lámina es (planta, corte, vista, detalle, planilla, otra). Una planilla de carpinterías o un cuadro de locales son \`planilla\`, aunque el rótulo diga otra cosa.
+5. \`confianza\` es tu confianza real (0–1) en la lectura del rótulo, no un número de cortesía.
+6. Textos en español rioplatense (es-AR), tal como los escribe la lámina.`;
+
+function instruccionInventario(lamina: LaminaInput): string {
+  const partes = [
+    `Documento: "${lamina.documentoNombre}", página ${lamina.numeroPagina}.`,
+    'Leé el rótulo de esta lámina. No extraigas entidades.',
+    lamina.textoExtraido
+      ? `\nTexto extraído del PDF (es literal, confiá en él por sobre lo que creas ver en el dibujo):\n---\n${lamina.textoExtraido}\n---`
+      : null,
+  ];
+  return partes.filter((parte) => parte !== null).join('\n');
+}
+
+/**
+ * Una llamada corta por lámina, **sin** pasar por el caché de `analizar()`: ese
+ * caché guarda la extracción completa, y el inventario es la pasada que existe
+ * para no pagarla. `effort: 'low'` porque leer un rótulo es transcribir, no
+ * razonar — es lo que hace que la fase sea barata de verdad.
+ */
+async function pedirInventario(cliente: Anthropic, lamina: LaminaInput): Promise<RotuloDetectado> {
+  const respuesta = await cliente.messages.parse({
+    model: modelo(),
+    max_tokens: 4000,
+    thinking: { type: 'adaptive' },
+    system: SISTEMA_INVENTARIO,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: Buffer.from(lamina.pdfBytes).toString('base64'),
+            },
+          },
+          { type: 'text', text: instruccionInventario(lamina) },
+        ],
+      },
+    ],
+    output_config: { effort: 'low', format: zodOutputFormat(zRotuloCrudo) },
+  });
+
+  // RNF-7: `inventario_llm` es el tercero de los cuatro renglones que suman el
+  // costo de una obra (`analisis_llm`, `inventario_llm`, `cruce_llm`,
+  // `busqueda_llm`). Sin `obraId`: el inventario corre sin `ObraContexto` —el
+  // índice de la obra es justamente lo que esta fase construye—, así que el
+  // vínculo con la obra queda por `targetRef` (lámina → obra).
+  await registrarAuditoria({
+    actorTipo: 'agente',
+    actorNombre: 'analisis-claude',
+    accion: 'inventario_llm',
+    targetRef: `laminas:${lamina.laminaId}`,
+    diff: {
+      modelo: respuesta.model,
+      documentoNombre: lamina.documentoNombre,
+      numeroPagina: lamina.numeroPagina,
+      tokensEntrada: respuesta.usage.input_tokens,
+      tokensSalida: respuesta.usage.output_tokens,
+      tokensCacheLectura: respuesta.usage.cache_read_input_tokens ?? 0,
+      tokensCacheEscritura: respuesta.usage.cache_creation_input_tokens ?? 0,
+    },
+  });
+
+  if (respuesta.parsed_output === null) {
+    throw new Error(
+      `Claude no devolvió un rótulo que valide contra el contrato (lámina ${lamina.laminaId}, stop_reason: ${respuesta.stop_reason}).`,
+    );
+  }
+  return sanearRotulo(respuesta.parsed_output);
+}
 
 function instruccion(lamina: LaminaInput, ctx?: ObraContexto): string {
   const partes = [
@@ -166,6 +260,14 @@ export function crearProviderClaude(): AnalysisProvider {
   return {
     async leerRotulo(lamina, ctx) {
       return structuredClone((await analizar(lamina, ctx)).rotulo);
+    },
+    // A propósito fuera de `analizar()`: el inventario NO lee ni escribe el
+    // caché por lámina. Si lo leyera, una lámina ya extraída devolvería el
+    // rótulo caro y estaría bien; si lo escribiera, la extracción posterior
+    // recibiría una promesa que nunca tuvo entidades — que es un bug, no un
+    // ahorro.
+    async inventariar(lamina) {
+      return pedirInventario(cliente, lamina);
     },
     async extraerEntidades(lamina, ctx) {
       return structuredClone((await analizar(lamina, ctx)).entidades);
