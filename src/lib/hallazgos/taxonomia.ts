@@ -15,11 +15,13 @@
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { fuentesDeEntidades } from '@/lib/computo/presentacion';
 import type {
+  DatoObraResuelto,
   EstadoReforma,
   Fuente,
   HallazgoDetectado,
   RubroId,
   TipoHallazgo,
+  Unidad,
   ValorPropuesto,
 } from '@/types/domain';
 
@@ -231,6 +233,94 @@ export function hallazgoInconsistencia(entrada: EntradaInconsistencia): Hallazgo
     ...(entrada.checklistItem ? { checklistItem: entrada.checklistItem } : {}),
     bloqueante: false,
     fuentes: entrada.fuentes,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Datos de obra: los hechos que valen para toda la obra
+// ---------------------------------------------------------------------------
+
+/** Namespace de las consultas que apuntan a un dato de obra: `dato_obra.<clave>`. */
+export const PREFIJO_DATO_OBRA = 'dato_obra.';
+
+/**
+ * El dato de obra que respalda un campo, o `null` si no está.
+ *
+ * Es el **único lector válido** del mapa de datos de obra: una plantilla no
+ * toca la API de `Map` por su cuenta, igual que nadie lee `target_ref` sin
+ * `camposDelTarget()`. Acepta `undefined` porque `datosObra` es un parámetro
+ * opcional de `computar()`: una plantilla llamada sin datos de obra —los tests
+ * de rubro puro, por ejemplo— tiene que comportarse como si la obra no tuviera
+ * ninguno, no romper.
+ */
+export function respaldoDeDatoObra(
+  datosObra: ReadonlyMap<string, DatoObraResuelto> | undefined,
+  clave: string,
+): DatoObraResuelto | null {
+  return datosObra?.get(clave) ?? null;
+}
+
+/**
+ * `"T1"`, `"T1 y T2"`, `"T1, T2 y T3"` — enumeración es-AR.
+ *
+ * Duplicada del `enumerar()` de `src/lib/deduccion/motor.ts` **a propósito**:
+ * ese módulo importa de este (`leerMedida`), así que traerlo de allá arma un
+ * ciclo que `tsc` acepta y que revienta en runtime cuando el orden de
+ * evaluación no acompaña. Tres líneas repetidas valen menos que ese riesgo
+ * (mismo criterio que `normalizarTag` en `computo/tags.ts`).
+ */
+function enumerar(partes: readonly string[]): string {
+  if (partes.length === 0) return '';
+  if (partes.length === 1) return partes[0]!;
+  return `${partes.slice(0, -1).join(', ')} y ${partes[partes.length - 1]}`;
+}
+
+export interface EntradaDatoObraFaltante {
+  rubro: RubroId | null;
+  /** La clave del dato, sin prefijo: `altura_local.PB`, `nivel.PB`. */
+  claveDato: string;
+  /** Unidad del valor que se pide, si tiene una. */
+  unidad?: Unidad;
+  descripcion: string;
+  /** Las entidades a las que les falta el dato. De acá salen los ids y los nombres. */
+  entidades: readonly EntidadPersistida[];
+}
+
+/**
+ * Un dato que le falta a **la obra**, no a una entidad: una sola consulta para
+ * todos los afectados.
+ *
+ * Es la deduplicación de preguntas hecha contrato. A los cuatro tabiques de PB
+ * les falta la misma altura de local; preguntarla cuatro veces es preguntar lo
+ * mismo cuatro veces, y responderla cuatro veces es trabajo que el arquitecto
+ * hace por un problema nuestro. Por eso el hallazgo apunta a un `targetDato`
+ * —la clave del dato más a quiénes afecta, que es lo que la tarjeta muestra— y
+ * responderlo escribe `datos_obra` una vez: el recompute lo propaga solo.
+ *
+ * **No bloquea.** Un faltante de entidad frena la aprobación del rubro porque
+ * hay algo roto en un elemento concreto; un hecho global que falta es otra
+ * cosa, y frenar el rubro entero por él dejaría la obra sin salida hasta que
+ * alguien conteste. Y sale **sin fuentes**: el dato no se leyó en ninguna
+ * lámina, así que no hay bbox honesto que citar (P1 no se cumple citando
+ * cualquier cosa).
+ */
+export function hallazgoDatoObraFaltante(entrada: EntradaDatoObraFaltante): HallazgoDetectado {
+  const nombres = entrada.entidades.map((entidad) => entidad.nombre);
+  return {
+    tipo: 'faltante',
+    rubro: entrada.rubro,
+    descripcion:
+      nombres.length === 0
+        ? entrada.descripcion
+        : `${entrada.descripcion} Afecta a ${enumerar(nombres)}.`,
+    clave: `${PREFIJO_DATO_OBRA}${entrada.claveDato}`,
+    bloqueante: false,
+    fuentes: [],
+    targetDato: {
+      clave: entrada.claveDato,
+      ...(entrada.unidad ? { unidad: entrada.unidad } : {}),
+      entidades: entrada.entidades.map((entidad) => entidad.id),
+    },
   };
 }
 
