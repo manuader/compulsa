@@ -40,8 +40,13 @@ export const SPECS_CRITICAS_POR_RUBRO: Record<RubroId, readonly string[]> = {
   // Sanitaria es el caso más claro de spec crítica: cambiar el material de una
   // cañería no es un descuento, es otra instalación.
   sanitaria: ['material', 'sistema'],
+  // El material de una terminación suelta (un cuadro de locales dice
+  // "porcelanato"): cambiarlo por otro no es un descuento, es otro piso. El
+  // material que declara un ambiente ya viaja en la descripción del ítem
+  // ("Solado de porcelanato"), que es por rubro y no por entidad.
   terminaciones: ['material'],
   electrica: [],
+  // Lo que se demuele no tiene spec: se contrata la tarea, no un material.
   demolicion: [],
 };
 

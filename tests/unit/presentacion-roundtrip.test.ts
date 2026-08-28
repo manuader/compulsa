@@ -17,10 +17,11 @@
  * desperdicio a secas —sin redondear al bulto que vende el corralón— y P2 se
  * pierde en silencio, ítem por ítem, sin un solo test en rojo.
  *
- * Este test es ese test. Corre las cuatro plantillas sobre entidades sintéticas
- * completas, cubre las once formas de compra del catálogo (placas, barras,
- * tiras, cajas, baldes, rollos, pallets, bolsas, latas, granel, global y a
- * medida) y le devuelve a `recalcularCompra` cada ítem **sin cambiarle nada**:
+ * Este test es ese test. Corre las plantillas sobre entidades sintéticas
+ * completas, cubre todas las formas de compra del catálogo (placas, barras,
+ * tiras, cajas, baldes, rollos, pallets, bolsas, latas, granel —por múltiplos
+ * de m³ y por m² o ml enteros—, global y a medida) y le devuelve a
+ * `recalcularCompra` cada ítem **sin cambiarle nada**:
  * misma neta, mismo desperdicio. La compra y la presentación que salen tienen
  * que ser idénticas a las que entraron.
  */
@@ -63,12 +64,17 @@ const ENTIDADES: readonly EntidadPersistida[] = [
   // seco → placas, barras, tiras, cajas, baldes, rollos
   entidad('t1', 'tabique', 'T1', { largoM: 5, alturaM: 2.6, caras: 2, tipo: 'durlock' }),
   entidad('t2', 'tabique', 'T2', { largoM: 3.3, alturaM: 2.45, caras: 1, tipo: 'durlock' }),
-  // pintura → latas
+  // pintura → latas; terminaciones → granel por m² y por ml
   entidad('m1', 'ambiente', 'Estar', {
     superficieM2: 23.4,
     perimetroM: 19.6,
     alturaM: 2.6,
     vanosM2: 4.3,
+    solado: 'porcelanato',
+    zocalo: 'madera',
+    cielorraso: 'yeso',
+    revestimiento: 'cerámica',
+    alturaRevestimientoM: 2.1,
   }),
   entidad('m2', 'ambiente', 'Dormitorio', {
     superficieM2: 12.75,
@@ -76,7 +82,8 @@ const ENTIDADES: readonly EntidadPersistida[] = [
     alturaM: 2.55,
     vanosM2: 2.9,
   }),
-  // gruesa → pallets, bolsas (50 kg y 25 kg), granel, y demolición global
+  // gruesa → pallets, bolsas (50 kg y 25 kg) y granel; el muro a demoler es
+  // del rubro demolición, que lo contrata global
   entidad('u1', 'muro', 'M1', { largoM: 7.4, alturaM: 2.7, tipo: 'mampostería' }),
   entidad('u2', 'muro', 'M2', { largoM: 4.15, alturaM: 2.7, tipo: 'mampostería' }),
   entidad('u3', 'muro', 'M9', { largoM: 3.6, alturaM: 2.7, tipo: 'mampostería' }, 'demoler'),
@@ -95,6 +102,8 @@ const FORMAS_ESPERADAS: Record<string, RegExp> = {
   'bolsas de cal': /^\d+ bolsas? de 25 kg$/,
   latas: /^\d+ latas? \d+ L( \+ \d+ latas? \d+ L)*$/,
   granel: /^[\d.,]+ m³ a granel \(múltiplos de 0,5 m³\)$/,
+  'granel por m²': /^[\d.,]+ m² a granel \(múltiplos de 1 m²\)$/,
+  'granel por ml': /^[\d.,]+ ml a granel \(múltiplos de 1 ml\)$/,
   global: /^global$/,
   'a medida': /^a medida$/,
 };
@@ -116,7 +125,14 @@ const FORMA_POR_ITEM: Record<string, keyof typeof FORMAS_ESPERADAS> = {
   'gruesa.cemento': 'bolsas de cemento',
   'gruesa.cal': 'bolsas de cal',
   'gruesa.arena': 'granel',
-  'gruesa.demolicion': 'global',
+  'terminaciones.solado.porcelanato': 'granel por m²',
+  'terminaciones.zocalo.madera': 'granel por ml',
+  'terminaciones.cielorraso.yeso': 'granel por m²',
+  'terminaciones.revestimiento.ceramica': 'granel por m²',
+  'terminaciones.contrapiso': 'global',
+  'terminaciones.carpeta': 'global',
+  'demolicion.muros': 'global',
+  'demolicion.carpinterias': 'global',
 };
 
 function computarTodo(): ItemComputo[] {
