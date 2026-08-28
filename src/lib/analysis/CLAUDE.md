@@ -29,7 +29,7 @@ Dos implementaciones, elegidas por `getAnalysisProvider()`:
 
 ## Las otras familias de providers
 
-El módulo tiene **cuatro** familias, cada una con su trío `*-tipos / *-mock / *-claude` y su propio `get*Provider()`. `index.ts` exporta **solo** la de láminas: las demás se importan por ruta (`@/lib/analysis/busqueda-tipos`), igual que `verificacion.ts` importa `claude.ts` directo.
+El módulo tiene **cinco** familias, cada una con su trío `*-tipos / *-mock / *-claude` y su propio `get*Provider()`. `index.ts` exporta **solo** la de láminas: las demás se importan por ruta (`@/lib/analysis/busqueda-tipos`), igual que `verificacion.ts` importa `claude.ts` directo.
 
 | Familia | Archivos | Qué hace |
 |---|---|---|
@@ -37,12 +37,20 @@ El módulo tiene **cuatro** familias, cada una con su trío `*-tipos / *-mock / 
 | presupuestos | `presupuesto-*` | lee el presupuesto que mandó el proveedor |
 | Q&A | `qa-*` | «Preguntale al expediente» (RF-106) |
 | **búsqueda dirigida** | `busqueda-*` | relee una lámina **con la lista de lo que falta en la mano** |
+| **cruce** | `cruce-*` | mira el expediente **entero** y lo relaciona consigo mismo |
 
 **Búsqueda dirigida** (`buscarDatos(lamina, objetivos, ctx)`): recibe los campos que una consulta abierta necesita y devuelve `DatoEncontrado[]` con bbox y confianza. Tres cosas que no son evidentes:
 
 - **Solo propone. Jamás escribe `atributos_json`** (regla 3, P4): el pipeline deja el resultado en `hallazgos.valor_propuesto_json` y el dato entra a la entidad **únicamente cuando el arquitecto confirma**.
 - **`valor` viaja por el cable como `string`** — evita un `anyOf` en la gramática de structured outputs, y una planilla argentina escribe `0,90`: que el modelo transcriba lo escrito y la conversión con coma decimal la haga nuestro código es más honesto que pedírsela a él.
 - **El mock sin fixture devuelve `[]`, no una heurística.** A diferencia de los mocks de presupuesto y Q&A, acá no hay caída a un match por palabras sobre `textoExtraido`: ese match no sabe cuál de los números de la fila es el ancho ni dónde está su bbox, y adivinarlo sería una propuesta con provenance inventada. Fixtures en `tests/fixtures/analysis/busqueda/`, con la **misma** clave que el mock de láminas (`slug(documentoNombre)-p<página>`), un nivel más abajo. El fixture pasa por `sanearBusqueda`, así que no puede colar una clave ni un campo que la corrida no pidió.
+
+**Cruce** (`cruzar(memoria, ctx)`): la única familia que **no** mira una lámina. Recibe la memoria compactada de toda la obra (`src/lib/memoria/compacta.ts`) y devuelve cinco listas —datos de obra, campos completados, identidades, conflictos y relecturas pedidas—. Cuatro cosas que no son evidentes:
+
+- **Cita las láminas por código de rótulo, no por uuid**, porque es lo que el modelo lee. `sanearCruce(crudo, ctx)` los resuelve contra el expediente real (exacto primero, `normalizarTag` después) y descarta —contando por categoría— lo que no resuelve.
+- **`cruzar()` devuelve el CRUDO, no el saneado** — al revés que las otras cuatro. El saneo necesita el mapa de códigos y las entidades de la obra, que son cosas de la base: el provider no tiene por qué saber de dónde salen. Un solo saneo, río abajo, el mismo para el mock que para el modelo.
+- **`completados` pasa por `esCampoDeducible()`** (RF-506): un campo fuera de `CAMPOS_DEDUCIBLES` se descarta aunque el modelo lo haya leído bien. El cruce no es una excepción a "nada estructural ni de seguridad se auto-propone".
+- **Sin bbox usable la fuente es la lámina completa**, no un descarte —la diferencia deliberada con la búsqueda dirigida—: el modelo cruza sobre un texto compactado que ya no tiene los PDFs delante, y exigirle coordenadas sería pedirle que las invente. Fixtures en `tests/fixtures/analysis/cruce/<slug(nombreObra)>.json`; sin fixture, las cinco listas vacías.
 
 `sanearBusqueda` es el equivalente de `sanearAnalisis` para esta familia: descarta —y cuenta— lo que no se pidió, los bbox que no son 4 números finitos y los valores no numéricos en campos de medida. Es la disciplina **del provider**; la del pipeline sobre la base es `zValorPropuesto`, que se aplica aparte (`deps.provider` es inyectable y `DatoEncontrado` es solo una interfaz de TypeScript).
 
@@ -55,5 +63,5 @@ El módulo tiene **cuatro** familias, cada una con su trío `*-tipos / *-mock / 
    **Pero no confundas "no inventar" con "no leer":** una **planilla de carpinterías** es una tabla de datos escritos y se extrae **una entidad `abertura` por fila** (con `bbox` = la fila), porque ahí es donde el estudio escribe las medidas que la planta no trae — saltearla dejaba a la deducción planilla↔plano sin nada que cruzar. `cantidad` de la planilla es informativa y no computa: la cantidad la pone la planta. Carátulas, memorias e índices siguen con `entidades: []`.
 4. **Escala (RF-201):** `RotuloDetectado.escalaConfiable` solo es `true` si la escala declarada se verificó contra ≥ 2 cotas leídas del plano (tolerancia 3%). Sin verificación → `false`, y **el provider sigue diciendo lo mismo que siempre** — lo que cambió es qué hace el pipeline con eso: si el rótulo **declara** una escala, la lámina se analiza y se computa asumiéndola, con un supuesto no bloqueante que el arquitecto confirma con un click; una lámina **sin escala declarada** queda `bloqueada_escala`, **salvo que sea una planilla**, que se analiza igual y sin abrir consulta de escala (en una tabla no se mide, se transcribe). La decisión vive en `pipeline/procesar.ts` (`analizarLamina` + `modoEscala`), no acá.
    Del lado del prompt, el corolario es que **`escalaConfiable: false` es la respuesta normal y esperada**, y que lo que sí importa es devolver en `escala` lo que el rótulo declare —`null` si no declara ninguna—: es lo que se le propone al arquitecto para confirmar. La regla 4 de `SISTEMA` decía "la lámina queda bloqueada hasta que el usuario cargue una medida de referencia, y eso está bien", que dejó de ser cierto con la decisión 1 y empujaba al modelo en la dirección equivocada.
-5. **Costos (RNF-7):** los providers reales registran tokens de entrada/salida por llamada en `auditoria` para poder medir el costo por obra: `analisis_llm` (`claude.ts`) y `busqueda_llm` (`busqueda-claude.ts`). La búsqueda dirigida **es plata del usuario**: corre con un cap de 8 láminas por corrida, corta apenas no queda ningún campo pendiente, y no vuelve a buscar lo que ya buscó (marca en `hallazgos.busqueda_json` que caduca por huella de la documentación, no por reloj).
+5. **Costos (RNF-7):** los providers reales registran tokens de entrada/salida por llamada en `auditoria` para poder medir el costo por obra: `analisis_llm` (`claude.ts`), `busqueda_llm` (`busqueda-claude.ts`) y `cruce_llm` (`cruce-claude.ts`, una llamada por obra y la más grande del pipeline). La búsqueda dirigida **es plata del usuario**: corre con un cap de 8 láminas por corrida, corta apenas no queda ningún campo pendiente, y no vuelve a buscar lo que ya buscó (marca en `hallazgos.busqueda_json` que caduca por huella de la documentación, no por reloj).
 6. Los fixtures del mock son parte del contrato de tests: si cambiás el shape de `EntidadDetectada`, actualizá fixtures + tipos + ambos providers en el mismo commit.
