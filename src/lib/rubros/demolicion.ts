@@ -1,32 +1,196 @@
 /**
  * Rubro demolición: lo que hay que sacar antes de construir.
  *
- * **Stub honesto.** El rubro existe en el dominio desde T1 pero todavía no
- * computa nada: devuelve cero ítems y cero hallazgos. Una obra de reforma con
- * entidades `estadoReforma: 'demoler'` no ve el rubro en la planilla, igual que
- * antes de que el rubro existiera — no es un no-op silencioso, es una plantilla
- * vacía.
+ * El rubro no lo define el tipo de entidad sino su `estadoReforma`: todo lo que
+ * está marcado `demoler` entra acá, sea un muro, un tabique, una carpintería o
+ * un solado. Tres ítems, los tres sin desperdicio y contratados global — lo que
+ * se tira no se compra:
  *
- * TODO(T6): reemplazar por el cómputo real sobre las entidades con
- * `estadoReforma: 'demoler'` — m² de muro y tabique (largo × altura, con la
- * cadena de respaldo de `datosObra` para la altura), carpinterías a retirar (u)
- * y solados a levantar (m²).
+ *  - `demolicion.muros` (m²): muros y tabiques, largo × altura;
+ *  - `demolicion.carpinterias` (u): puertas y ventanas a retirar;
+ *  - `demolicion.solados` (m²): pisos a levantar.
+ *
+ * La altura pasa por la cadena de respaldo (`respaldo.ts`): el atributo del
+ * elemento, si no el dato de obra del local (`altura_local.<nivel|general>`) y,
+ * si tampoco, UNA consulta para todos los que la esperan.
+ *
+ * ## Superposición conocida con `aberturas.retiro.<tag>`
+ *
+ * `src/lib/rubros/aberturas.ts` emite desde F0 un `aberturas.retiro.<tag>` por
+ * cada carpintería a demoler, que es exactamente la misma tarea que
+ * `demolicion.carpinterias` cuenta acá: hoy una obra con carpinterías a retirar
+ * las ve dos veces en la planilla. La clave nueva la fija el plan (§«Claves de
+ * ítem nuevas») y `aberturas.ts` está fuera del alcance de esta tarea; el
+ * arreglo es de una línea —que `aberturas.ts` saltee `alcance === 'demolicion'`
+ * en vez de agregar a `retiros`— y hay que hacerlo con sus tests pinneados a la
+ * vista. TODO(integración): sacar el retiro de aberturas.
  */
-import type { EntidadPersistida } from '@/lib/computo/engine';
+import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
+import { armarItem } from '@/lib/computo/presentacion';
+import { redondear2 } from '@/lib/computo/unidades';
+import {
+  alcanceDeReforma,
+  hallazgoDatoFaltante,
+  leerMedida,
+} from '@/lib/hallazgos/taxonomia';
 import type { PlantillaRubro, ResultadoComputo } from '@/lib/rubros/index';
-import type { TipoObra } from '@/types/domain';
+import {
+  cadenaDeRespaldo,
+  clavesAlturaLocal,
+  conFuentesDeDato,
+  conOrigenes,
+  sufijoDeClave,
+  type DatosObra,
+} from '@/lib/rubros/respaldo';
+import type { HallazgoDetectado, ItemComputo, TipoObra } from '@/types/domain';
 
 const RUBRO = 'demolicion';
 
 /** Lo que se demuele no se compra: no hay desperdicio que aplicar. */
 const DESPERDICIO_DEFAULT_PCT = 0;
 
+/** Los tipos de entidad que aportan m² de muro. */
+const TIPOS_MUROS = new Set(['muro', 'tabique']);
+/** Los que aportan m² de solado a levantar. */
+const TIPOS_SOLADOS = new Set(['ambiente', 'terminacion']);
+
 export const plantillaDemolicion = {
   id: RUBRO,
   nombre: 'Demolición',
   desperdicioDefaultPct: DESPERDICIO_DEFAULT_PCT,
 
-  computar(_entidades: readonly EntidadPersistida[], _tipoObra: TipoObra): ResultadoComputo {
-    return { items: [], hallazgos: [] };
+  computar(
+    entidades: readonly EntidadPersistida[],
+    _tipoObra: TipoObra,
+    _laminas?: readonly LaminaDeComputo[],
+    datosObra?: DatosObra,
+  ): ResultadoComputo {
+    const hallazgos: HallazgoDetectado[] = [];
+    const cadena = cadenaDeRespaldo(datosObra);
+    const deMuros: EntidadPersistida[] = [];
+    const deCarpinterias: EntidadPersistida[] = [];
+    const deSolados: EntidadPersistida[] = [];
+    let m2Muros = 0;
+    let m2Solados = 0;
+
+    for (const entidad of entidades) {
+      if (alcanceDeReforma(entidad.estadoReforma) !== 'demolicion') continue;
+
+      if (TIPOS_MUROS.has(entidad.tipo)) {
+        const altura = cadena.medida(entidad, 'alturaM', clavesAlturaLocal(entidad));
+        if (altura === null) continue; // la consulta agrupada sale al final
+
+        const largo = leerMedida(entidad, 'largoM');
+        if (largo === null) {
+          hallazgos.push(
+            hallazgoDatoFaltante({
+              rubro: RUBRO,
+              clave: `${RUBRO}.largo.${entidad.nombre}`,
+              checklistItem: `${RUBRO}.largo`,
+              descripcion:
+                `No encontré el largo de ${entidad.nombre}, que está marcado para demoler. Sin largo no computo sus m²: ` +
+                'cargá el dato o indicá la planta donde está acotado.',
+              entidad,
+              campos: ['largoM'],
+            }),
+          );
+          continue;
+        }
+
+        m2Muros += largo * altura;
+        deMuros.push(entidad);
+        continue;
+      }
+
+      if (entidad.tipo === 'abertura') {
+        // Retirar una carpintería no necesita medidas: es una unidad y se saca.
+        deCarpinterias.push(entidad);
+        continue;
+      }
+
+      if (TIPOS_SOLADOS.has(entidad.tipo)) {
+        const superficie = leerMedida(entidad, 'superficieM2');
+        if (superficie === null) {
+          hallazgos.push(
+            hallazgoDatoFaltante({
+              rubro: RUBRO,
+              clave: `${RUBRO}.superficie.${entidad.nombre}`,
+              checklistItem: `${RUBRO}.superficie`,
+              descripcion:
+                `No encontré la superficie de ${entidad.nombre}, que está marcado para demoler. Sin m² no computo el solado a levantar: ` +
+                'cargá el dato o indicá la planilla de locales.',
+              entidad,
+              campos: ['superficieM2'],
+            }),
+          );
+          continue;
+        }
+
+        m2Solados += superficie;
+        deSolados.push(entidad);
+      }
+    }
+
+    hallazgos.push(
+      ...cadena.hallazgosFaltantes({
+        rubro: RUBRO,
+        unidad: 'm',
+        descripcion: (clave) =>
+          `No encontré la altura de lo que hay que demoler ni una altura de local declarada para «${sufijoDeClave(clave)}». ` +
+          'Cargá la altura del local una sola vez y la aplico a todo, o indicá el corte donde está acotada.',
+      }),
+    );
+
+    const items: ItemComputo[] = [];
+
+    if (deMuros.length > 0 && m2Muros > 0) {
+      items.push(
+        conFuentesDeDato(
+          armarItem({
+            rubro: RUBRO,
+            claveItem: `${RUBRO}.muros`,
+            descripcion: 'Demolición de muros y tabiques',
+            unidad: 'm2',
+            cantNeta: redondear2(m2Muros),
+            desperdicioPct: DESPERDICIO_DEFAULT_PCT,
+            compra: { tipo: 'global' },
+            entidades: deMuros,
+          }),
+          cadena.fuentesDe(deMuros, 'alturaM'),
+        ),
+      );
+    }
+
+    if (deCarpinterias.length > 0) {
+      items.push(
+        armarItem({
+          rubro: RUBRO,
+          claveItem: `${RUBRO}.carpinterias`,
+          descripcion: 'Retiro de carpinterías',
+          unidad: 'u',
+          cantNeta: deCarpinterias.length,
+          desperdicioPct: DESPERDICIO_DEFAULT_PCT,
+          compra: { tipo: 'global' },
+          entidades: deCarpinterias,
+        }),
+      );
+    }
+
+    if (deSolados.length > 0 && m2Solados > 0) {
+      items.push(
+        armarItem({
+          rubro: RUBRO,
+          claveItem: `${RUBRO}.solados`,
+          descripcion: 'Levantamiento de solados',
+          unidad: 'm2',
+          cantNeta: redondear2(m2Solados),
+          desperdicioPct: DESPERDICIO_DEFAULT_PCT,
+          compra: { tipo: 'global' },
+          entidades: deSolados,
+        }),
+      );
+    }
+
+    return { items, hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
   },
 } satisfies PlantillaRubro;
