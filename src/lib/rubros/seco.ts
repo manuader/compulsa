@@ -136,7 +136,9 @@ export const plantillaSeco = {
       }),
     );
 
-    if (usadas.length === 0) return { items: [], hallazgos };
+    if (usadas.length === 0) {
+      return { items: [], hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
+    }
 
     /** El corte del que salió la altura, si la puso un dato de obra (P1). */
     const fuentesAltura = cadena.fuentesDe(usadas, 'alturaM');
