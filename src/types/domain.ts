@@ -347,10 +347,11 @@ export const RUBROS = [
   'demolicion',
 ] as const satisfies readonly RubroId[];
 export const UNIDADES = ['u', 'm', 'ml', 'm2', 'm3', 'l', 'kg'] as const satisfies readonly Unidad[];
-// `'cota'` va al final a propósito: el orden de esta lista es el orden de valores
-// del `pgEnum` `tipo_entidad`, y agregar al final es lo que hace que la migración
-// sea un `ALTER TYPE … ADD VALUE` y no una recreación del tipo (F1, regla de
-// cierre de cotas). Reordenarla rompería la migración sobre datos vivos.
+// Lo que se agregó después va al final a propósito —`'cota'` en F1 (regla de
+// cierre de cotas), los tres de instalaciones ahora—: el orden de esta lista es
+// el orden de valores del `pgEnum` `tipo_entidad`, y agregar al final es lo que
+// hace que la migración sea un `ALTER TYPE … ADD VALUE` y no una recreación del
+// tipo. Reordenarla rompería la migración sobre datos vivos.
 export const TIPOS_ENTIDAD = [
   'ambiente',
   'muro',
