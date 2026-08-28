@@ -29,9 +29,11 @@
  *
  * Módulo puro: sin I/O, sin DB, sin red.
  */
+import type { EntidadPersistida } from '@/lib/computo/engine';
 import { ETIQUETA_UNIDAD, formatearNumero } from '@/lib/computo/unidades';
 import {
   agruparPorLamina,
+  refDeLamina,
   refsDeFuentes,
   SIN_REGISTRO,
   type DeduccionDeMemoria,
@@ -51,7 +53,6 @@ import type {
   TipoLamina,
   TipoObra,
 } from '@/types/domain';
-import type { EntidadPersistida } from '@/lib/computo/engine';
 
 /** Las 7 del §27, en orden. El orden es el del razonamiento, no alfabético. */
 export const SECCIONES_MD = [
@@ -204,7 +205,7 @@ function documentacion(laminas: readonly LaminaDeMemoria[]): string[] {
   return tabla(
     ['Lámina', 'Título', 'Tipo', 'Escala', 'Estado'],
     laminas.map((lamina) => [
-      lamina.codigo ?? lamina.id,
+      refDeLamina(lamina),
       lamina.titulo ?? VACIO,
       lamina.tipo === null ? VACIO : ETIQUETA_TIPO_LAMINA[lamina.tipo],
       escala(lamina),
@@ -249,20 +250,23 @@ function citar(dato: DatoObraResuelto, entrada: EntradaMemoria): string {
 
 /** Los elementos leídos, lámina por lámina: dónde está cada cosa. */
 function elementos(entrada: EntradaMemoria): string[] {
-  return agruparPorLamina(entrada).flatMap((grupo) => [
-    `### ${grupo.ref}`,
-    '',
-    ...tabla(
-      ['Elemento', 'Tipo', 'Estado', 'Atributos'],
-      grupo.entidades.map((entidad) => [
-        entidad.nombre,
-        ETIQUETA_TIPO_ENTIDAD[entidad.tipo],
-        ETIQUETA_ESTADO_REFORMA[entidad.estadoReforma],
-        atributos(entidad),
-      ]),
-    ),
-    '',
-  ]);
+  const grupos = agruparPorLamina(entrada).map((grupo) =>
+    [
+      `### ${grupo.ref}`,
+      '',
+      ...tabla(
+        ['Elemento', 'Tipo', 'Estado', 'Atributos'],
+        grupo.entidades.map((entidad) => [
+          entidad.nombre,
+          ETIQUETA_TIPO_ENTIDAD[entidad.tipo],
+          ETIQUETA_ESTADO_REFORMA[entidad.estadoReforma],
+          atributos(entidad),
+        ]),
+      ),
+    ].join('\n'),
+  );
+  // Un solo bloque: las tablas por lámina se separan entre sí, no del resto.
+  return grupos.length === 0 ? [] : [grupos.join('\n\n')];
 }
 
 /** `largoM = 3; alturaM = 2,6` — lo que nadie leyó (`null`) no es un atributo. */
@@ -330,12 +334,9 @@ function faltantes(hallazgos: readonly HallazgoDeMemoria[]): string[] {
 function inferidos(entrada: EntradaMemoria): string[] {
   const deDatos = entrada.datosObra
     .filter((dato) => dato.origen === 'inferido')
-    .map((dato) => [
-      dato.clave,
-      valorDeDato(dato),
-      dato.metodo ?? ETIQUETA_REGLA.medicion_grafica,
-      porcentaje(dato.confianza),
-    ]);
+    // Sin `metodo` no se inventa uno: un método que nadie registró es
+    // justamente lo que hay que ir a preguntar.
+    .map((dato) => [dato.clave, valorDeDato(dato), dato.metodo ?? VACIO, porcentaje(dato.confianza)]);
   const deMedidas = entrada.deducciones
     .filter(
       (deduccion) => deduccion.regla === 'medicion_grafica' && deduccion.estado !== 'rechazada',

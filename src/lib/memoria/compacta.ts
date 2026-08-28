@@ -28,8 +28,8 @@
  *
  * Módulo puro: sin I/O, sin DB, sin red.
  */
-import type { EntidadPersistida } from '@/lib/computo/engine';
 import type { Lamina } from '@/db/schema';
+import type { EntidadPersistida } from '@/lib/computo/engine';
 import type {
   DatoObraResuelto,
   EstadoDeduccion,
