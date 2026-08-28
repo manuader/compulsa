@@ -155,6 +155,41 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
       bloqueante: true,
     },
   ],
+  // Los cuatro rubros nuevos traen **solo** el degradado por confianza, que no
+  // lo emite la plantilla sino `taxonomia.ts` para todo rubro. El resto de sus
+  // ítems entra con el cómputo real — TODO(T6) terminaciones y demolición,
+  // TODO(T7) sanitaria y eléctrica —, y declararlos antes sería prometer un
+  // chequeo que hoy nadie hace.
+  terminaciones: [
+    {
+      itemId: 'terminaciones.baja_confianza',
+      descripcion: 'Ningún ítem de terminaciones se apoya en datos por debajo del umbral de confianza.',
+      bloqueante: true,
+    },
+  ],
+  sanitaria: [
+    {
+      itemId: 'sanitaria.baja_confianza',
+      descripcion:
+        'Ningún ítem de instalación sanitaria se apoya en datos por debajo del umbral de confianza.',
+      bloqueante: true,
+    },
+  ],
+  electrica: [
+    {
+      itemId: 'electrica.baja_confianza',
+      descripcion:
+        'Ningún ítem de instalación eléctrica se apoya en datos por debajo del umbral de confianza.',
+      bloqueante: true,
+    },
+  ],
+  demolicion: [
+    {
+      itemId: 'demolicion.baja_confianza',
+      descripcion: 'Ningún ítem de demolición se apoya en datos por debajo del umbral de confianza.',
+      bloqueante: true,
+    },
+  ],
 };
 
 export class ItemChecklistDesconocidoError extends Error {

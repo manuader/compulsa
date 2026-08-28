@@ -822,7 +822,9 @@ describe('configuración del estudio', () => {
 describe('checklists por estudio', () => {
   it('los defaults cubren todos los checklistItem que emiten las plantillas', async () => {
     const emitidos = new Set<string>();
-    for (const archivo of ['aberturas', 'seco', 'pintura', 'gruesa']) {
+    // Sobre `RUBROS` y no sobre una lista escrita a mano: un rubro nuevo trae su
+    // archivo de plantilla, y con la lista fija el guard no lo miraba nunca.
+    for (const archivo of RUBROS) {
       const fuente = await readFile(new URL(`../../src/lib/rubros/${archivo}.ts`, import.meta.url), 'utf8');
       for (const match of fuente.matchAll(/checklistItem:\s*`\$\{RUBRO\}\.([a-z_]+)`/g)) {
         emitidos.add(`${archivo}.${match[1]}`);

@@ -78,16 +78,17 @@ export interface ResultadoDeduccion {
 // Parámetros pinneados (contratos-y-formulas.md · §11 PRD)
 // ---------------------------------------------------------------------------
 
-/** Cuánto "descuenta" cada regla sobre la confianza de las entidades que usa. */
-export const FACTOR_POR_REGLA: Record<ReglaDeduccion, number> = {
-  planilla_plano: 0.95,
-  planta_corte: 0.9,
-  continuidad: 0.85,
-  idem_tipologia: 0.75,
-  cierre_cotas: 0.9,
-};
-
-/** Orden de prioridad: la primera regla que resuelve un campo se lo queda. */
+/**
+ * Orden de prioridad: la primera regla que resuelve un campo se lo queda.
+ *
+ * Son las reglas **documentales** del §11, las únicas que corre `deducir()`.
+ * `ReglaDeduccion` tiene dos valores más —`cruce` y `medicion_grafica`— que no
+ * están acá a propósito: no leen la documentación cruzando entidades, las
+ * produce el provider de cruce y la medición gráfica sobre el dibujo, cada una
+ * con su propia confianza. Por eso las dos tablas de abajo se tipan contra esta
+ * lista y no contra `ReglaDeduccion`: darles un factor sería inventarles un
+ * mecanismo que no tienen.
+ */
 export const PRIORIDAD_REGLAS = [
   'planilla_plano',
   'planta_corte',
@@ -95,6 +96,18 @@ export const PRIORIDAD_REGLAS = [
   'idem_tipologia',
   'cierre_cotas',
 ] as const satisfies readonly ReglaDeduccion[];
+
+/** Una de las reglas documentales del §11: las que `deducir()` corre. */
+export type ReglaDocumental = (typeof PRIORIDAD_REGLAS)[number];
+
+/** Cuánto "descuenta" cada regla sobre la confianza de las entidades que usa. */
+export const FACTOR_POR_REGLA: Record<ReglaDocumental, number> = {
+  planilla_plano: 0.95,
+  planta_corte: 0.9,
+  continuidad: 0.85,
+  idem_tipologia: 0.75,
+  cierre_cotas: 0.9,
+};
 
 /** Regla de oro §11.b: por debajo, la propuesta no sale. */
 export const UMBRAL_DEDUCCION = 0.7;
@@ -223,7 +236,7 @@ export function enumerar(partes: readonly string[]): string {
  * `PRIORIDAD_REGLAS`: una sola lista manda, y así no hay forma de que la
  * prioridad documentada y la real se separen.
  */
-const IMPLEMENTACIONES: Record<ReglaDeduccion, FnRegla> = {
+const IMPLEMENTACIONES: Record<ReglaDocumental, FnRegla> = {
   planilla_plano: deducirPlanillaPlano,
   planta_corte: deducirPlantaCorte,
   continuidad: deducirContinuidad,

@@ -144,7 +144,7 @@ describe('validación por línea', () => {
     expect(filas).toEqual([]);
     expect(errores[0].linea).toBe(2);
     expect(errores[0].motivo).toBe(
-      'Rubro desconocido: «herreria». Los rubros válidos son: aberturas, seco, pintura, gruesa.',
+      'Rubro desconocido: «herreria». Los rubros válidos son: aberturas, seco, pintura, gruesa, terminaciones, sanitaria, electrica, demolicion.',
     );
   });
 
@@ -152,7 +152,11 @@ describe('validación por línea', () => {
     const { errores } = importar('Sin Rubros,,San Isidro,,', 'Sin Zona,pintura,,,');
 
     expect(errores).toEqual([
-      { linea: 2, motivo: 'Poné al menos un rubro: aberturas, seco, pintura, gruesa.' },
+      {
+        linea: 2,
+        motivo:
+          'Poné al menos un rubro: aberturas, seco, pintura, gruesa, terminaciones, sanitaria, electrica, demolicion.',
+      },
       { linea: 3, motivo: 'Falta la zona.' },
     ]);
   });

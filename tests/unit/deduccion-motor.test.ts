@@ -53,7 +53,7 @@ describe('motor de deducción · parámetros pinneados', () => {
     expect(MINIMO_FUENTES).toBe(2);
   });
 
-  it('la prioridad cubre las cinco reglas, sin sobras ni faltantes', () => {
+  it('la prioridad cubre las cinco reglas documentales, sin sobras ni faltantes', () => {
     expect([...PRIORIDAD_REGLAS]).toEqual([
       'planilla_plano',
       'planta_corte',
@@ -61,7 +61,21 @@ describe('motor de deducción · parámetros pinneados', () => {
       'idem_tipologia',
       'cierre_cotas',
     ]);
-    expect([...PRIORIDAD_REGLAS].sort()).toEqual([...REGLAS_DEDUCCION].sort());
+  });
+
+  it("las dos reglas que `deducir()` NO corre son exactamente 'cruce' y 'medicion_grafica'", () => {
+    // `REGLAS_DEDUCCION` es más larga que `PRIORIDAD_REGLAS` desde el expediente
+    // como conjunto, y a propósito: `cruce` la propone el provider de cruce y
+    // `medicion_grafica` la medición sobre el dibujo, cada una con su propia
+    // confianza. Ninguna de las dos es una regla documental del §11, así que
+    // ninguna tiene factor ni implementación acá — pero las dos son reglas
+    // válidas de la columna `deducciones.regla`. Este test es el que impide que
+    // una tercera se cuele en el enum sin que nadie decida quién la corre.
+    const documentales = new Set<string>(PRIORIDAD_REGLAS);
+    expect(REGLAS_DEDUCCION.filter((regla) => !documentales.has(regla))).toEqual([
+      'cruce',
+      'medicion_grafica',
+    ]);
   });
 
   it('la lista blanca de campos es exactamente la del contrato (RF-506)', () => {

@@ -50,12 +50,16 @@ const ETIQUETA_ORIGEN: Record<Origen, string> = {
   explicito: 'Explícito',
   deducido: 'Deducido',
   supuesto: 'Supuesto',
+  inferido: 'Inferido',
 };
 
 const TONO_ORIGEN: Record<Origen, BadgeTone> = {
   explicito: 'ok',
   deducido: 'info',
   supuesto: 'warn',
+  // Lo inferido es lo más flojo de la escala: se computó midiendo sobre el
+  // dibujo, no leyendo un número escrito. El badge tiene que decirlo.
+  inferido: 'warn',
 };
 
 /** Umbral de la regla de oro §11.b: por debajo, el dato se mira con lupa. */

@@ -37,6 +37,12 @@ export const SPECS_CRITICAS_POR_RUBRO: Record<RubroId, readonly string[]> = {
   seco: ['tipo'],
   gruesa: ['tipo'],
   pintura: [],
+  // Sanitaria es el caso más claro de spec crítica: cambiar el material de una
+  // cañería no es un descuento, es otra instalación.
+  sanitaria: ['material', 'sistema'],
+  terminaciones: ['material'],
+  electrica: [],
+  demolicion: [],
 };
 
 /** Atributos de una entidad, tal como los guarda `entidades.atributos_json`. */

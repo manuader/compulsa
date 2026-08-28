@@ -30,6 +30,7 @@ const ETIQUETA_ORIGEN: Record<Origen, string> = {
   explicito: 'Explícito',
   deducido: 'Deducido',
   supuesto: 'Supuesto',
+  inferido: 'Inferido',
 };
 
 const TONO_ESTADO_RUBRO: Record<EstadoRubro, BadgeTone> = {
