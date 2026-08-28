@@ -33,6 +33,7 @@ import {
   conciliacionItems,
   contactosCompulsa,
   cotizaciones,
+  datosObra,
   documentos,
   entidades,
   estudios,
@@ -531,6 +532,42 @@ describe('eliminarObra', () => {
       computoRubros: 1,
       archivos: 4,
     });
+  });
+
+  it('se lleva puestos los datos de obra, incluso los que definió un usuario', async () => {
+    // `datos_obra` tiene FK a `obras` **y** a `usuarios`: si el delete no la
+    // incluye, la purga no falla en `datos_obra` sino más abajo, al llegar a
+    // `obras`, con un error de FK que no nombra la tabla culpable.
+    await subirYProcesar('obra-demo.pdf');
+    const [lamina] = await db.select().from(laminas).where(eq(laminas.obraId, obraId));
+
+    await db.insert(datosObra).values([
+      {
+        obraId,
+        clave: 'altura_local.PB',
+        valorJson: { valor: 2.6, unidad: 'm' },
+        origen: 'deducido',
+        fuentesJson: [{ laminaId: lamina.id, bbox: [0.1, 0.8, 0.2, 0.05] }],
+        confianza: 0.85,
+      },
+      {
+        obraId,
+        clave: 'nivel.PB',
+        valorJson: { valor: '±0.00' },
+        origen: 'explicito',
+        fuentesJson: [],
+        confianza: 1,
+        // El caso que agrega la segunda FK: lo cargó una persona.
+        definidoPor: actor.usuarioId,
+      },
+    ]);
+    expect(await db.select().from(datosObra).where(eq(datosObra.obraId, obraId))).toHaveLength(2);
+
+    await archivarObra(db, estudioId, obraId, actor);
+    await eliminarObra(db, storage, estudioId, obraId, actor);
+
+    expect(await db.select().from(datosObra).where(eq(datosObra.obraId, obraId))).toHaveLength(0);
+    expect(await db.select().from(obras).where(eq(obras.id, obraId))).toHaveLength(0);
   });
 
   it('si el storage falla en un archivo, la obra igual se elimina y el rastro queda', async () => {

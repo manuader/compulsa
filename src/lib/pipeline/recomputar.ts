@@ -351,6 +351,10 @@ function valoresDeHallazgo(
     checklistItem: h.checklistItem ?? null,
     laminasJson: h.fuentes,
     targetRef: h.targetRef ?? null,
+    // La otra cosa a la que puede apuntar un hallazgo: un dato de obra en vez
+    // de una entidad. Va acá y no en `targetRef` porque responderlo escribe
+    // `datos_obra` y el recompute lo propaga a todas las entidades afectadas.
+    targetDato: h.targetDato ?? null,
     valorPropuestoJson: propuestaMergeada(previa?.valorPropuestoJson, h),
     bloqueante: h.bloqueante,
   };
@@ -372,6 +376,9 @@ function diferenciasDeHallazgo(
   comparar('bloqueante', fila.bloqueante, h.bloqueante);
   comparar('laminas', fila.laminasJson, h.fuentes);
   comparar('targetRef', fila.targetRef, h.targetRef ?? null);
+  // Sin esto, el recompute que corrige la lista de entidades afectadas por un
+  // dato de obra no vería diff y dejaría la lista vieja escrita para siempre.
+  comparar('targetDato', fila.targetDato, h.targetDato ?? null);
   // Contra el merge, no contra `h.valorPropuesto`: si no, una propuesta de la
   // búsqueda dirigida conservada se vería como un diff en cada recompute y
   // dispararía una auditoría fantasma por corrida.

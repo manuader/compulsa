@@ -62,6 +62,7 @@ import {
   conciliacionItems,
   contactosCompulsa,
   cotizaciones,
+  datosObra,
   deducciones,
   documentos,
   entidades,
@@ -532,6 +533,11 @@ export async function eliminarObra(
   // Las deducciones también apuntan a `entidades`: van antes que ellas, por la
   // misma razón de FK que los ítems y los hallazgos.
   await db.delete(deducciones).where(eq(deducciones.obraId, obra.id));
+  // Los datos de obra (`altura_local.PB` y compañía) se van sin contarse, igual
+  // que las deducciones y los recómputos: son el estado de conocimiento de la
+  // obra, no un recurso que el usuario esté por perder. Sin este delete la
+  // purga no falla acá sino más abajo, al llegar a `obras`.
+  await db.delete(datosObra).where(eq(datosObra.obraId, obra.id));
   const entidadesBorradas = await db
     .delete(entidades)
     .where(eq(entidades.obraId, obra.id))
