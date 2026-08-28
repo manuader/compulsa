@@ -92,11 +92,11 @@ export interface LaminaIndice {
 /**
  * Lo que el análisis sabe de la obra cuando mira UNA lámina.
  *
- * `obraId` y `tipoObra` son obligatorios desde F0. Los tres campos nuevos son
- * **aditivos y opcionales**: un provider que no los mire se comporta igual que
- * antes, y el mock los ignora. Los arma el pipeline (`analizarLamina`) leyendo
- * el resumen ejecutivo, el índice de láminas de la obra y la configuración del
- * estudio (`ConfigEstudio.instruccionesExtraccion`).
+ * `obraId` y `tipoObra` son obligatorios desde F0. Todo lo demás es **aditivo y
+ * opcional**: un provider que no lo mire se comporta igual que antes, y el mock
+ * de láminas lo ignora. Lo arma el pipeline (`analizarLamina`) leyendo la obra,
+ * su resumen ejecutivo, su índice de láminas y la configuración del estudio
+ * (`ConfigEstudio.instruccionesExtraccion`).
  */
 export interface ObraContexto {
   obraId: string;
@@ -107,6 +107,14 @@ export interface ObraContexto {
   indiceLaminas?: LaminaIndice[];
   /** Instrucciones de extracción del estudio, ya resueltas a texto plano. */
   instruccionesEstudio?: string;
+  /**
+   * Nombre de la obra (`obras.nombre`). Aditivo y opcional como los tres de
+   * arriba: los providers de lámina lo ignoran. Lo usa el **cruce**, que es una
+   * llamada por obra y no por lámina, para dos cosas: nombrarla en el prompt y
+   * —en el mock— resolver la clave de su fixture (`slug(nombreObra)`). Sin él,
+   * el mock del cruce no encuentra fixture y devuelve vacío.
+   */
+  nombreObra?: string;
 }
 
 export interface ItemComputo {
