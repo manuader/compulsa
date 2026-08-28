@@ -20,6 +20,7 @@ import {
   type ObraExport,
 } from '@/lib/export/xlsx';
 import { PLANTILLAS } from '@/lib/rubros';
+import { RUBROS } from '@/types/domain';
 
 const OBRA: ObraExport = {
   nombre: 'Casa Pérez',
@@ -109,13 +110,21 @@ describe('generarXlsx', () => {
   it('arma una hoja por rubro, la consolidada y las referencias', async () => {
     const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
 
+    // Contra `RUBROS` y no contra una lista escrita a mano: la regla de
+    // `generarXlsx` es «una hoja por rubro, SIEMPRE» —un rubro sin ítems se ve
+    // vacío, que es información— así que lo que hay que pinnear es la regla, no
+    // cuántos rubros había el día que se escribió el test.
     expect(wb.worksheets.map((h) => h.name)).toEqual([
+      ...RUBROS.map((rubro) => PLANTILLAS[rubro].nombre),
+      'Consolidado',
+      'Referencias',
+    ]);
+    // Y los cuatro de F0 siguen estando, en orden y con su nombre de siempre.
+    expect(wb.worksheets.slice(0, 4).map((h) => h.name)).toEqual([
       PLANTILLAS.aberturas.nombre,
       HOJA_SECO,
       HOJA_PINTURA,
       PLANTILLAS.gruesa.nombre,
-      'Consolidado',
-      'Referencias',
     ]);
   });
 
