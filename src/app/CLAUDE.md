@@ -56,6 +56,9 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
 /estudio/usuarios                   invitaciones, roles y bajas (solo titular)
 /estudio/configuracion              instrucciones de extracción, desperdicios, condiciones,
                                     mandato, pesos, MEP, checklists
+/estudio/precios                    lista de precios de referencia del estudio: tabla, alta a
+                                    mano e import CSV con preview y errores por línea (la ve
+                                    cualquier rol; los formularios, colaborador para arriba)
 /estudio/auditoria                  auditoría del estudio, paginada por cursor
 
 /api/archivos/[...ref]                              descarga de archivos del estudio

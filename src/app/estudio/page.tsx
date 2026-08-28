@@ -59,7 +59,7 @@ export default async function EstudioPage() {
 
       <AhorroAcumulado ahorro={ahorro} />
 
-      <nav className="grid gap-4 sm:grid-cols-3" aria-label="Secciones del estudio">
+      <nav className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" aria-label="Secciones del estudio">
         <AccesoEstudio
           href="/estudio/usuarios"
           titulo="Usuarios"
@@ -73,6 +73,16 @@ export default async function EstudioPage() {
           descripcion="Desperdicios, condiciones, mandato, ranking, MEP y checklists."
           habilitado={esColaborador}
           motivo="Colaborador o titular"
+        />
+        {/* La pantalla se ve con cualquier rol —saber con qué precio se costea
+            la obra no es una mutación—, así que el acceso nunca se deshabilita:
+            lo que el rol de lectura no ve son los formularios de adentro. */}
+        <AccesoEstudio
+          href="/estudio/precios"
+          titulo="Precios de referencia"
+          descripcion="La lista con la que el cómputo estima el costo de cada ítem."
+          habilitado
+          motivo=""
         />
         <AccesoEstudio
           href="/estudio/auditoria"
