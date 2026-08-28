@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { armarContextoObra, textoInstrucciones } from '@/lib/analysis/prompt';
-import type { InstruccionesExtraccion, LaminaIndice, ObraContexto } from '@/types/domain';
+import { RUBROS } from '@/types/domain';
+import type { InstruccionesExtraccion, LaminaIndice, ObraContexto, RubroId } from '@/types/domain';
 
 /**
  * `prompt.ts` es donde vive todo lo testeable del prompt de extracción:
@@ -95,6 +96,49 @@ describe('textoInstrucciones', () => {
   it('solo un rubro configurado alcanza para que haya texto', () => {
     expect(textoInstrucciones({ general: '', porRubro: { pintura: 'Dos manos siempre.' } })).toBe(
       'Pintura: Dos manos siempre.',
+    );
+  });
+
+  /**
+   * `ETIQUETA_RUBRO` es un `satisfies Record<RubroId, string>`: un rubro nuevo
+   * sin etiqueta no compila. Lo que el compilador NO mira es qué dice cada
+   * etiqueta ni en qué orden salen, y eso es lo que ve el modelo. Pinneadas las
+   * ocho, las cuatro de esta ola incluidas.
+   */
+  it('los ocho rubros salen etiquetados, en el orden de RUBROS', () => {
+    const porRubro = Object.fromEntries(
+      RUBROS.map((rubro) => [rubro, `instrucción de ${rubro}`]),
+    ) as Record<RubroId, string>;
+
+    expect(textoInstrucciones({ general: '', porRubro })?.split('\n')).toEqual([
+      'Aberturas: instrucción de aberturas',
+      'Construcción en seco: instrucción de seco',
+      'Pintura: instrucción de pintura',
+      'Obra gruesa: instrucción de gruesa',
+      'Terminaciones: instrucción de terminaciones',
+      'Instalación sanitaria: instrucción de sanitaria',
+      'Instalación eléctrica: instrucción de electrica',
+      'Demolición: instrucción de demolicion',
+    ]);
+  });
+
+  it('un rubro nuevo solo también alcanza, con su etiqueta', () => {
+    expect(
+      textoInstrucciones({
+        general: '',
+        porRubro: { sanitaria: 'Los diámetros de esta obra están en pulgadas.' },
+      }),
+    ).toBe('Instalación sanitaria: Los diámetros de esta obra están en pulgadas.');
+  });
+
+  it('el general va primero y después los rubros, sin mezclarse', () => {
+    const texto = textoInstrucciones({
+      general: 'Las cotas están en centímetros.',
+      porRubro: { demolicion: 'Lo rayado en diagonal se demuele.' },
+    });
+
+    expect(texto).toBe(
+      'Las cotas están en centímetros.\nDemolición: Lo rayado en diagonal se demuele.',
     );
   });
 });
