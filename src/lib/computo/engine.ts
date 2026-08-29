@@ -23,6 +23,7 @@ import {
 } from '@/lib/hallazgos/taxonomia';
 import { PLANTILLAS, type PlantillaRubro, type ResultadoComputo } from '@/lib/rubros/index';
 import type {
+  DatoObraResuelto,
   EntidadDetectada,
   HallazgoDetectado,
   ItemComputo,
@@ -60,6 +61,17 @@ export interface LaminaDeComputo {
 /** Default de todo el motor: sin láminas, cada plantilla computa como siempre. */
 const SIN_LAMINAS: readonly LaminaDeComputo[] = [];
 
+/**
+ * Los hechos que valen para toda la obra, indexados por clave (§5.2):
+ * `altura_local.PB`, `altura_revestimiento.general`. Es el segundo eslabón de la
+ * cadena de respaldo de las plantillas —atributo de la entidad → dato de obra →
+ * pregunta— y el motor no hace nada con ellos salvo pasárselos.
+ */
+export type DatosObraResueltos = ReadonlyMap<string, DatoObraResuelto>;
+
+/** Default: sin datos de obra, cada plantilla pregunta lo que le falta, como siempre. */
+const SIN_DATOS_OBRA: DatosObraResueltos = new Map();
+
 export type { ResultadoComputo };
 export { UMBRAL_CONFIANZA };
 
@@ -74,14 +86,25 @@ export { UMBRAL_CONFIANZA };
  * se ofrece para confirmar. Un ítem **agregado** (la suma de varios ambientes,
  * por ejemplo) no lleva target ni propuesta, y es lo honesto: no hay UNA
  * entidad que confirmar, hay que ir a mirar cuál de todas está mal leída.
+ *
+ * El `origenPorEntidad` que devuelve la plantilla **viaja intacto** hacia
+ * arriba: es lo que le permite al motor saber que un `alturaM` salió de un dato
+ * de obra y no de una cota, y marcar el ítem en consecuencia. Perderlo acá
+ * dejaba la planilla afirmando que todo era explícito.
  */
 export function computarRubro(
   entidades: readonly EntidadPersistida[],
   plantilla: PlantillaRubro,
   tipoObra: TipoObra,
   laminas: readonly LaminaDeComputo[] = SIN_LAMINAS,
+  datosObra: DatosObraResueltos = SIN_DATOS_OBRA,
 ): ResultadoComputo {
-  const { items, hallazgos } = plantilla.computar(entidades, tipoObra, laminas);
+  const { items, hallazgos, origenPorEntidad } = plantilla.computar(
+    entidades,
+    tipoObra,
+    laminas,
+    datosObra,
+  );
   const emitidos: ItemComputo[] = [];
   const degradados: HallazgoDetectado[] = [];
   const porId = new Map(entidades.map((entidad) => [entidad.id, entidad]));
@@ -105,7 +128,11 @@ export function computarRubro(
     emitidos.push(item);
   }
 
-  return { items: emitidos, hallazgos: [...hallazgos, ...degradados] };
+  return {
+    items: emitidos,
+    hallazgos: [...hallazgos, ...degradados],
+    ...(origenPorEntidad === undefined ? {} : { origenPorEntidad }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +165,71 @@ const SIN_DEDUCCIONES: CamposDeducidos = new Map();
  * de control es exactamente este: la primera que marca un ítem gana.
  */
 const ORIGENES_CONTAGIOSOS = ['inferido', 'deducido', 'supuesto'] as const;
+
+/** La misma precedencia, como número: cuanto más alto, más débil el dato. */
+const PESO_ORIGEN: Record<Origen, number> = {
+  explicito: 0,
+  supuesto: 1,
+  deducido: 2,
+  inferido: 3,
+};
+
+/** El peor de dos orígenes, que es el que el ítem tiene que llevar. */
+function peorOrigen(a: Origen, b: Origen): Origen {
+  return PESO_ORIGEN[b] > PESO_ORIGEN[a] ? b : a;
+}
+
+/**
+ * Los campos que no son de la documentación, vengan de donde vengan.
+ *
+ * Hay dos caminos por los que un campo deja de ser explícito y el motor tiene
+ * que mirar los dos juntos:
+ *
+ *  - una **deducción validada**, que el pipeline aplicó como capa sobre la
+ *    entidad y le pasa al motor en `camposDeducidos`;
+ *  - un **dato de obra** que la plantilla usó como respaldo (§5.2) y que
+ *    devuelve en `origenPorEntidad`.
+ *
+ * Si el mismo campo llega por los dos, manda el peor de los dos orígenes: la
+ * advertencia más fuerte es la que corresponde.
+ */
+function mergearOrigenes(
+  camposDeducidos: CamposDeducidos,
+  dePlantillas: ReadonlyMap<string, ReadonlyMap<string, Origen>> | undefined,
+): CamposDeducidos {
+  if (dePlantillas === undefined || dePlantillas.size === 0) return camposDeducidos;
+  if (camposDeducidos.size === 0) return dePlantillas;
+
+  const merged = new Map<string, Map<string, Origen>>();
+  for (const [entidadId, campos] of camposDeducidos) merged.set(entidadId, new Map(campos));
+  for (const [entidadId, campos] of dePlantillas) {
+    const suyos = merged.get(entidadId) ?? new Map<string, Origen>();
+    for (const [campo, origen] of campos) {
+      const previo = suyos.get(campo);
+      suyos.set(campo, previo === undefined ? origen : peorOrigen(previo, origen));
+    }
+    merged.set(entidadId, suyos);
+  }
+  return merged;
+}
+
+/**
+ * Los datos de obra **sin** los de ese origen: la mitad que le falta a la pasada
+ * de control.
+ *
+ * `sinCampos` le saca a las entidades los atributos que puso una deducción, pero
+ * un campo que resolvió un dato de obra no está en la entidad —está en la tabla
+ * de al lado—: borrarlo del atributo no cambia nada y la pasada de control
+ * computaría exactamente lo mismo, dejando el ítem marcado como explícito. Lo
+ * que hay que sacarle a la hipótesis es el dato.
+ */
+function datosObraSin(datosObra: DatosObraResueltos, origen: Origen): DatosObraResueltos {
+  const restantes = new Map<string, DatoObraResuelto>();
+  for (const [clave, dato] of datosObra) {
+    if (dato.origen !== origen) restantes.set(clave, dato);
+  }
+  return restantes.size === datosObra.size ? datosObra : restantes;
+}
 
 /** `entidadId → campos` con exactamente ese origen (vacío si no hay ninguno). */
 function camposConOrigen(
@@ -249,20 +341,33 @@ function correrPlantillas(
   plantillas: Record<RubroId, PlantillaRubro>,
   rubros: readonly RubroId[],
   laminas: readonly LaminaDeComputo[],
+  datosObra: DatosObraResueltos,
 ): ResultadoComputo {
   const items: ItemComputo[] = [];
   const hallazgos: HallazgoDetectado[] = [];
+  const origenPorEntidad = new Map<string, Map<string, Origen>>();
 
   for (const rubro of RUBROS) {
     if (!rubros.includes(rubro)) continue;
-    const resultado = computarRubro(entidades, plantillas[rubro], tipoObra, laminas);
+    const resultado = computarRubro(entidades, plantillas[rubro], tipoObra, laminas, datosObra);
     items.push(...resultado.items);
     hallazgos.push(...resultado.hallazgos);
+    // Dos rubros pueden apoyarse en el mismo dato de obra (la altura de local la
+    // usan seco y pintura): los mapas se suman, y un campo repetido se queda con
+    // el peor origen de los dos.
+    for (const [entidadId, campos] of resultado.origenPorEntidad ?? []) {
+      const suyos = origenPorEntidad.get(entidadId) ?? new Map<string, Origen>();
+      for (const [campo, origen] of campos) {
+        const previo = suyos.get(campo);
+        suyos.set(campo, previo === undefined ? origen : peorOrigen(previo, origen));
+      }
+      origenPorEntidad.set(entidadId, suyos);
+    }
   }
 
   hallazgos.push(...sanityChecks(entidades));
 
-  return { items, hallazgos: deduplicarPorClave(hallazgos) };
+  return { items, hallazgos: deduplicarPorClave(hallazgos), origenPorEntidad };
 }
 
 /**
@@ -278,6 +383,10 @@ function correrPlantillas(
  * que mira el tipo de lámina (hoy solo aberturas) se comporta como antes de que
  * existiera el parámetro. **El pipeline siempre lo pasa** — una obra real sabe
  * qué lámina es cuál, y sin eso la misma carpintería se contaría dos veces.
+ *
+ * `datosObra` es el tercero de la misma familia: los hechos que valen para toda
+ * la obra (§5.2). Sin él, una plantilla que podría completar una altura de local
+ * pregunta, que es exactamente lo que hacía antes.
  */
 export function computarObra(
   entidades: readonly EntidadPersistida[],
@@ -285,11 +394,13 @@ export function computarObra(
   rubros: readonly RubroId[] = RUBROS,
   camposDeducidos: CamposDeducidos = SIN_DEDUCCIONES,
   laminas: readonly LaminaDeComputo[] = SIN_LAMINAS,
+  datosObra: DatosObraResueltos = SIN_DATOS_OBRA,
 ): ResultadoComputo {
   return computarObraConPlantillas(entidades, tipoObra, PLANTILLAS, {
     rubros,
     camposDeducidos,
     laminas,
+    datosObra,
   });
 }
 
@@ -297,6 +408,7 @@ export interface OpcionesComputo {
   rubros?: readonly RubroId[];
   camposDeducidos?: CamposDeducidos;
   laminas?: readonly LaminaDeComputo[];
+  datosObra?: DatosObraResueltos;
 }
 
 /**
@@ -319,16 +431,27 @@ export function computarObraConPlantillas(
   const rubros = opciones.rubros ?? RUBROS;
   const camposDeducidos = opciones.camposDeducidos ?? SIN_DEDUCCIONES;
   const laminas = opciones.laminas ?? SIN_LAMINAS;
+  const datosObra = opciones.datosObra ?? SIN_DATOS_OBRA;
 
-  const resultado = correrPlantillas(entidades, tipoObra, plantillas, rubros, laminas);
-  if (camposDeducidos.size === 0) return resultado;
+  const resultado = correrPlantillas(
+    entidades,
+    tipoObra,
+    plantillas,
+    rubros,
+    laminas,
+    datosObra,
+  );
+  // Lo que las deducciones validadas aportaron **más** lo que aportaron los
+  // datos de obra: el origen del ítem se decide con las dos cosas juntas.
+  const noExplicitos = mergearOrigenes(camposDeducidos, resultado.origenPorEntidad);
+  if (noExplicitos.size === 0) return resultado;
 
   // Una pasada de control por origen presente, del peor al mejor: cada una
   // responde "¿este ítem cambia si le saco los campos de ESTE origen?". Con un
   // solo origen en juego —el caso de siempre— es exactamente una pasada extra.
   let items = resultado.items;
   for (const origen of ORIGENES_CONTAGIOSOS) {
-    const campos = camposConOrigen(camposDeducidos, origen);
+    const campos = camposConOrigen(noExplicitos, origen);
     if (campos.size === 0) continue;
     const control = correrPlantillas(
       sinCampos(entidades, campos),
@@ -336,11 +459,12 @@ export function computarObraConPlantillas(
       plantillas,
       rubros,
       laminas,
+      datosObraSin(datosObra, origen),
     );
     items = marcarOrigen(items, control.items, origen);
   }
 
   // Los hallazgos son los de la pasada real: la de control es una hipótesis
   // ("¿qué pasaría si el dato deducido no estuviera?"), no el estado de la obra.
-  return { items, hallazgos: resultado.hallazgos };
+  return { items, hallazgos: resultado.hallazgos, origenPorEntidad: resultado.origenPorEntidad };
 }
