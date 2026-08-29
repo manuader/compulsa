@@ -28,8 +28,16 @@ import { DISCLAIMER, fechaIso, fechaLegible, slugObra, type ObraExport } from '@
 
 // --- Contrato de datos -----------------------------------------------------
 
-/** De dónde salió la medida de una carpintería. */
-export type OrigenDato = 'explicito' | 'deducido' | 'pendiente';
+/**
+ * De dónde salió la medida de una carpintería.
+ *
+ * `inferido` es el nivel C del §5.5: la medida se sacó midiendo sobre el dibujo
+ * a escala, no leyendo un número escrito. Va separado de `deducido` porque no
+ * es lo mismo cruzar dos láminas que medir con la regla sobre el plano, y quien
+ * fabrica una carpintería con esta planilla tiene derecho a saber cuál de las
+ * dos cosas pasó.
+ */
+export type OrigenDato = 'explicito' | 'deducido' | 'inferido' | 'pendiente';
 
 export interface FilaCarpinteria {
   /** "V2", "P1" — el tag con el que se pide la cotización. */
@@ -55,6 +63,7 @@ export const AVISO_DERIVADA =
 export const ETIQUETA_ORIGEN_DATO: Record<OrigenDato, string> = {
   explicito: 'Explícito',
   deducido: 'Deducido validado',
+  inferido: 'Inferido (medido sobre el dibujo)',
   pendiente: 'Pendiente',
 };
 
@@ -66,6 +75,10 @@ const LEYENDA_ORIGENES: ReadonlyArray<readonly [string, string]> = [
   [
     ETIQUETA_ORIGEN_DATO.deducido,
     'La medida la dedujo el sistema cruzando dos láminas y una persona del estudio la validó.',
+  ],
+  [
+    ETIQUETA_ORIGEN_DATO.inferido,
+    'La medida se sacó midiendo sobre el dibujo a escala, no de una cota. Es la evidencia más débil: verificala antes de mandar a fabricar.',
   ],
   [
     ETIQUETA_ORIGEN_DATO.pendiente,

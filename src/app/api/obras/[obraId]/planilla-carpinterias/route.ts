@@ -28,6 +28,7 @@ import {
 } from '@/lib/export/planilla-carpinterias';
 import { leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
 import { aplicarDeduccionesValidadas, comoEntidadPersistida } from '@/lib/pipeline/recomputar';
+import type { Origen } from '@/types/domain';
 
 /** exceljs es Node puro (zlib, streams): este handler no corre en el edge. */
 export const runtime = 'nodejs';
@@ -86,13 +87,25 @@ export async function GET(
     planos.map((fila) => [fila.id, fila.codigo ?? `Página ${fila.numeroPagina}`] as const),
   );
   const carpinterias: FilaCarpinteria[] = aberturas.map((abertura) => {
-    const deducidos = camposDeducidos.get(abertura.id) ?? new Set<string>();
+    const deducidos = camposDeducidos.get(abertura.id) ?? new Map<string, Origen>();
     const anchoM = leerMedida(abertura, 'anchoM');
     const altoM = leerMedida(abertura, 'altoM');
 
     const falta = MEDIDAS.some((campo) => leerMedida(abertura, campo) === null);
-    const deDeduccion = MEDIDAS.some((campo) => deducidos.has(campo));
-    const origen: OrigenDato = falta ? 'pendiente' : deDeduccion ? 'deducido' : 'explicito';
+    // El peor origen de las dos medidas manda, igual que en el ítem de cómputo
+    // (§5.5): si el ancho está acotado y el alto se midió sobre el dibujo, la
+    // fila es `inferido`. Decir «deducido» sería vender la medición gráfica
+    // como un cruce documental.
+    const origenes = MEDIDAS.map((campo) => deducidos.get(campo)).filter(
+      (origen): origen is Origen => origen !== undefined,
+    );
+    const origen: OrigenDato = falta
+      ? 'pendiente'
+      : origenes.includes('inferido')
+        ? 'inferido'
+        : origenes.length > 0
+          ? 'deducido'
+          : 'explicito';
 
     // Las láminas: la de la entidad y, si la medida vino de una deducción, la
     // que la aportó (la deducción cita las dos, por eso alcanza con sus fuentes).
