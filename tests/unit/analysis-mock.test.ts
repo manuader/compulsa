@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { claveFixture, crearProviderMock, getAnalysisProvider, slug } from '@/lib/analysis';
+import { inventariarLamina, type AnalysisProvider } from '@/lib/analysis/tipos';
 import type { LaminaInput, ObraContexto } from '@/types/domain';
 
 const OBRA: ObraContexto = { obraId: 'obra-1', tipoObra: 'nueva' };
@@ -163,6 +164,74 @@ describe('provider mock sin fixture', () => {
   it('una página fuera del rango del fixture tampoco inventa nada', async () => {
     expect((await provider.leerRotulo(lamina('obra-demo.pdf', 9))).escalaConfiable).toBe(false);
     expect(await provider.extraerEntidades(lamina('obra-demo.pdf', 9), OBRA)).toEqual([]);
+  });
+});
+
+/**
+ * La fase de inventario (§25.1 del diseño): antes de extraer nada, el pipeline
+ * recorre el expediente leyendo SOLO rótulos, así la extracción de cada lámina
+ * arranca con el índice completo. Del lado del mock no hay llamada que ahorrar,
+ * así que el contrato es "el mismo rótulo del mismo fixture".
+ */
+describe('inventariar', () => {
+  const provider = crearProviderMock();
+
+  it('devuelve el rótulo del fixture, el mismo que leerRotulo', async () => {
+    const entrada = lamina('obra-demo.pdf', 1);
+
+    const inventario = await provider.inventariar!(entrada);
+
+    expect(inventario).toEqual(await provider.leerRotulo(entrada));
+    expect(inventario.codigo).toBe('A-01');
+    expect(inventario.titulo).toBe('PLANTA PB');
+    expect(inventario.tipoLamina).toBe('planta');
+    expect(inventario.escala).toBe('1:100');
+  });
+
+  it('sin fixture devuelve el rótulo nulo, no confiable, sin inventar nada', async () => {
+    const inventario = await provider.inventariar!(lamina('sin-escala.pdf', 1));
+
+    expect(inventario.titulo).toBeNull();
+    expect(inventario.escala).toBeNull();
+    expect(inventario.escalaConfiable).toBe(false);
+    expect(inventario.confianza).toBe(0);
+  });
+
+  it('no comparte estado: mutar el rótulo devuelto no ensucia el fixture', async () => {
+    const primera = await provider.inventariar!(lamina('obra-demo.pdf', 1));
+    primera.titulo = 'OTRA COSA';
+
+    expect((await provider.inventariar!(lamina('obra-demo.pdf', 1))).titulo).toBe('PLANTA PB');
+  });
+
+  it('inventariarLamina cae a leerRotulo cuando el provider no lo implementa', async () => {
+    const sinInventario: AnalysisProvider = {
+      leerRotulo: (entrada) => provider.leerRotulo(entrada),
+      extraerEntidades: async () => [],
+    };
+
+    const rotulo = await inventariarLamina(sinInventario, lamina('obra-demo.pdf', 1));
+
+    expect(rotulo.titulo).toBe('PLANTA PB');
+  });
+
+  it('inventariarLamina usa el método barato cuando está', async () => {
+    let llamadas = 0;
+    const conInventario: AnalysisProvider = {
+      leerRotulo: async () => {
+        throw new Error('no se debería haber llamado a leerRotulo');
+      },
+      extraerEntidades: async () => [],
+      inventariar: async (entrada) => {
+        llamadas += 1;
+        return provider.leerRotulo(entrada);
+      },
+    };
+
+    const rotulo = await inventariarLamina(conInventario, lamina('obra-demo.pdf', 1));
+
+    expect(llamadas).toBe(1);
+    expect(rotulo.codigo).toBe('A-01');
   });
 });
 
