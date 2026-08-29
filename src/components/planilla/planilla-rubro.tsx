@@ -13,6 +13,7 @@ import { useState, useTransition } from 'react';
 
 import { aprobarRubroAction, crearItemManualAction } from '@/app/obras/[obraId]/computo/actions';
 import { FilaItem, type ItemPlanilla } from '@/components/planilla/fila-item';
+import type { SubtotalRubro } from '@/components/planilla/precio';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button, estilosBoton } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
@@ -72,13 +73,7 @@ export function totalesPorUnidad(
   }));
 }
 
-/** El subtotal del rubro, calculado y formateado en el server. */
-export interface SubtotalRubro {
-  /** `$ 1.234.500` — la suma de los subtotales de los ítems con precio. */
-  monto: string;
-  /** Cuántos ítems activos del rubro quedaron sin precio (0 ⇒ el subtotal es completo). */
-  sinPrecio: number;
-}
+export type { SubtotalRubro };
 
 export interface PlanillaRubroProps {
   obraId: string;

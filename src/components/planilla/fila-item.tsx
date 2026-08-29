@@ -14,6 +14,7 @@ import { useState, useTransition } from 'react';
 
 import { anularItemAction, editarItemAction } from '@/app/obras/[obraId]/computo/actions';
 import { textoEscalaAsumida, type EscalaAsumida } from '@/components/planilla/escala-asumida';
+import type { PrecioPlanilla } from '@/components/planilla/precio';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -68,13 +69,7 @@ export interface ItemPlanilla {
   origenDetalle: string | null;
 }
 
-/** El precio de una fila, formateado. Todo texto: cruza al cliente y se muestra tal cual. */
-export interface PrecioPlanilla {
-  unitario: string;
-  subtotal: string;
-  /** "Lista de precios del estudio · 20/08/2026". */
-  detalle: string;
-}
+export type { PrecioPlanilla };
 
 const ETIQUETA_ORIGEN: Record<Origen, string> = {
   explicito: 'Explícito',

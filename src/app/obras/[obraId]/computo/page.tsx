@@ -14,13 +14,17 @@ import Link from 'next/link';
 import { VerificacionComputo } from '@/app/obras/[obraId]/computo/verificacion-ui';
 import { escalaAsumidaDelItem, type LaminaDeFuente } from '@/components/planilla/escala-asumida';
 import { PlanillaRubro } from '@/components/planilla/planilla-rubro';
-import type { ItemPlanilla, SubtotalRubro } from '@/components/planilla/planilla-rubro';
+import type { ItemPlanilla } from '@/components/planilla/planilla-rubro';
+import {
+  detalleDeOrigen,
+  precioDeFila,
+  precioEditable,
+  totalizar,
+} from '@/components/planilla/precio';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { getDb } from '@/db/client';
 import { computoItems, computoRubros, hallazgos, laminas, type ComputoItem } from '@/db/schema';
 import { requireObra, requireUser } from '@/lib/auth/guards';
-import { formatearMonto } from '@/lib/compulsa/comparativa';
-import { redondear2 } from '@/lib/computo/unidades';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
 import { esClaveDeVerificacion } from '@/lib/pipeline/claves';
 import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
@@ -32,7 +36,6 @@ import {
   type EstadoRubro,
   type Fuente,
   type Origen,
-  type PrecioEstimado,
   type RubroId,
 } from '@/types/domain';
 
@@ -42,67 +45,6 @@ const ETIQUETA_ORIGEN: Record<Origen, string> = {
   supuesto: 'Supuesto',
   inferido: 'Inferido',
 };
-
-/** De dónde salió el precio, para el tooltip de la fila (§5.6). */
-const ETIQUETA_FUENTE_PRECIO: Record<PrecioEstimado['fuente'], string> = {
-  manual: 'Precio cargado a mano',
-  lista: 'Lista de precios del estudio',
-  indice: 'Índice de precios del estudio',
-};
-
-/**
- * La fecha del precio, como se escribe en es-AR.
- *
- * Vienen de dos formas y las dos son ciertas: la lista y el precio manual traen
- * el día (`2026-08-20`), y el índice es mensual (`2026-08`) — completarle un
- * `-01` sería declarar una precisión que la fila no tiene (§5.6, decisión de
- * `resolverPrecio`). Se muestran distinto porque **son** distintas.
- */
-function fechaDePrecio(iso: string): string {
-  const partes = iso.split('-');
-  if (partes.length === 3) return `${partes[2]}/${partes[1]}/${partes[0]}`;
-  if (partes.length === 2) return `${partes[1]}/${partes[0]}`;
-  return iso;
-}
-
-/**
- * El precio como hay que meterlo en el input: coma decimal y **sin separador de
- * miles**. Mismo criterio (y misma razón) que `/estudio/precios`: `parsearPrecio`
- * lee un separador solo, una vez, como decimal, así que abrir la fila de un
- * precio de 145.000 y guardarla sin tocarla lo dejaría en 145.
- */
-function precioEditable(n: number): string {
-  return Number.isInteger(n) ? String(n) : String(n).replace('.', ',');
-}
-
-/** El subtotal del ítem: lo que se paga por comprar la cantidad de compra. */
-function subtotalDeItem(fila: ComputoItem): number | null {
-  if (fila.precioJson === null) return null;
-  return redondear2(fila.precioJson.unitario * fila.cantCompra);
-}
-
-/**
- * Por qué un ítem no es explícito, con lo que lo respalda.
- *
- * Es el tooltip del badge: un `deducido` sin decir de dónde salió obliga a
- * abrir la bandeja para entenderlo, y un `inferido` sin decir que se midió
- * sobre el dibujo parece un dato leído.
- *
- * El método de una medición gráfica todavía no se persiste por ítem (el dato
- * vive en la deducción que la produjo, y esa la escribe el pipeline de T9), así
- * que el texto es el fijo del §5.5. Cuando haya método guardado, se lee de ahí.
- */
-function detalleDeOrigen(origen: Origen, laminas: readonly string[]): string | null {
-  if (origen === 'explicito') return null;
-  const citadas = laminas.length === 0 ? '' : ` Láminas: ${laminas.join(', ')}.`;
-  if (origen === 'deducido') {
-    return `Se dedujo cruzando la documentación; el dato no está escrito en una sola lámina.${citadas}`;
-  }
-  if (origen === 'inferido') {
-    return `Se midió sobre el dibujo a escala (medición gráfica): es la más débil de las evidencias.${citadas}`;
-  }
-  return `Se computó sobre un supuesto declarado de la plantilla del rubro.${citadas}`;
-}
 
 const TONO_ESTADO_RUBRO: Record<EstadoRubro, BadgeTone> = {
   borrador: 'neutral',
@@ -140,30 +82,6 @@ function esRubro(valor: string | null): valor is RubroId {
 
 function esOrigen(valor: string | null): valor is Origen {
   return valor !== null && (ORIGENES as readonly string[]).includes(valor);
-}
-
-/**
- * Lo que suman los ítems **con precio** de un conjunto, y cuántos quedaron sin.
- *
- * Los dos números van juntos siempre: un total que calla que veinte ítems no
- * tienen precio es peor que no mostrar nada. `null` ⇒ ninguno tiene precio, y
- * entonces no hay total que mostrar (el cero sería una afirmación falsa).
- */
-function totalizar(filas: readonly ComputoItem[], moneda: string): SubtotalRubro | null {
-  let suma = 0;
-  let conPrecio = 0;
-  let sinPrecio = 0;
-  for (const fila of filas) {
-    const subtotal = subtotalDeItem(fila);
-    if (subtotal === null) {
-      sinPrecio += 1;
-      continue;
-    }
-    suma = redondear2(suma + subtotal);
-    conPrecio += 1;
-  }
-  if (conPrecio === 0) return null;
-  return { monto: formatearMonto(moneda, suma), sinPrecio };
 }
 
 /** Chip de filtro: el estado de la vista viaja en la URL, no en el cliente. */
@@ -285,7 +203,6 @@ export default async function ComputoPage({
     .filter((fila) => (verAnulados ? true : fila.estado === 'activo'))
     .filter((fila) => (origen === null ? true : fila.origen === origen))
     .map((fila) => {
-      const subtotal = subtotalDeItem(fila);
       const precio = fila.precioJson;
       return {
         id: fila.id,
@@ -302,14 +219,7 @@ export default async function ComputoPage({
         editado: fila.editadoPor !== null,
         laminaId: fila.fuentesJson[0]?.laminaId ?? null,
         escalaAsumida: escalaAsumidaDelItem(fila.fuentesJson, escalaPorLamina),
-        precio:
-          precio === null || subtotal === null
-            ? null
-            : {
-                unitario: formatearMonto(precio.moneda, precio.unitario),
-                subtotal: formatearMonto(precio.moneda, subtotal),
-                detalle: `${ETIQUETA_FUENTE_PRECIO[precio.fuente]} · ${fechaDePrecio(precio.fechaPrecio)}`,
-              },
+        precio: precioDeFila(fila),
         precioEditable: precio === null ? '' : precioEditable(precio.unitario),
         origenDetalle: detalleDeOrigen(fila.origen, nombrarLaminas(fila.fuentesJson)),
       };
