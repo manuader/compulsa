@@ -300,6 +300,49 @@ describe('origen por campo (§5.5)', () => {
     expect(porClave(items, 'aberturas.V2')?.origen).toBe('deducido');
   });
 
+  it('un ítem supuesto de la plantilla SÍ se marca inferido: el más débil manda', () => {
+    // Sin `vanosM2` las paredes se computan de más y el ítem nace `supuesto`.
+    // Si además la altura salió de medir el dibujo, el badge honesto es
+    // `inferido`: es la advertencia más débil de las dos y la que hay que ver.
+    const estar = entidad({
+      tipo: 'ambiente',
+      nombre: 'Estar',
+      atributos: { superficieM2: 20, perimetroM: 18, alturaM: 2.6 },
+    });
+
+    const { items } = computarObra(
+      [estar],
+      'nueva',
+      undefined,
+      conOrigen([[estar.id, { alturaM: 'inferido' }]]),
+    );
+
+    const paredes = porClave(items, 'pintura.latex_paredes');
+    expect(paredes?.origen).toBe('inferido');
+    expect(paredes?.cantNeta).toBe(9.36); // (18 × 2,60) × 2 manos / 10, sin vanos
+  });
+
+  it('un campo deducido NO pisa un ítem supuesto: deducir cita una fuente', () => {
+    // La contracara del test de arriba, y del pin de `camposDeducidos`: entre
+    // "supuesto declarado" y "deducido de otra lámina", manda el supuesto.
+    const estar = entidad({
+      tipo: 'ambiente',
+      nombre: 'Estar',
+      atributos: { superficieM2: 20, perimetroM: 18, alturaM: 2.6 },
+    });
+
+    const { items } = computarObra(
+      [estar],
+      'nueva',
+      undefined,
+      conOrigen([[estar.id, { alturaM: 'deducido' }]]),
+    );
+
+    const paredes = porClave(items, 'pintura.latex_paredes');
+    expect(paredes?.origen).toBe('supuesto');
+    expect(paredes?.cantNeta).toBe(9.36); // el mismo número: solo cambia el badge
+  });
+
   it('un campo inferido que el ítem no usa no lo ensucia', () => {
     // El cielorraso solo mira la superficie; las paredes miran la altura.
     const estar = entidad({

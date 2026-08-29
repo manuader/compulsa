@@ -193,11 +193,18 @@ function huellaDeItem(item: ItemComputo): string {
  * pintura que solo miran la superficie—, y una deducción que repite el default
  * de la plantilla (`caras: 2`) tampoco ensucia nada.
  *
- * Un ítem que ya no es `explicito` no se toca, y eso hace dos cosas a la vez:
- * mantiene la precedencia (las pasadas van del peor origen al mejor, así que la
- * primera marca es la que manda) y respeta que un ítem `supuesto` no se degrade
- * —decir "se computó sobre un supuesto declarado" es más fuerte que decir "se
- * dedujo", y es lo que manda a la bandeja—.
+ * Qué ítem se deja marcar depende del origen de la pasada, y la asimetría es
+ * deliberada (decisión de producto sobre §5.5):
+ *
+ *  - un ítem `explicito` lo marca cualquier pasada;
+ *  - un ítem que la plantilla emitió **`supuesto`** lo marca solo la pasada
+ *    `inferido`. Un ítem que se apoya en una medida sacada del dibujo tiene que
+ *    llevar el badge honesto —`inferido` es más débil que `supuesto`, y el más
+ *    débil manda—. En cambio `deducido` **no** lo pisa: deducir cita una fuente
+ *    documentada, y decir "se computó sobre un supuesto declarado" sigue siendo
+ *    la advertencia más fuerte de las dos;
+ *  - un ítem ya marcado por una pasada anterior no se toca, y como las pasadas
+ *    van del peor origen al mejor, la primera marca es la que manda.
  */
 function marcarOrigen(
   items: readonly ItemComputo[],
@@ -205,8 +212,11 @@ function marcarOrigen(
   origen: Origen,
 ): ItemComputo[] {
   const huellas = new Map(control.map((item) => [item.claveItem, huellaDeItem(item)]));
+  const marcable = (item: ItemComputo): boolean =>
+    item.origen === 'explicito' || (origen === 'inferido' && item.origen === 'supuesto');
+
   return items.map((item) => {
-    if (item.origen !== 'explicito') return item;
+    if (!marcable(item)) return item;
     const previa = huellas.get(item.claveItem);
     if (previa !== undefined && previa === huellaDeItem(item)) return item;
     return { ...item, origen };
