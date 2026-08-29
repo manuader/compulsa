@@ -1,0 +1,1 @@
+ALTER TABLE "precios_referencia" ADD COLUMN "activo" boolean DEFAULT true NOT NULL;

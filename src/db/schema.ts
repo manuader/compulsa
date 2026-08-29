@@ -743,6 +743,11 @@ export const datosObra = pgTable(
  * ítem y el índice propio. Una sola fila por `(estudio, clave_item)`: si la
  * misma clave pudiera tener dos precios, la cascada tendría que elegir uno y
  * cualquier criterio sería arbitrario. Reimportar el CSV **actualiza** la fila.
+ *
+ * Sacar un precio de la lista es `activo = false` y no un `DELETE` (§7): la
+ * auditoría referencia la fila por id y un `precio_referencia_eliminado` que
+ * apunta a un registro que ya no está es un rastro que no se puede leer.
+ * Volver a importar esa clave la revive.
  */
 export const preciosReferencia = pgTable(
   'precios_referencia',
@@ -759,6 +764,13 @@ export const preciosReferencia = pgTable(
     /** Fecha del precio (`YYYY-MM-DD`): viaja al ítem como `PrecioEstimado.fechaPrecio`. */
     fecha: text('fecha').notNull(),
     origen: origenPrecioEnum('origen').notNull(),
+    /**
+     * `false` ⇒ la fila salió de la lista: no la ve ninguna lectura y la cascada
+     * de precios no la usa. El `UNIQUE` sigue siendo sobre `(estudio, clave)`
+     * incluyendo las inactivas, así que reimportar la clave revive **esta**
+     * fila en vez de crear una segunda.
+     */
+    activo: boolean('activo').notNull().default(true),
   },
   (t) => [unique('precios_referencia_estudio_clave_uq').on(t.estudioId, t.claveItem)],
 );
