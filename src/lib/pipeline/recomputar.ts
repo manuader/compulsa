@@ -93,7 +93,7 @@ import { igualJson } from '@/lib/pipeline/json';
 import { persistirResumen } from '@/lib/pipeline/resumen';
 import { leerConfig } from '@/lib/plataforma/config-estudio';
 import { plantillasConConfig } from '@/lib/rubros/overrides';
-import type { BBox, HallazgoDetectado, ItemComputo, ValorPropuesto } from '@/types/domain';
+import type { BBox, HallazgoDetectado, ItemComputo, Origen, ValorPropuesto } from '@/types/domain';
 
 /** Nombre del actor de todas las escrituras del pipeline en `auditoria`. */
 export const ACTOR_PIPELINE = 'pipeline';
@@ -571,10 +571,15 @@ async function sincronizarDeducciones(
  * validada y no se vuelve a proponer): un hueco silencioso, justo lo que P4
  * prohíbe. Con la capa, la decisión del arquitecto sobrevive al reanálisis.
  *
+ * El mapa lleva el origen **campo por campo**, porque no todas las deducciones
+ * valen lo mismo: la que se apoya en algo escrito en otra lámina deja el ítem
+ * `deducido`, y la medición gráfica —que mide sobre el dibujo, §5.5— lo deja
+ * `inferido`. El engine se queda con el peor de los campos que el ítem usó.
+ *
  * Tres casos por campo, y el orden es la prioridad del PRD:
  *
  *  - la entidad **no** trae el dato ⇒ vale el de la deducción, y el ítem sale
- *    `deducido`;
+ *    `deducido` (o `inferido` si se midió);
  *  - la entidad trae el **mismo** dato (lo escribió `validarDeduccion`) ⇒ ídem;
  *  - la entidad trae **otro** dato ⇒ manda la documentación y la deducción queda
  *    obsoleta: no se aplica y el ítem sale `explicito`. Lo escrito en el plano le
@@ -599,25 +604,31 @@ export function aplicarDeduccionesValidadas(
     else porEntidad.set(fila.entidadId, [fila]);
   }
 
-  const camposDeducidos = new Map<string, Set<string>>();
+  const camposDeducidos = new Map<string, Map<string, Origen>>();
   const contradichas: DeduccionSuperada[] = [];
+  // Qué tan fuerte es el dato que aporta cada regla: la medición gráfica mide
+  // sobre el dibujo (§5.5) y por eso su ítem sale `inferido`, un escalón más
+  // débil que el resto, que se apoya en algo escrito en otra lámina.
+  const origenDe = (fila: Deduccion): Origen =>
+    fila.regla === 'medicion_grafica' ? 'inferido' : 'deducido';
   const conDeducciones = entidades.map((entidad) => {
     const suyas = porEntidad.get(entidad.id);
     if (suyas === undefined) return entidad;
 
     const atributos = { ...entidad.atributos };
-    const campos = new Set<string>();
+    const campos = new Map<string, Origen>();
     for (const fila of suyas) {
       const valor = fila.valorJson[fila.campo];
       if (valor === undefined || valor === null || valor === '') continue;
       const actual = atributos[fila.campo];
       if (actual === undefined || actual === null || actual === '') {
         atributos[fila.campo] = valor;
-        campos.add(fila.campo);
+        campos.set(fila.campo, origenDe(fila));
         continue;
       }
       if (mismoDato(actual, valor)) {
-        campos.add(fila.campo); // el dato es el mismo: sigue siendo deducido
+        // El dato es el mismo: el campo sigue viniendo de la deducción.
+        campos.set(fila.campo, origenDe(fila));
         continue;
       }
       // Gana la documentación, pero no en silencio.
