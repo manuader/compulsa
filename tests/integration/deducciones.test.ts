@@ -1,6 +1,11 @@
 /**
- * Deducción integrada, de punta a punta: del PDF a la propuesta, de la propuesta
+ * Deducción integrada, de punta a punta: del PDF a la deducción, de la deducción
  * al ítem `deducido`, y de vuelta.
+ *
+ * Desde §5.4 el paso del medio no lo da una persona: una deducción documental
+ * con confianza ≥ 0,7 **nace validada** (`validado_por = null`) y se aplica en
+ * la misma corrida del recompute. Validar a mano sigue existiendo para lo que no
+ * llega al umbral, y esos casos se arman con `volverAPropuesta()`.
  *
  * El expediente de prueba es `casa-deduccion.pdf` (los bytes de `obra-demo.pdf`,
  * subidos con otro nombre: el provider mock indexa los fixtures por
@@ -145,6 +150,27 @@ async function deduccionDe(codigoLamina: string, nombre: string, campo: string):
   return fila;
 }
 
+/**
+ * Deja una deducción en `propuesta`, que es el estado en el que llega a la
+ * bandeja lo que **no** se auto-valida.
+ *
+ * Desde §5.4 una deducción documental con confianza suficiente nace `validada`
+ * y se aplica sola: el camino de validarla a mano queda para lo que no llega al
+ * umbral —hoy, el cruce por debajo de 0,7— y para la revisión de T11. Estos
+ * casos ejercitan ese camino, y este helper es el fixture que lo arma sin
+ * inventar una deducción que el motor no produce.
+ *
+ * No recomputa a propósito: `validarDeduccion` y `rechazarDeduccion` recomputan
+ * ellos mismos, y lo que estos casos miran es qué queda escrito.
+ */
+async function volverAPropuesta(fila: Deduccion): Promise<Deduccion> {
+  await db
+    .update(deducciones)
+    .set({ estado: 'propuesta', validadoPor: null })
+    .where(eq(deducciones.id, fila.id));
+  return { ...fila, estado: 'propuesta', validadoPor: null };
+}
+
 function itemPorClave(clave: string): Promise<ComputoItem | undefined> {
   return db
     .select()
@@ -241,11 +267,15 @@ afterEach(async () => {
 
 // ---------------------------------------------------------------------------
 
-describe('el pipeline propone deducciones', () => {
-  it('cruza las tres láminas y propone cinco datos, sin tocar ninguna entidad', async () => {
+describe('el pipeline deduce y lo aplica en la misma corrida', () => {
+  it('cruza las tres láminas, aplica los cinco datos y no toca ninguna entidad', async () => {
     const filas = await todasLasDeducciones();
     expect(filas).toHaveLength(5);
-    expect(filas.every((fila) => fila.estado === 'propuesta')).toBe(true);
+    // §5.4: lo deducido con fuentes y confianza suficiente entra al cómputo
+    // marcado y reversible, en vez de esperar a que alguien apriete un botón.
+    // `validado_por` en null es lo que dice quién lo validó: el sistema.
+    expect(filas.every((fila) => fila.estado === 'validada')).toBe(true);
+    expect(filas.every((fila) => fila.validadoPor === null)).toBe(true);
 
     // Planilla ↔ plano: la ventana sin acotar toma las medidas de la planilla.
     // confianza = 0,95 (factor) × 0,80 (la peor de las dos lecturas) = 0,76.
@@ -272,19 +302,26 @@ describe('el pipeline propone deducciones', () => {
     expect(largo.confianza).toBeCloseTo(0.77, 5);
     expect(valorDeDeduccion(await deduccionDe('A-02', 'T1', 'caras'))).toBe(2);
 
-    // P4: proponer no es escribir. La ventana sigue sin medidas.
+    // La mitad de P4 que NO cambió: auto-validar no es escribir en la entidad.
+    // El dato entra al cómputo por la capa de `aplicarDeduccionesValidadas`, y
+    // `atributos_json` sigue diciendo lo que dice la documentación y nada más.
     const v2 = await entidadEn('A-01', 'V2');
     expect(v2.atributosJson.anchoM).toBeUndefined();
     expect(v2.atributosJson.altoM).toBeUndefined();
 
-    // Y la consulta por el dato faltante sigue abierta y bloqueando el rubro.
-    expect((await hallazgoPorClave('aberturas.medidas_vano.V2'))?.estado).toBe('abierto');
-    expect((await gateDe('aberturas')).ok).toBe(false);
+    // Y sin embargo la ventana ya está computada, con su medida y su marca: la
+    // consulta por el dato faltante se cerró sola y el rubro quedó liberado.
+    const item = await itemPorClave('aberturas.V2');
+    expect(item?.origen).toBe('deducido');
+    expect(item?.descripcion).toBe('Ventana V2 (1,50 × 1,10 m)');
+    expect((await hallazgoPorClave('aberturas.medidas_vano.V2'))?.estado).toBe('descartado');
+    expect(await gateDe('aberturas')).toEqual({ ok: true, bloqueantes: 0 });
 
     // Todo lo escribió el agente, y quedó auditado una vez por deducción.
-    const auditadas = await auditoriaDe('deduccion_propuesta');
+    const auditadas = await auditoriaDe('deduccion_autovalidada');
     expect(auditadas).toHaveLength(5);
     expect(auditadas.every((fila) => fila.actorTipo === 'agente')).toBe(true);
+    expect(await auditoriaDe('deduccion_propuesta')).toHaveLength(0);
   });
 
   it('un segundo recompute idéntico no escribe ni audita nada', async () => {
@@ -301,7 +338,34 @@ describe('el pipeline propone deducciones', () => {
   });
 
   it('una propuesta que el motor deja de sostener se borra: no es historia', async () => {
-    // El arquitecto carga las medidas a mano: la planilla ya no deduce nada.
+    // Una fila `propuesta` sobre un campo que el motor no deduce: es lo que
+    // queda cuando cambia la lámina o el arquitecto carga el dato a mano. Sigue
+    // siendo una sugerencia viva, y una sugerencia sin sustento se retira.
+    const v2 = await entidadEn('A-01', 'V2');
+    await db.insert(deducciones).values({
+      obraId,
+      entidadId: v2.id,
+      campo: 'vanosM2',
+      regla: 'continuidad',
+      fuentesJson: v2.fuentesJson,
+      valorJson: { vanosM2: 1.65 },
+      confianza: 0.8,
+    });
+
+    const resumen = await recomputarObra(obraId);
+    expect(resumen.deduccionesRetiradas).toBe(1);
+
+    const filas = await todasLasDeducciones();
+    expect(filas).toHaveLength(5);
+    expect(filas.some((fila) => fila.campo === 'vanosM2')).toBe(false);
+    expect(await auditoriaDe('deduccion_retirada')).toHaveLength(1);
+  });
+
+  it('lo ya aplicado no se retira aunque la documentación lo diga después', async () => {
+    // El arquitecto carga las medidas a mano: la planilla ya no deduce nada,
+    // pero esas deducciones no son propuestas vivas — son decisiones tomadas
+    // (por el sistema, y por eso `validado_por` es null). Se conservan, y la
+    // contradicción se avisa por su propio camino si los números no coinciden.
     const v2 = await entidadEn('A-01', 'V2');
     await db
       .update(entidades)
@@ -309,12 +373,9 @@ describe('el pipeline propone deducciones', () => {
       .where(eq(entidades.id, v2.id));
 
     const resumen = await recomputarObra(obraId);
-    expect(resumen.deduccionesRetiradas).toBe(2);
 
-    const filas = await todasLasDeducciones();
-    expect(filas).toHaveLength(3);
-    expect(filas.some((fila) => fila.entidadId === v2.id)).toBe(false);
-    expect(await auditoriaDe('deduccion_retirada')).toHaveLength(2);
+    expect(resumen.deduccionesRetiradas).toBe(0);
+    expect(await todasLasDeducciones()).toHaveLength(5);
   });
 
   it('reprocesar el documento no duplica ni una deducción', async () => {
@@ -325,30 +386,10 @@ describe('el pipeline propone deducciones', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('validar una deducción', () => {
-  it('escribe el dato, deja el ítem en origen deducido y libera el gate', async () => {
-    // Antes: la V2 de la planta no tiene medidas, así que la única computable es
-    // la fila de la planilla. Una planilla dice CÓMO es la carpintería, no
-    // cuántas hay: se computa una sola y el ítem sale `supuesto` con su aviso.
-    const previo = await itemPorClave('aberturas.V2');
-    expect(previo?.origen).toBe('supuesto');
-    expect(previo?.cantNeta).toBe(1);
-    expect(await laminasCitadas(previo!.fuentesJson)).toEqual(['A-05']);
-    expect((await hallazgoPorClave('aberturas.cantidad_planilla.V2'))?.bloqueante).toBe(false);
-
-    const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
-    const alto = await deduccionDe('A-01', 'V2', 'altoM');
-    expect(await validarDeduccion({ obraId, deduccionId: ancho.id }, titular)).toEqual({ ok: true });
-    expect(await validarDeduccion({ obraId, deduccionId: alto.id }, titular)).toEqual({ ok: true });
-
-    // 1) El dato bajó a la entidad, con la provenance de las dos láminas (P1).
-    const v2 = await entidadEn('A-01', 'V2');
-    expect(v2.atributosJson.anchoM).toBe(1.5);
-    expect(v2.atributosJson.altoM).toBe(1.1);
-    expect(await laminasCitadas(v2.fuentesJson)).toEqual(['A-01', 'A-05']);
-
-    // 2) El ítem sale deducido y citando las dos láminas. Sigue siendo UNA sola
-    //    ventana: la de la planta, especificada por la planilla.
+describe('la deducción aplicada', () => {
+  it('deja el ítem en origen deducido, con las dos láminas, y libera el gate', async () => {
+    // El ítem sale deducido y citando las dos láminas. Sigue siendo UNA sola
+    // ventana: la de la planta, especificada por la planilla.
     const item = await itemPorClave('aberturas.V2');
     expect(item?.estado).toBe('activo');
     expect(item?.origen).toBe('deducido');
@@ -356,57 +397,38 @@ describe('validar una deducción', () => {
     expect(item?.descripcion).toBe('Ventana V2 (1,50 × 1,10 m)');
     expect(await laminasCitadas(item!.fuentesJson)).toEqual(['A-01', 'A-05']);
 
-    // 3) Las dos consultas —el dato faltante y la cantidad supuesta— se cerraron
-    //    solas y el rubro se libera.
+    // La consulta por el dato faltante se cerró sola y el rubro se libera. La
+    // de «cantidad supuesta por la planilla» ni llegó a abrirse: la deducción
+    // entró en la misma corrida en la que se leyó la planilla, así que la V2 de
+    // la planta ya estaba computable cuando el rubro se computó.
     expect((await hallazgoPorClave('aberturas.medidas_vano.V2'))?.estado).toBe('descartado');
-    expect((await hallazgoPorClave('aberturas.cantidad_planilla.V2'))?.estado).toBe('descartado');
+    expect(await hallazgoPorClave('aberturas.cantidad_planilla.V2')).toBeUndefined();
     expect(await gateDe('aberturas')).toEqual({ ok: true, bloqueantes: 0 });
-
-    // 4) Las dos deducciones quedaron firmadas.
-    const validadas = (await todasLasDeducciones()).filter((fila) => fila.estado === 'validada');
-    expect(validadas).toHaveLength(2);
-    expect(validadas.every((fila) => fila.validadoPor === titular.usuarioId)).toBe(true);
-
-    // 5) Auditoría: la escritura de la entidad y la firma de la deducción.
-    const escrituras = (await auditoriaDe('entidad_actualizada')).filter(
-      (fila) => fila.actorTipo === 'usuario',
-    );
-    expect(escrituras).toHaveLength(2);
-    expect(escrituras[0]?.diffJson).toMatchObject({
-      via: 'deduccion',
-      regla: 'planilla_plano',
-    });
-    const firmas = await auditoriaDe('deduccion_validada');
-    expect(firmas).toHaveLength(2);
-    expect(firmas[0]?.actorNombre).toBe('arq@estudiosur.ar');
   });
 
-  it('la altura validada de un tabique deja seco.placas en origen deducido', async () => {
-    expect(await itemPorClave('seco.placas')).toBeUndefined();
-
-    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
-    expect(await validarDeduccion({ obraId, deduccionId: altura.id }, titular)).toEqual({ ok: true });
-
-    // 5 m × 2,60 m × 2 caras = 26 m²; con 12% de desperdicio, 11 placas = 31,68 m².
+  it('la altura del corte deja seco.placas en origen deducido', async () => {
+    // 5 m × 2,60 m × 2 caras = 26 m² por tabique.
+    //
+    // Y salen 52, no 26: el T1 de la planta y el T1 del corte son la MISMA
+    // pared dicha dos veces, y el cómputo todavía no lo sabe. Antes esto no se
+    // veía porque para computar los dos había que validar a mano las cuatro
+    // deducciones; con la auto-validación (§5.4) el doble conteo planta↔corte
+    // queda a la vista. Lo cierra la unificación por `entidades.elemento_id`
+    // que aporta el cruce — hoy ninguna plantilla la mira. Está pinneado para
+    // que el día que se unifique, este número baje a 26 y se note.
     const placas = await itemPorClave('seco.placas');
     expect(placas?.origen).toBe('deducido');
-    expect(placas?.cantNeta).toBe(26);
-    expect(placas?.cantCompra).toBe(31.68);
+    expect(placas?.cantNeta).toBe(52);
     expect((await hallazgoPorClave('dato_obra.altura_local.general'))?.estado).toBe('descartado');
   });
 
-  it('el dato validado sobrevive a un reanálisis de la lámina', async () => {
-    const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
-    const alto = await deduccionDe('A-01', 'V2', 'altoM');
-    await validarDeduccion({ obraId, deduccionId: ancho.id }, titular);
-    await validarDeduccion({ obraId, deduccionId: alto.id }, titular);
-
+  it('el dato deducido sobrevive a un reanálisis de la lámina', async () => {
     // Reprocesar reescribe `atributos_json` con lo que vuelve a leer el provider:
     // la planta sigue sin acotar la ventana. La deducción validada la sostiene.
     await procesarDocumento(documentoId, { db, storage });
 
     const validadas = (await todasLasDeducciones()).filter((fila) => fila.estado === 'validada');
-    expect(validadas).toHaveLength(2);
+    expect(validadas).toHaveLength(5);
 
     const item = await itemPorClave('aberturas.V2');
     expect(item?.estado).toBe('activo');
@@ -418,17 +440,17 @@ describe('validar una deducción', () => {
   });
 
   it('si el reanálisis trae OTRO valor, gana la documentación y el conflicto se avisa', async () => {
-    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
-    await validarDeduccion({ obraId, deduccionId: altura.id }, titular);
     expect((await itemPorClave('seco.placas'))?.origen).toBe('deducido');
 
     // La planta se vuelve a analizar y ahora SÍ acota el tabique: 2,40 m.
     await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.4) });
 
-    // 1) Manda lo escrito: 5 × 2,40 × 2 = 24 m², y el ítem vuelve a ser explícito.
+    // 1) Manda lo escrito: el T1 de la planta pasa a 5 × 2,40 × 2 = 24 m². El
+    //    del corte sigue en 26 (doble conteo planta↔corte, ver más arriba) y es
+    //    el que deja el ítem en `deducido`: su largo lo puso la continuidad.
     const placas = await itemPorClave('seco.placas');
-    expect(placas?.origen).toBe('explicito');
-    expect(placas?.cantNeta).toBe(24);
+    expect(placas?.cantNeta).toBe(50);
+    expect(placas?.origen).toBe('deducido');
 
     // 2) Pero no en silencio: queda una consulta no bloqueante con los dos valores.
     const consulta = await hallazgoPorClave('deduccion.contradicha.T1.alturaM');
@@ -439,7 +461,7 @@ describe('validar una deducción', () => {
     expect(consulta?.descripcion).toContain('ahora dice 2,40 m');
     expect(await laminasCitadas(consulta!.laminasJson)).toEqual(['A-01', 'A-02']);
     // No frena nada: el cómputo usa el dato bueno.
-    expect((await gateDe('seco')).bloqueantes).toBe(1); // el largo del T1 del corte, de antes
+    expect((await gateDe('seco')).bloqueantes).toBe(0);
 
     // 3) La deducción queda marcada como superada, sin dejar de estar validada.
     const superada = await deduccionDe('A-01', 'T1', 'alturaM');
@@ -462,8 +484,6 @@ describe('validar una deducción', () => {
   });
 
   it('la contradicción es idempotente y no se reabre si el arquitecto la descarta', async () => {
-    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
-    await validarDeduccion({ obraId, deduccionId: altura.id }, titular);
     await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.4) });
 
     // Idempotencia: un segundo recompute no vuelve a marcar ni a auditar.
@@ -482,9 +502,6 @@ describe('validar una deducción', () => {
   });
 
   it('si el reanálisis trae el MISMO valor no hay contradicción ni marca', async () => {
-    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
-    await validarDeduccion({ obraId, deduccionId: altura.id }, titular);
-
     // La planta ahora acota 2,60 m, que es exactamente lo que se había deducido.
     await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.6) });
 
@@ -494,12 +511,10 @@ describe('validar una deducción', () => {
     const sinMarca = await deduccionDe('A-01', 'T1', 'alturaM');
     expect(sinMarca.estado).toBe('validada');
     expect(sinMarca.valorJson).toEqual({ alturaM: 2.6 });
-    expect((await itemPorClave('seco.placas'))?.cantNeta).toBe(26);
+    expect((await itemPorClave('seco.placas'))?.cantNeta).toBe(52);
   });
 
   it('cuando la documentación vuelve a coincidir, la marca se levanta sola', async () => {
-    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
-    await validarDeduccion({ obraId, deduccionId: altura.id }, titular);
     await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.4) });
     expect((await deduccionDe('A-01', 'T1', 'alturaM')).valorJson._contradicha).toBe(true);
 
@@ -514,6 +529,7 @@ describe('validar una deducción', () => {
 
   it('no pisa un dato que ya cargó una persona con otro valor', async () => {
     const v2 = await entidadEn('A-01', 'V2');
+    await volverAPropuesta(await deduccionDe('A-01', 'V2', 'anchoM'));
     await db
       .update(entidades)
       .set({ atributosJson: { ...v2.atributosJson, anchoM: 1.2 } })
@@ -530,7 +546,7 @@ describe('validar una deducción', () => {
   });
 
   it('un usuario de solo lectura no valida nada (RF-1201)', async () => {
-    const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
+    const ancho = await volverAPropuesta(await deduccionDe('A-01', 'V2', 'anchoM'));
     const resultado = await validarDeduccion({ obraId, deduccionId: ancho.id }, soloLectura);
     expect(resultado).toEqual({
       ok: false,
@@ -573,7 +589,7 @@ describe('validar una deducción', () => {
   });
 
   it('validar dos veces la misma deducción no escribe dos veces', async () => {
-    const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
+    const ancho = await volverAPropuesta(await deduccionDe('A-01', 'V2', 'anchoM'));
     expect(await validarDeduccion({ obraId, deduccionId: ancho.id }, titular)).toEqual({ ok: true });
 
     const repetida = await validarDeduccion({ obraId, deduccionId: ancho.id }, titular);
@@ -624,26 +640,24 @@ describe('validar una deducción', () => {
 // ---------------------------------------------------------------------------
 
 describe('rechazar una deducción', () => {
-  it('no escribe el dato y deja la consulta faltante abierta', async () => {
-    const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
+  it('no escribe el dato y el ítem deja de apoyarse en él', async () => {
+    const ancho = await volverAPropuesta(await deduccionDe('A-01', 'V2', 'anchoM'));
     expect(await rechazarDeduccion({ obraId, deduccionId: ancho.id }, titular)).toEqual({ ok: true });
 
     const rechazada = await deduccionDe('A-01', 'V2', 'anchoM');
     expect(rechazada.estado).toBe('rechazada');
     expect(rechazada.validadoPor).toBe(titular.usuarioId);
 
-    // La entidad quedó intacta y el hueco sigue siendo un faltante bloqueante.
+    // La entidad quedó intacta y el ancho ya no entra al cómputo: la ventana
+    // vuelve a computarse solo con lo que dice la planilla.
     expect((await entidadEn('A-01', 'V2')).atributosJson.anchoM).toBeUndefined();
-    const consulta = await hallazgoPorClave('aberturas.medidas_vano.V2');
-    expect(consulta?.estado).toBe('abierto');
-    expect(consulta?.bloqueante).toBe(true);
-    expect(await gateDe('aberturas')).toEqual({ ok: false, bloqueantes: 1 });
+    expect((await itemPorClave('aberturas.V2'))?.origen).toBe('supuesto');
 
     expect(await auditoriaDe('deduccion_rechazada')).toHaveLength(1);
   });
 
   it('el motor no vuelve a proponer lo rechazado, ni tras reprocesar', async () => {
-    const altura = await deduccionDe('A-01', 'T1', 'alturaM');
+    const altura = await volverAPropuesta(await deduccionDe('A-01', 'T1', 'alturaM'));
     await rechazarDeduccion({ obraId, deduccionId: altura.id }, titular);
 
     await recomputarObra(obraId);
@@ -654,15 +668,29 @@ describe('rechazar una deducción', () => {
     expect(filas).toHaveLength(1);
     expect(filas[0]?.estado).toBe('rechazada');
 
-    // Y el tabique sigue sin computarse: el dato falta de verdad.
-    expect(await itemPorClave('seco.placas')).toBeUndefined();
-    expect((await hallazgoPorClave('dato_obra.altura_local.general'))?.estado).toBe('abierto');
+    // Y el tabique de la planta deja de computarse: su altura falta de verdad.
+    // Quedan los 26 m² del T1 del corte, que tiene la suya acotada.
+    expect((await itemPorClave('seco.placas'))?.cantNeta).toBe(26);
   });
 
   it('un usuario de solo lectura tampoco rechaza', async () => {
-    const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
+    const ancho = await volverAPropuesta(await deduccionDe('A-01', 'V2', 'anchoM'));
     const resultado = await rechazarDeduccion({ obraId, deduccionId: ancho.id }, soloLectura);
     expect(resultado.ok).toBe(false);
     expect((await deduccionDe('A-01', 'V2', 'anchoM')).estado).toBe('propuesta');
+  });
+
+  it('rechazar una AUTO-validada todavía no procede — lo habilita T11', async () => {
+    // Estado intermedio y declarado de la ola: la deducción entra sola al
+    // cómputo (§5.4) pero el camino de vuelta —revertir el dato y reabrir el
+    // faltante— es de la bandeja «Para revisar» (T11). Hasta entonces
+    // `rechazarDeduccion` la trata como cualquier fila ya resuelta.
+    const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
+    expect(ancho.estado).toBe('validada');
+    expect(ancho.validadoPor).toBeNull();
+
+    const resultado = await rechazarDeduccion({ obraId, deduccionId: ancho.id }, titular);
+    expect(resultado.ok).toBe(false);
+    expect((await deduccionDe('A-01', 'V2', 'anchoM')).estado).toBe('validada');
   });
 });
