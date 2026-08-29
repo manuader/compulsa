@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { PDFDocument } from 'pdf-lib';
+import { degrees, PDFDocument } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import { separarPaginas, separarPaginasConTamano } from '@/lib/pdf/split';
 import { extraerTexto } from '@/lib/pdf/texto';
@@ -72,7 +72,7 @@ describe('separarPaginasConTamano', () => {
   it('aplica la rotación de la página: mide como se ve, no como está guardada', async () => {
     const doc = await PDFDocument.create();
     const pagina = doc.addPage([595.28, 841.89]);
-    pagina.setRotation({ type: 'degrees', angle: 90 });
+    pagina.setRotation(degrees(90));
 
     const [separada] = await separarPaginasConTamano(await doc.save());
 

@@ -106,7 +106,11 @@ function instruccionInventario(lamina: LaminaInput): string {
  * para no pagarla. `effort: 'low'` porque leer un rótulo es transcribir, no
  * razonar — es lo que hace que la fase sea barata de verdad.
  */
-async function pedirInventario(cliente: Anthropic, lamina: LaminaInput): Promise<RotuloDetectado> {
+async function pedirInventario(
+  cliente: Anthropic,
+  lamina: LaminaInput,
+  ctx?: ObraContexto,
+): Promise<RotuloDetectado> {
   const respuesta = await cliente.messages.parse({
     model: modelo(),
     max_tokens: 4000,
@@ -133,10 +137,13 @@ async function pedirInventario(cliente: Anthropic, lamina: LaminaInput): Promise
 
   // RNF-7: `inventario_llm` es el tercero de los cuatro renglones que suman el
   // costo de una obra (`analisis_llm`, `inventario_llm`, `cruce_llm`,
-  // `busqueda_llm`). Sin `obraId`: el inventario corre sin `ObraContexto` —el
-  // índice de la obra es justamente lo que esta fase construye—, así que el
-  // vínculo con la obra queda por `targetRef` (lámina → obra).
+  // `busqueda_llm`). El `ctx` no viaja al prompt —el índice de la obra es
+  // justamente lo que esta fase construye— pero sí trae el `obraId`: sin él la
+  // fila queda sin obra y el inventario, que es una llamada por lámina, no se
+  // ve en la auditoría del estudio, que es donde se responde cuánto costó
+  // analizar una obra.
   await registrarAuditoria({
+    obraId: ctx?.obraId,
     actorTipo: 'agente',
     actorNombre: 'analisis-claude',
     accion: 'inventario_llm',
@@ -274,8 +281,8 @@ export function crearProviderClaude(): AnalysisProvider {
     // rótulo caro y estaría bien; si lo escribiera, la extracción posterior
     // recibiría una promesa que nunca tuvo entidades — que es un bug, no un
     // ahorro.
-    async inventariar(lamina) {
-      return pedirInventario(cliente, lamina);
+    async inventariar(lamina, ctx) {
+      return pedirInventario(cliente, lamina, ctx);
     },
     async extraerEntidades(lamina, ctx) {
       return structuredClone((await analizar(lamina, ctx)).entidades);

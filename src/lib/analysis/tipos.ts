@@ -38,16 +38,23 @@ export interface AnalysisProvider {
    * Es la fase de **inventario**: antes de extraer nada, el pipeline recorre el
    * expediente entero leyendo únicamente rótulos, para que la extracción de
    * cada lámina arranque con el índice completo en su `ObraContexto`. Por eso
-   * no recibe contexto —todavía no hay índice que pasarle— y por eso en
-   * `claude.ts` **no comparte el caché por lámina** de `leerRotulo`: ese caché
-   * guarda la extracción completa, y el inventario es justamente la pasada que
-   * no la paga.
+   * en `claude.ts` **no comparte el caché por lámina** de `leerRotulo`: ese
+   * caché guarda la extracción completa, y el inventario es justamente la
+   * pasada que no la paga.
    *
-   * **Opcional y aditivo**, igual que el `ctx` de `leerRotulo`: un provider que
-   * no lo implemente sigue siendo un `AnalysisProvider` válido. Quien lo
-   * consuma llama a `inventariarLamina()`, que cae a `leerRotulo` si no está.
+   * El `ctx` es **opcional y aditivo**, igual que el de `leerRotulo`, pero acá
+   * no viaja al prompt: el índice de la obra es justamente lo que esta fase
+   * construye, así que todavía no hay nada que contarle al modelo. Viaja por
+   * el **costo** (RNF-7): sin `ctx.obraId`, la fila `inventario_llm` de
+   * `auditoria` queda sin obra y el consumo del inventario —una llamada por
+   * lámina, la primera de todas— es invisible en `/estudio/auditoria`, que es
+   * donde se responde cuánto costó analizar una obra.
+   *
+   * Un provider que no implemente el método sigue siendo un `AnalysisProvider`
+   * válido. Quien lo consuma llama a `inventariarLamina()`, que cae a
+   * `leerRotulo` si no está.
    */
-  inventariar?(lamina: LaminaInput): Promise<RotuloDetectado>;
+  inventariar?(lamina: LaminaInput, ctx?: ObraContexto): Promise<RotuloDetectado>;
 }
 
 /**
@@ -57,12 +64,18 @@ export interface AnalysisProvider {
  * La caída no es una degradación silenciosa: `leerRotulo` devuelve exactamente
  * el mismo `RotuloDetectado`, solo que por el camino caro (en `claude.ts`,
  * resolviendo también las entidades y dejándolas cacheadas).
+ *
+ * El `ctx` se reenvía a las dos ramas: las dos escriben su fila de costo y
+ * ninguna de las dos puede quedar sin obra (RNF-7).
  */
 export function inventariarLamina(
   provider: AnalysisProvider,
   lamina: LaminaInput,
+  ctx?: ObraContexto,
 ): Promise<RotuloDetectado> {
-  return provider.inventariar ? provider.inventariar(lamina) : provider.leerRotulo(lamina);
+  return provider.inventariar
+    ? provider.inventariar(lamina, ctx)
+    : provider.leerRotulo(lamina, ctx);
 }
 
 /**
