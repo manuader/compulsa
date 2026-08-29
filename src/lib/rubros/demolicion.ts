@@ -14,16 +14,15 @@
  * elemento, si no el dato de obra del local (`altura_local.<nivel|general>`) y,
  * si tampoco, UNA consulta para todos los que la esperan.
  *
- * ## Superposición conocida con `aberturas.retiro.<tag>`
+ * ## Este rubro es el único dueño de lo que se saca
  *
- * `src/lib/rubros/aberturas.ts` emite desde F0 un `aberturas.retiro.<tag>` por
- * cada carpintería a demoler, que es exactamente la misma tarea que
- * `demolicion.carpinterias` cuenta acá: hoy una obra con carpinterías a retirar
- * las ve dos veces en la planilla. La clave nueva la fija el plan (§«Claves de
- * ítem nuevas») y `aberturas.ts` está fuera del alcance de esta tarea; el
- * arreglo es de una línea —que `aberturas.ts` saltee `alcance === 'demolicion'`
- * en vez de agregar a `retiros`— y hay que hacerlo con sus tests pinneados a la
- * vista. TODO(integración): sacar el retiro de aberturas.
+ * `demolicion.carpinterias` cuenta **todas** las carpinterías a retirar, y
+ * `demolicion.muros` todos los m² de mampostería y durlock que se tiran. Los
+ * rubros que construyen no computan nada de eso: `aberturas.ts` y `gruesa.ts`
+ * saltean lo que está marcado `demoler`. Antes emitían su propia versión
+ * (`aberturas.retiro.<tag>` y `gruesa.demolicion`), y con las dos vivas una obra
+ * de reforma pedía dos veces la misma tarea en la misma planilla. Si algún rubro
+ * vuelve a emitir un ítem de retiro o de demolición, eso es el bug.
  */
 import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import { armarItem } from '@/lib/computo/presentacion';

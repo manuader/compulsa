@@ -57,7 +57,7 @@ function entidad(
 }
 
 const ENTIDADES: readonly EntidadPersistida[] = [
-  // aberturas → 'a medida' (nuevas) y 'global' (retiro)
+  // aberturas → 'a medida'; la que se retira (P9) es del rubro demolición
   entidad('a1', 'abertura', 'V2', { tag: 'V2', tipologia: 'ventana', anchoM: 1.5, altoM: 1.2 }),
   entidad('a2', 'abertura', 'P1', { tag: 'P1', tipologia: 'puerta', anchoM: 0.9, altoM: 2.05 }),
   entidad('a3', 'abertura', 'P9', { tag: 'P9', tipologia: 'puerta' }, 'demoler'),
@@ -112,7 +112,6 @@ const FORMAS_ESPERADAS: Record<string, RegExp> = {
 const FORMA_POR_ITEM: Record<string, keyof typeof FORMAS_ESPERADAS> = {
   'aberturas.V2': 'a medida',
   'aberturas.P1': 'a medida',
-  'aberturas.retiro.P9': 'global',
   'seco.placas': 'placas',
   'seco.soleras': 'barras',
   'seco.montantes': 'tiras',

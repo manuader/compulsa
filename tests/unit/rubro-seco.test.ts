@@ -299,6 +299,26 @@ describe('plantilla seco: sin dato de obra, UNA sola pregunta', () => {
     expect(porClave(items)['seco.placas']!.cantNeta).toBe(62.4);
   });
 
+  it('cada nivel pregunta lo suyo: dos claves, dos grupos de afectados', () => {
+    // El caso que rompe una implementación que guarda "la" clave en vez de un
+    // mapa: dos tabiques de PB y dos sin nivel, en la misma corrida.
+    const [t1, t2, t3, t4] = cuatroSinAltura();
+    const enPB = [t1!, t2!].map((entidad) => ({
+      ...entidad,
+      atributos: { ...entidad.atributos, nivel: 'PB' },
+    }));
+    const { hallazgos } = plantillaSeco.computar([...enPB, t3!, t4!], 'nueva');
+
+    expect(hallazgos.map((h) => h.clave)).toEqual([
+      'dato_obra.altura_local.PB',
+      'dato_obra.altura_local.general',
+    ]);
+    expect(hallazgos[0]!.targetDato?.entidades).toEqual(['t1', 't2']);
+    expect(hallazgos[1]!.targetDato?.entidades).toEqual(['t3', 't4']);
+    expect(hallazgos[0]!.descripcion).toContain('T1 y T2');
+    expect(hallazgos[1]!.descripcion).toContain('T3 y T4');
+  });
+
   it('una altura por nivel le gana a la general', () => {
     const enPB = cuatroSinAltura().map((entidad) => ({
       ...entidad,
