@@ -152,8 +152,8 @@ const zEdicion = z.object({
   /**
    * El precio unitario que carga el arquitecto, en es-AR (`12.500,50`).
    *
-   * Ausente ⇒ no se toca. Vacío ⇒ se borra el precio manual y el próximo
-   * recompute vuelve a la cascada (lista del estudio → índice). Es la **única**
+   * Ausente ⇒ no se toca. Vacío ⇒ se borra el precio manual y se recompone la
+   * cascada en el acto (lista del estudio → índice). Es la **única**
    * puerta por la que entra un `precio_json` con `fuente: 'manual'`: el resto
    * de los precios los pone `sincronizarPrecios` desde tablas que cargó una
    * persona, y la IA no participa en ninguno de los dos caminos (§5.6).
@@ -331,6 +331,16 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
       ? { ...diff, precio: { antes: item.precioJson, despues: precioNuevo ?? null } }
       : diff,
   });
+
+  // Borrar el precio manual es pedir explícitamente «volvé a la lista»: sin
+  // esto el ítem se quedaba sin precio hasta que algo más disparara un
+  // recompute, y el arquitecto veía un guion donde esperaba el precio de la
+  // lista. Solo en ese caso: recomputar en cada edición de precio sería pagar
+  // una corrida entera para escribir un número que ya tenemos.
+  if (precioNuevo === null && cambiaPrecio) {
+    const { recomputarObra } = await import('@/lib/pipeline/recomputar');
+    await recomputarObra(obra.id, { db });
+  }
 
   await revalidarPlanilla(obra.id);
   return { ok: true };
