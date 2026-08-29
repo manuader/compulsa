@@ -57,9 +57,14 @@ export interface EntidadDetectada {
 //   tabique:   largoM, alturaM?, caras? (default 2), tipo ('durlock')
 //   muro:      largoM, alturaM?, espesorM?, tipo ('mamposteria')
 //   terminacion: superficieM2, ubicacion ('piso'|'cielorraso'|'pared'), ambiente (nombre), material?
-//   tramo:     sistema ('af'|'ac'|'cloacal'|'pluvial'), diametro (string, ej. "20", "110"), longitudM?, material?
+//   tramo:     sistema ('af'|'ac'|'cloacal'|'pluvial'), diametro (string, ej. "20", "110"), longitudM?, material?,
+//              ambiente? (nombre del local que atraviesa o al que sirve, solo si es evidente)
 //   accesorio: tipo ('codo90'|'codo45'|'te'|'valvula'), sistema, diametro
+//   artefacto: ambiente? (nombre del local donde está)
 //   boca:      tipo ('toma'|'luz'|'caja'|'tablero'|'datos'), circuito?
+// `ambiente` de artefacto y de tramo es el mismo nombre de local, escrito igual:
+// es lo que hace correr el control del §22 (un artefacto sin desagüe que le
+// corresponda en su propio local). Nombres distintos = control que no dispara.
 
 export interface RotuloDetectado {
   titulo: string | null; codigo: string | null;
