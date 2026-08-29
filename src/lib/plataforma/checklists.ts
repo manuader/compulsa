@@ -155,11 +155,10 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
       bloqueante: true,
     },
   ],
-  // Los cuatro rubros nuevos traen **solo** el degradado por confianza, que no
-  // lo emite la plantilla sino `taxonomia.ts` para todo rubro. El resto de sus
-  // ítems entra con el cómputo real — TODO(T6) terminaciones y demolición,
-  // TODO(T7) sanitaria y eléctrica —, y declararlos antes sería prometer un
-  // chequeo que hoy nadie hace.
+  // Terminaciones y demolición siguen en stub y traen **solo** el degradado por
+  // confianza, que no lo emite la plantilla sino `taxonomia.ts` para todo
+  // rubro. El resto de sus ítems entra con el cómputo real (TODO T6), y
+  // declararlos antes sería prometer un chequeo que hoy nadie hace.
   terminaciones: [
     {
       itemId: 'terminaciones.baja_confianza',
@@ -169,6 +168,39 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
   ],
   sanitaria: [
     {
+      itemId: 'sanitaria.sistema_tramos',
+      descripcion:
+        'Cada tramo de cañería declara su sistema (agua fría, agua caliente, cloacal o pluvial).',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.diametro_tramos',
+      descripcion: 'Cada tramo de cañería tiene diámetro.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.longitud_tramos',
+      descripcion: 'Cada tramo de cañería tiene longitud acotada.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.tipo_accesorios',
+      descripcion: 'Cada accesorio declara qué pieza es (codo 90°, codo 45°, te o válvula).',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.diametro_accesorios',
+      descripcion: 'Cada accesorio tiene diámetro.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.correspondencia',
+      descripcion: 'Cada artefacto tiene un tramo de desagüe cloacal en su mismo ambiente.',
+      // Nace en `false`: el desagüe puede estar dibujado en otra lámina, y
+      // frenar el rubro entero por un aviso de coherencia sería un cepo.
+      bloqueante: false,
+    },
+    {
       itemId: 'sanitaria.baja_confianza',
       descripcion:
         'Ningún ítem de instalación sanitaria se apoya en datos por debajo del umbral de confianza.',
@@ -176,6 +208,11 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
     },
   ],
   electrica: [
+    {
+      itemId: 'electrica.tipo_bocas',
+      descripcion: 'Cada boca declara de qué tipo es (toma, luz, caja, tablero o datos).',
+      bloqueante: true,
+    },
     {
       itemId: 'electrica.baja_confianza',
       descripcion:
