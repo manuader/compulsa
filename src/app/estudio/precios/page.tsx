@@ -17,7 +17,7 @@ import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { getDb } from '@/db/client';
 import { requireUser } from '@/lib/auth/guards';
-import { formatearImporte, formatearMonto } from '@/lib/compulsa/comparativa';
+import { formatearMonto } from '@/lib/compulsa/comparativa';
 import { esRolSuficiente } from '@/lib/plataforma/roles';
 import { listarPrecios } from '@/lib/precios/gestion';
 
@@ -29,6 +29,19 @@ export const metadata: Metadata = { title: 'Precios del estudio' };
 function fechaEsAr(iso: string): string {
   const [anio, mes, dia] = iso.split('-');
   return dia === undefined ? iso : `${dia}/${mes}/${anio}`;
+}
+
+/**
+ * El precio como hay que meterlo en el input: coma decimal y **sin separador de
+ * miles**.
+ *
+ * `formatearImporte` (el de la tabla) escribe `145.000`, y `parsearPrecio` lee
+ * un separador solo, una sola vez, como el decimal —la convención es-AR—, así
+ * que abrir el diálogo de edición de un precio de 145.000 y guardarlo sin
+ * tocarlo lo dejaría en 145. Con `145000` no hay nada que interpretar.
+ */
+function precioEditable(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(n).replace('.', ',');
 }
 
 export default async function PreciosEstudioPage() {
@@ -43,7 +56,7 @@ export default async function PreciosEstudioPage() {
     descripcion: fila.descripcion,
     unidad: fila.unidad,
     precioFormateado: formatearMonto(fila.moneda, fila.precio),
-    precioEditable: formatearImporte(fila.precio),
+    precioEditable: precioEditable(fila.precio),
     moneda: fila.moneda,
     fecha: fila.fecha,
     fechaFormateada: fechaEsAr(fila.fecha),

@@ -17,7 +17,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { importarCsvPrecios } from '@/lib/precios/import-csv';
+import { importarCsvPrecios, parsearPrecio } from '@/lib/precios/import-csv';
 import { MONEDA_DEFAULT, resolverPrecio } from '@/lib/precios/resolver';
 import type { PrecioEstimado } from '@/types/domain';
 
@@ -195,7 +195,7 @@ describe('importarCsvPrecios: el CSV de la lista del estudio', () => {
     expect(filas.map((fila) => fila.precio)).toEqual([1234.5, 1234.5, 1234500.75]);
   });
 
-  it('un punto con dos decimales es decimal; con tres dígitos, separador de miles', () => {
+  it('un separador solo, una sola vez, es SIEMPRE el decimal: esta app es es-AR', () => {
     const { filas } = importarCsvPrecios(
       [
         'clave_item,descripcion,unidad,precio',
@@ -207,12 +207,26 @@ describe('importarCsvPrecios: el CSV de la lista del estudio', () => {
       ].join('\n'),
     );
 
-    // Un grupo de tres es separador de miles en los dos idiomas; uno de otro
-    // tamaño es el decimal, que es la única lectura posible de «0,1234».
-    expect(filas.map((fila) => fila.precio)).toEqual([12.5, 1234, 2500, 1234, 0.1234]);
+    // «1,234» es uno con doscientos treinta y cuatro, NO mil doscientos treinta
+    // y cuatro: leerlo como miles sería multiplicar el precio por mil por
+    // adivinar un idioma que nadie declaró. Y «1.234» es lo mismo, por simetría.
+    expect(filas.map((fila) => fila.precio)).toEqual([12.5, 1.234, 2500, 1.234, 0.1234]);
   });
 
-  it('dos separadores del mismo tipo que no son miles no son un número', () => {
+  it('un separador repetido no puede ser el decimal: ahí sí es de miles', () => {
+    const { filas, errores } = importarCsvPrecios(
+      [
+        'clave_item,descripcion,unidad,precio',
+        'a.b,Con puntos,u,1.234.500',
+        'c.d,Con comas,u,"1,234,500"',
+      ].join('\n'),
+    );
+
+    expect(errores).toEqual([]);
+    expect(filas.map((fila) => fila.precio)).toEqual([1234500, 1234500]);
+  });
+
+  it('un separador repetido que no arma grupos de miles no es un número', () => {
     const { filas, errores } = importarCsvPrecios(
       ['clave_item,descripcion,unidad,precio', 'a.b,Roto,u,1.2.3'].join('\n'),
     );
@@ -333,6 +347,19 @@ describe('importarCsvPrecios: el CSV de la lista del estudio', () => {
     expect(filas).toEqual([]);
     expect(errores).toHaveLength(1);
     expect(errores[0].linea).toBe(2);
+  });
+
+  // El formulario de alta y edición manda el precio como texto y lo lee con
+  // este mismo parser (`guardarPrecioAction`), así que el valor que la pantalla
+  // pone en el input tiene que volver a entrar igual. Con separador de miles no
+  // volvía: «145.000» es un punto solo y un punto solo es el decimal.
+  it('lo que la pantalla pone en el input vuelve a entrar sin cambiar de valor', () => {
+    const comoLoEscribeLaPantalla = (n: number): string =>
+      Number.isInteger(n) ? String(n) : String(n).replace('.', ',');
+
+    for (const precio of [145000, 18500.5, 12.56, 9800, 0.5, 1234500]) {
+      expect(parsearPrecio(comoLoEscribeLaPantalla(precio))).toBe(precio);
+    }
   });
 
   it('sin texto no explota: lo dice y devuelve el error en la línea 1', () => {

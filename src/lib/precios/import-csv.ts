@@ -21,10 +21,16 @@
  *
  * ## Coma decimal, porque el CSV sale de un Excel argentino
  *
- * `"12,50"` son doce pesos con cincuenta. La regla completa está en
- * `parsearPrecio`: la coma siempre es el decimal; el punto se lee según lo que
- * tenga atrás, que es la única forma de no romper ni al Excel local ni al que
- * exportó en inglés.
+ * `"12,50"` son doce pesos con cincuenta. Y **una coma sola es siempre el
+ * decimal**: `"1,234"` es uno con doscientos treinta y cuatro, no mil
+ * doscientos treinta y cuatro. Esta es una app es-AR y la convención local
+ * gana; leer esa coma como separador de miles sería multiplicar un precio por
+ * mil por adivinar un idioma que nadie declaró.
+ *
+ * Un separador se lee como de miles **solo cuando el otro está presente como
+ * decimal** (`"1.234,56"` y `"1,234.56"` son los dos 1234,56) o cuando se
+ * repite, que es la única forma de que no pueda ser un decimal
+ * (`"1.234.500"`). La regla completa está en `parsearPrecio`.
  */
 import { UNIDADES, type Unidad } from '@/types/domain';
 
@@ -188,7 +194,7 @@ function estaVacia(campos: string[]): boolean {
   return campos.every((campo) => campo.trim() === '');
 }
 
-/** `true` si los separadores parten el número en grupos de miles bien formados. */
+/** `true` si los separadores repetidos parten el número en grupos de miles bien formados. */
 function pareceMiles(grupos: string[]): boolean {
   if (grupos.length < 2) return false;
   if (!/^\d{1,3}$/.test(grupos[0])) return false;
@@ -202,17 +208,23 @@ function pareceMiles(grupos: string[]): boolean {
  * El CSV sale de un Excel argentino, pero también puede salir de uno en inglés,
  * y las dos convenciones usan los mismos dos caracteres al revés. Adivinar mal
  * acá multiplica o divide un precio por mil **en silencio**, así que la regla se
- * escribe entera:
+ * escribe entera y se apoya en una decisión de producto: **esta es una app
+ * es-AR y la convención local gana cuando el número es ambiguo.**
  *
  *  1. Se sacan el símbolo de moneda y los espacios (incluido el duro del Excel).
  *     Una letra suelta no se limpia: hace que la línea falle, que es lo correcto.
- *  2. **Si están los dos separadores, el último manda:** `"1.234,50"` ⇒ `1234.5`
- *     (local) y `"1,234.50"` ⇒ `1234.5` (inglés). El otro es el de miles.
- *  3. **Con uno solo, decide la forma de los grupos:** si parte el número en
- *     grupos de tres es separador de miles (`"1.234"` ⇒ `1234`, `"1.234.500"` ⇒
- *     `1234500`); si no, es el decimal (`"12,50"` ⇒ `12.5`, `"12.50"` ⇒ `12.5`,
- *     `"0,1234"` ⇒ `0.1234`).
- *  4. Lo que sale de eso tiene que ser un número: `"1.2.3"` no lo es.
+ *  2. **Un separador solo, una sola vez, es SIEMPRE el decimal.** `"12,50"` ⇒
+ *     `12.5`, `"1,234"` ⇒ `1.234`, `"12.50"` ⇒ `12.5`, `"1.234"` ⇒ `1.234`,
+ *     `"0,1234"` ⇒ `0.1234`. Que `"1,234"` sean mil doscientos treinta y cuatro
+ *     es la lectura inglesa, y acá la coma es el decimal: quien quiera escribir
+ *     mil doscientos treinta y cuatro con separador tiene que decir cuál es el
+ *     decimal (`"1.234,00"`) o no usar ninguno (`"1234"`).
+ *  3. **Un separador se lee como de miles solo si el otro está de decimal:** con
+ *     los dos presentes **manda el último**, `"1.234,50"` ⇒ `1234.5` (local) y
+ *     `"1,234.50"` ⇒ `1234.5` (inglés).
+ *  4. **O si se repite,** que es la única forma de que no pueda ser un decimal:
+ *     `"1.234.500"` ⇒ `1234500`, `"1,234,500"` ⇒ `1234500`. Repetido y sin forma
+ *     de miles no es un número: `"1.2.3"` ⇒ `null`.
  */
 export function parsearPrecio(crudo: string): number | null {
   const limpio = crudo
@@ -235,9 +247,14 @@ export function parsearPrecio(crudo: string): number | null {
   } else if (ultimaComa >= 0 || ultimoPunto >= 0) {
     const separador = ultimaComa >= 0 ? ',' : '.';
     const grupos = digitos.split(separador);
-    normalizado = pareceMiles(grupos)
-      ? `${signo}${grupos.join('')}`
-      : `${signo}${digitos.replace(separador, '.')}`;
+    // Una sola aparición es el decimal, siempre: es la convención es-AR y la
+    // que evita convertir «1,234» en mil doscientos treinta y cuatro. Solo
+    // cuando el separador se repite —y entonces no puede ser un decimal— se lee
+    // como de miles.
+    normalizado =
+      grupos.length > 2 && pareceMiles(grupos)
+        ? `${signo}${grupos.join('')}`
+        : `${signo}${digitos.replace(separador, '.')}`;
   } else {
     normalizado = limpio;
   }
