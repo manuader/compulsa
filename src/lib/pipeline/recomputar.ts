@@ -936,7 +936,7 @@ export function comoDatoResuelto(fila: DatoObra): DatoObraResuelto {
  * (`altura_local.PB`, y si no está, `altura_local.general`): buscar linealmente
  * en cada tabique sería cuadrático sin ninguna ganancia.
  */
-async function datosDeObra(db: Db, obraId: string): Promise<DatosObraResueltos> {
+export async function datosDeObra(db: Db, obraId: string): Promise<DatosObraResueltos> {
   const filas = await db.select().from(datosObra).where(eq(datosObra.obraId, obraId));
   return new Map(filas.map((fila) => [fila.clave, comoDatoResuelto(fila)]));
 }
