@@ -10,7 +10,7 @@ import { crearProviderMock } from './mock';
 import type { AnalysisProvider } from './tipos';
 
 export type { AnalisisLamina, AnalysisProvider } from './tipos';
-export { claveFixture, rotuloNulo, slug, zAnalisisLamina } from './tipos';
+export { claveFixture, inventariarLamina, rotuloNulo, slug, zAnalisisLamina } from './tipos';
 export { crearProviderMock, DIR_FIXTURES_ANALISIS } from './mock';
 export { armarContextoObra, textoInstrucciones } from './prompt';
 export { crearProviderClaude } from './claude';

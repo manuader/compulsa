@@ -165,8 +165,14 @@ export async function expedienteDelCruce(db: Db, obraId: string): Promise<Expedi
  * Que la redacción quede afuera es el punto: el modelo puede contar el mismo
  * conflicto con otras palabras en cada corrida, y si la clave dependiera del
  * texto, cada corrida abriría una consulta nueva sobre lo mismo y la anterior
- * quedaría abierta para siempre. Las láminas van ordenadas porque «A contra B»
- * y «B contra A» son el mismo conflicto.
+ * quedaría abierta para siempre. Las láminas van ordenadas porque cuál se cita
+ * primero no cambia cuál es la contradicción.
+ *
+ * Los **datos** sí van en orden, y no ordenados: son el par que el modelo leyó,
+ * y la memoria compacta que lee es estable entre corridas, así que el orden
+ * también lo es. Si algún día el mismo conflicto volviera con los datos
+ * invertidos, se abriría una consulta más; preferimos eso a normalizar dos
+ * lecturas distintas en una sola clave.
  */
 export function claveConflicto(conflicto: ConflictoCruce): string {
   const huella = createHash('sha256')

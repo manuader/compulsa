@@ -2,7 +2,33 @@
  * Pipeline de análisis: del PDF que sube el arquitecto a las entidades, el
  * cómputo y la bandeja.
  *
- *   subirDocumento → procesarDocumento → procesarLamina (×N) → recomputarObra
+ *   subirDocumento → procesarDocumento → cinco fases → recomputarObra
+ *
+ * ## Las cinco fases (§4 del diseño)
+ *
+ * `procesarDocumento` dejó de ser "una lámina a la vez, a ciegas". Ahora:
+ *
+ *  1. **inventario** — una pasada barata y en paralelo que lee SOLO rótulos, así
+ *     el índice completo del expediente existe **antes** de extraer nada y cada
+ *     extracción arranca sabiendo qué otras láminas hay ("no copies a esta
+ *     lámina un dato que está escrito en otra");
+ *  2. **extraccion** — las láminas se analizan en paralelo con cap
+ *     (`pool.ts`), y al terminar se mide sobre el dibujo lo que ninguna cota
+ *     declaró (§5.5);
+ *  3. **cruce** — se recomputa la obra (reglas §11), se compacta a texto y una
+ *     sola llamada mira el expediente entero: hechos de obra, campos que una
+ *     lámina completa de otra, identidades, contradicciones y relecturas;
+ *  4. **relectura** — la búsqueda dirigida, ahora también con las láminas que
+ *     pidió el cruce;
+ *  5. **listo** — recompute final, «qué cambió» y resumen ejecutivo.
+ *
+ * `obras.analisis_json` lleva la fase en curso (`FaseAnalisis`) para que el
+ * expediente pueda decir "analizando 12/25" en vez de un spinner eterno.
+ *
+ * **Todas las fases son tolerantes.** Una que falla queda anotada, la corrida
+ * sigue con las que puede y el estado final es `{fase: 'error', detalle}` — lo
+ * ya persistido no se tira. Analizar veinticinco láminas y perderlas porque el
+ * cruce dio timeout sería el peor negocio posible.
  *
  * Tres propiedades que el código de acá tiene que sostener:
  *
@@ -36,6 +62,7 @@ import { getDb, type Db } from '@/db/client';
 import {
   auditoria,
   computoItems,
+  deducciones,
   documentos,
   entidades,
   hallazgos,
@@ -44,24 +71,38 @@ import {
   recomputos,
   usuarios,
   type ComputoItem,
+  type Deduccion,
   type Documento,
   type Entidad,
   type Lamina,
   type NuevaEntidad,
   type Obra,
 } from '@/db/schema';
-import { getAnalysisProvider, type AnalysisProvider } from '@/lib/analysis/index';
+import {
+  getCruceProvider,
+  type CruceProvider,
+  type RelecturaPedida,
+} from '@/lib/analysis/cruce-tipos';
+import { getAnalysisProvider, inventariarLamina, type AnalysisProvider } from '@/lib/analysis/index';
 import { textoInstrucciones } from '@/lib/analysis/prompt';
 import { registrarAuditoria } from '@/lib/audit';
-import { separarPaginas } from '@/lib/pdf/split';
+import type { EntidadPersistida } from '@/lib/computo/engine';
+import { denominadorDeEscala, medidaGrafica } from '@/lib/computo/medicion';
+import { leerMedida } from '@/lib/hallazgos/taxonomia';
+import { armarEntradaMemoria } from '@/lib/memoria/armar';
+import { memoriaCompacta } from '@/lib/memoria/compacta';
+import { separarPaginasConTamano, type TamanoPagina } from '@/lib/pdf/split';
 import { extraerTexto } from '@/lib/pdf/texto';
 import { buscarDatosFaltantes } from '@/lib/pipeline/busqueda';
 import { claveEscala, claveEscalaRotulo } from '@/lib/pipeline/claves';
+import { ACCION_DEDUCCION_APLICADA, aplicarCruce, expedienteDelCruce } from '@/lib/pipeline/cruce';
 import { igualJson } from '@/lib/pipeline/json';
+import { capDeAnalisis, enParalelo } from '@/lib/pipeline/pool';
 import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
   ACTOR_PIPELINE,
   borrarDeduccionesDeEntidades,
+  comoEntidadPersistida,
   comoItemComputo,
   desvincularItemsDeEntidades,
   diferenciasDeItem,
@@ -74,11 +115,14 @@ import { DISCIPLINAS, TIPOS_LAMINA } from '@/types/domain';
 import type {
   BBox,
   EntidadDetectada,
+  FaseAnalisis,
+  Fuente,
   LaminaInput,
   ObraContexto,
   RotuloDetectado,
   RubroId,
   TipoHallazgo,
+  TipoLamina,
   Unidad,
   ValorPropuesto,
 } from '@/types/domain';
@@ -150,6 +194,37 @@ export const ACCION_PROCESANDO = 'lamina_procesando';
 /** Acción con la que queda registrado que la búsqueda dirigida no pudo correr. */
 export const ACCION_BUSQUEDA_FALLIDA = 'busqueda_fallida';
 
+/** Acción con la que queda registrado que el cruce del expediente no pudo correr. */
+export const ACCION_CRUCE_FALLIDO = 'cruce_fallido';
+
+/** Acción con la que queda registrada cada fase del análisis al arrancar. */
+export const ACCION_FASE = 'analisis_fase';
+
+/** Acción con la que queda registrado el rótulo que leyó la fase de inventario. */
+export const ACCION_INVENTARIADA = 'lamina_inventariada';
+
+/** Acción con la que queda registrado que el inventario de una lámina falló. */
+export const ACCION_INVENTARIO_FALLIDO = 'lamina_inventario_fallido';
+
+/**
+ * Confianza fija de una medida sacada del dibujo (§5.5). No es un default
+ * configurable: es cuánto vale medir un rectángulo en una lámina a escala
+ * comparado con leer una cota, y la respuesta es "la mitad".
+ */
+export const CONFIANZA_MEDICION = 0.5;
+
+/**
+ * Tercera clave meta de `deducciones.valor_json`, hermana de `MARCA_CONTRADICHA`
+ * y `MARCA_VALOR_DOCUMENTADO` (`recomputar.ts`): **cómo** se llegó al número.
+ *
+ * `datos_obra` tiene una columna `metodo` para esto y `deducciones` no; agregar
+ * una migración desde una rama paralela es peor negocio que una clave meta
+ * documentada, y el precedente ya existe. Los lectores del valor
+ * (`aplicarDeduccionesValidadas`, `validarDeduccion`) leen `valorJson[campo]` y
+ * nada más, así que la clave no ensucia ningún atributo.
+ */
+export const MARCA_METODO = '_metodo';
+
 /**
  * Cuánto puede una lámina quedarse en `procesando` antes de darla por
  * abandonada. Si el proceso que la tomó murió (timeout de la función, deploy en
@@ -205,8 +280,21 @@ export interface DepsPipeline {
    * El recompute que corre después de cada lámina. Es una costura, no una
    * opción de configuración: existe para poder ejercitar el camino de "la
    * lámina se analizó bien y el recompute falló" sin romper la base a mano.
+   *
+   * `'diferido'` es el otro uso, y ese sí es del pipeline: durante la
+   * **extracción en paralelo** no puede correr un recompute por lámina. Dos
+   * recomputes encimados sobre la misma obra leen la misma foto de
+   * `computo_items` y los dos insertan la clave que no vieron —`computo_items`
+   * no tiene UNIQUE por `(obra, clave)`—, así que la planilla terminaría con
+   * ítems duplicados en silencio. La obra se recomputa **una vez**, en la fase
+   * de cruce, que es donde el diseño la pone.
    */
-  recomputar?: (obraId: string, deps: { db: Db; resumen?: boolean }) => Promise<unknown>;
+  recomputar?: ((obraId: string, deps: { db: Db; resumen?: boolean }) => Promise<unknown>) | 'diferido';
+  /**
+   * El provider del cruce del expediente. Default: `getCruceProvider()` (el
+   * mock, siempre, en tests).
+   */
+  cruce?: CruceProvider;
   /**
    * Si el resumen ejecutivo (RF-205) se rehace al terminar de analizar la
    * lámina. Default `true`: analizar una lámina suelta —el arquitecto confirmó
@@ -226,13 +314,17 @@ export interface DepsPipeline {
    * Es la misma clase de costura que `recomputar`: existe para poder contar las
    * llamadas y ejercitar el camino de "la búsqueda se cayó" sin salir a la red.
    */
-  buscar?: (obraId: string, deps: { db: Db; storage: StorageAdapter }) => Promise<unknown>;
+  buscar?: (
+    obraId: string,
+    deps: { db: Db; storage: StorageAdapter; relecturas?: readonly RelecturaPedida[] },
+  ) => Promise<unknown>;
 }
 
 interface Entorno {
   db: Db;
   storage: StorageAdapter;
   provider: AnalysisProvider;
+  cruce: CruceProvider;
   recomputar: NonNullable<DepsPipeline['recomputar']>;
   resumen: boolean;
   buscar: NonNullable<DepsPipeline['buscar']>;
@@ -243,6 +335,7 @@ async function resolver(deps: DepsPipeline): Promise<Entorno> {
     db: deps.db ?? (await getDb()),
     storage: deps.storage ?? getStorage(),
     provider: deps.provider ?? getAnalysisProvider(),
+    cruce: deps.cruce ?? getCruceProvider(),
     recomputar: deps.recomputar ?? recomputarObra,
     resumen: deps.resumen ?? true,
     buscar: deps.buscar ?? buscarDatosFaltantes,
@@ -493,11 +586,22 @@ async function registrarRecomputo(
 // Documento → láminas
 // ---------------------------------------------------------------------------
 
+/** Una lámina de este documento, con lo que hace falta para analizarla. */
+interface PaginaDelDocumento {
+  laminaId: string;
+  numeroPagina: number;
+  bytes: Uint8Array;
+  /** Tamaño de la hoja en puntos: el insumo de la medición gráfica (§5.5). */
+  tamanoPts: TamanoPagina;
+}
+
 /**
- * Separa el PDF en una lámina por página y analiza cada una en secuencia.
+ * Separa el PDF en una lámina por página y corre las cinco fases del análisis
+ * sobre la obra (ver la cabecera del módulo).
  *
  * Re-ejecutable: las láminas se matchean por `numero_pagina`, así que volver a
- * correrlo re-analiza las mismas filas en lugar de crear otras nuevas.
+ * correrlo re-analiza las mismas filas en lugar de crear otras nuevas, y una
+ * corrida idéntica no escribe ni audita nada.
  */
 export async function procesarDocumento(
   documentoId: string,
@@ -512,7 +616,7 @@ export async function procesarDocumento(
   if (!obra) throw new DocumentoInexistenteError(documentoId);
 
   const original = await storage.leer(documento.archivoRef);
-  const paginas = await separarPaginas(original);
+  const paginas = await separarPaginasConTamano(original);
 
   const existentes = await db.select().from(laminas).where(eq(laminas.documentoId, documentoId));
   const porPagina = new Map(existentes.map((lamina) => [lamina.numeroPagina, lamina]));
@@ -524,23 +628,23 @@ export async function procesarDocumento(
   const motivo: MotivoRecomputo =
     documento.version > 1 && existentes.length === 0 ? 'revision_nueva' : 'reproceso';
 
-  const aProcesar: string[] = [];
+  const aProcesar: PaginaDelDocumento[] = [];
 
-  for (const [indice, bytes] of paginas.entries()) {
+  for (const [indice, pagina] of paginas.entries()) {
     const numeroPagina = indice + 1;
     const previa = porPagina.get(numeroPagina);
 
     if (previa) {
       // Re-escribir la página es barato y deja storage y base consistentes aunque
       // el archivo derivado se haya perdido entre corridas.
-      await storage.guardar(previa.archivoRef, bytes, MIME_PDF);
-      aProcesar.push(previa.id);
+      await storage.guardar(previa.archivoRef, pagina.bytes, MIME_PDF);
+      aProcesar.push({ laminaId: previa.id, numeroPagina, ...pagina });
       continue;
     }
 
     const laminaId = randomUUID();
     const archivoRef = refLamina(obra.estudioId, obra.id, documento.id, numeroPagina);
-    await storage.guardar(archivoRef, bytes, MIME_PDF);
+    await storage.guardar(archivoRef, pagina.bytes, MIME_PDF);
     await db.insert(laminas).values({
       id: laminaId,
       documentoId: documento.id,
@@ -553,13 +657,42 @@ export async function procesarDocumento(
       documentoId: documento.id,
       numeroPagina,
     });
-    aProcesar.push(laminaId);
+    aProcesar.push({ laminaId, numeroPagina, ...pagina });
   }
 
-  for (const laminaId of aProcesar) {
-    // `resumen: false`: el resumen se publica una sola vez, más abajo.
-    await procesarLamina(laminaId, { ...entorno, resumen: false });
-  }
+  const marcarFase = seguidorDeFases(db, obra.id);
+  /** Las fases que se cayeron: deciden el estado final del análisis. */
+  const fallos: string[] = [];
+  const total = aProcesar.length;
+
+  // --- 1. Inventario: el índice del expediente, antes de extraer nada --------
+  await marcarFase({ fase: 'inventario', total, completadas: 0 });
+  await inventariarDocumento(entorno, obra, documento, aProcesar, marcarFase);
+
+  // --- 2. Extracción en paralelo + medición gráfica --------------------------
+  await marcarFase({ fase: 'extraccion', total, completadas: 0 });
+  let completadas = 0;
+  await enParalelo(aProcesar, capDeAnalisis(), async (pagina) => {
+    // `resumen: false` y `recomputar: 'diferido'`: el resumen se publica una
+    // sola vez al final y la obra se recomputa una sola vez, en la fase de
+    // cruce (ver `DepsPipeline.recomputar`).
+    await procesarLamina(pagina.laminaId, { ...entorno, resumen: false, recomputar: 'diferido' });
+    completadas += 1;
+    await marcarFase({ fase: 'extraccion', total, completadas });
+  });
+  await medirTolerante(entorno, obra.id, aProcesar, fallos);
+
+  // --- 3. Cruce: el expediente mirado como conjunto --------------------------
+  await marcarFase({ fase: 'cruce' });
+  await recomputarObraTolerante(entorno, obra.id, fallos);
+  const relecturas = await cruzarTolerante(entorno, obra, fallos);
+
+  // --- 4. Relectura dirigida -------------------------------------------------
+  await marcarFase({ fase: 'relectura', total: relecturas.length });
+  await buscarTolerante(entorno, obra.id, relecturas);
+
+  // --- 5. Cierre: cómputo final, qué cambió y resumen ------------------------
+  await recomputarObraTolerante(entorno, obra.id, fallos);
 
   // RF-308: qué le hizo este documento a la planilla, para la pantalla "Qué
   // cambió". Va antes del resumen porque el resumen es la foto final y esto es
@@ -571,10 +704,444 @@ export async function procesarDocumento(
   // publicar N resúmenes a medio hacer.
   await resumirTolerante(db, obra.id);
 
-  // C2: y recién ahora, con la bandeja abierta, se sale a buscar en la
-  // documentación lo que la bandeja está preguntando. Va último a propósito:
-  // antes del recompute no existe la lista de lo que falta.
-  await buscarTolerante(entorno, obra.id);
+  // El estado final dice la verdad: si una fase se cayó, la obra terminó con lo
+  // que se pudo y la pantalla lo cuenta, en vez de un "listo" que tapa el hueco.
+  await marcarFase(
+    fallos.length === 0 ? { fase: 'listo' } : { fase: 'error', detalle: fallos.join(' · ') },
+  );
+}
+
+/**
+ * Escribe la fase en curso en `obras.analisis_json` y la audita **cuando
+ * cambia**.
+ *
+ * El progreso dentro de una fase ("12 de 25") se guarda pero no se audita: es
+ * un contador para la pantalla, no una decisión. El cambio de fase sí, y eso
+ * deja en `auditoria` la línea de tiempo de la corrida, que es donde se ve
+ * cuánto tardó cada parte y cuál se cayó.
+ */
+function seguidorDeFases(db: Db, obraId: string): (estado: FaseAnalisis) => Promise<void> {
+  let anterior: FaseAnalisis['fase'] | null = null;
+  return async (estado: FaseAnalisis): Promise<void> => {
+    await db.update(obras).set({ analisisJson: estado }).where(eq(obras.id, obraId));
+    if (estado.fase === anterior) return;
+    anterior = estado.fase;
+    await auditarAgente(obraId, ACCION_FASE, `obras:${obraId}`, { ...estado });
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Fase 1: inventario (§25.1)
+// ---------------------------------------------------------------------------
+
+/** Campos del rótulo que arma el **índice** del expediente. */
+type CamposDeIndice = Pick<Lamina, 'codigo' | 'titulo' | 'tipo' | 'disciplina' | 'revision'>;
+
+/**
+ * El índice de una lámina después del inventario: **el agente completa, nunca
+ * borra**, igual que `fusionarRotulo`.
+ *
+ * Lo que el inventario NO toca es la **escala**, y es deliberado. La escala es
+ * la que decide si la lámina se computa, se computa con un supuesto o se
+ * bloquea (RF-201), y esa decisión la toma `analizarLamina` con el rótulo que
+ * lee en la fase siguiente, sobre la misma lámina y con el contexto completo.
+ * Duplicarla acá sería tener dos lugares donde se decide lo mismo — y el
+ * inventario, que es una pasada barata con `effort: 'low'`, sería el que manda.
+ */
+export function fusionarIndice(lamina: Lamina, rotulo: RotuloDetectado): CamposDeIndice {
+  return {
+    codigo: rotulo.codigo ?? lamina.codigo,
+    titulo: rotulo.titulo ?? lamina.titulo,
+    tipo: rotulo.tipoLamina ?? lamina.tipo,
+    disciplina: rotulo.disciplina ?? lamina.disciplina,
+    revision: rotulo.revision ?? lamina.revision,
+  };
+}
+
+function cambioDeIndice(lamina: Lamina, campos: CamposDeIndice): Record<string, unknown> | null {
+  const diff: Record<string, unknown> = {};
+  for (const [campo, despues] of Object.entries(campos)) {
+    const antes = lamina[campo as keyof CamposDeIndice];
+    if (antes !== despues) diff[campo] = { antes, despues };
+  }
+  return Object.keys(diff).length > 0 ? diff : null;
+}
+
+/**
+ * Lee los rótulos de todas las láminas del documento, en paralelo, y los
+ * persiste **antes** de extraer nada.
+ *
+ * Es la fase que hace que la extracción de la primera lámina ya sepa que existe
+ * una "DET00 — PLANILLA DE CARPINTERÍAS": hasta acá, el índice que viajaba en el
+ * `ObraContexto` era el de las láminas analizadas en corridas anteriores, así
+ * que la primera subida de un expediente se analizaba entera a ciegas.
+ *
+ * Tolerante por lámina: un rótulo que no se pudo leer queda en `auditoria` y la
+ * lámina sigue su camino —la fase de extracción vuelve a leer el rótulo igual,
+ * esta vez por el camino caro—. No marca la lámina en `error`: no hay nada roto
+ * en ella todavía.
+ */
+async function inventariarDocumento(
+  entorno: Entorno,
+  obra: Obra,
+  documento: Documento,
+  paginas: readonly PaginaDelDocumento[],
+  marcarFase: (estado: FaseAnalisis) => Promise<void>,
+): Promise<void> {
+  if (paginas.length === 0) return;
+  const { db, provider } = entorno;
+
+  // El ctx del inventario no lleva índice —construirlo es lo que esta fase
+  // hace— pero sí la obra: sin `obraId` la fila `inventario_llm` queda sin obra
+  // y el costo del inventario no se ve en la auditoría del estudio (RNF-7).
+  const ctx: ObraContexto = {
+    obraId: obra.id,
+    tipoObra: obra.tipo,
+    nombreObra: obra.nombre,
+  };
+
+  let completadas = 0;
+  const rotulos = await enParalelo(paginas, capDeAnalisis(), async (pagina) => {
+    const rotulo = await inventariarLamina(
+      provider,
+      {
+        laminaId: pagina.laminaId,
+        pdfBytes: pagina.bytes,
+        documentoNombre: documento.nombreArchivo,
+        numeroPagina: pagina.numeroPagina,
+      },
+      ctx,
+    );
+    completadas += 1;
+    await marcarFase({ fase: 'inventario', total: paginas.length, completadas });
+    return rotulo;
+  });
+
+  // La persistencia va en serie y después del lote: son escrituras cortas y
+  // así el índice queda completo de una vez, sin que dos láminas se pisen.
+  for (const [indice, resultado] of rotulos.entries()) {
+    const pagina = paginas[indice] as PaginaDelDocumento;
+    if (!resultado.ok) {
+      await auditarAgente(obra.id, ACCION_INVENTARIO_FALLIDO, `laminas:${pagina.laminaId}`, {
+        errorDetalle: detalleDeError(resultado.error),
+        motivo: 'El inventario no pudo leer el rótulo; la extracción lo vuelve a intentar.',
+      });
+      continue;
+    }
+
+    const [fila] = await db.select().from(laminas).where(eq(laminas.id, pagina.laminaId));
+    if (!fila) continue;
+    const campos = fusionarIndice(fila, resultado.valor);
+    const diff = cambioDeIndice(fila, campos);
+    if (diff === null) continue; // sin cambios no se escribe ni se audita
+
+    await db.update(laminas).set(campos).where(eq(laminas.id, pagina.laminaId));
+    await auditarAgente(obra.id, ACCION_INVENTARIADA, `laminas:${pagina.laminaId}`, diff);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fase 2 (cola): medición gráfica sobre el dibujo (§5.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Qué eje del mundo real representa el dibujo de cada tipo de lámina.
+ *
+ * Es la regla que evita el error más caro que puede cometer la medición
+ * gráfica: **una planta no tiene altura**. El bbox de un tabique en planta mide
+ * su largo y su *espesor*; leer ese espesor como la altura del tabique daría un
+ * número plausible y equivocado, y encima cortocircuitaría la cadena de
+ * respaldo del §5.2 —la altura la dice el corte, o el dato de obra, o el
+ * arquitecto—, que es donde vive la información buena. La medición gráfica es
+ * el **último** respaldo, no el primero.
+ *
+ * Un `detalle` no entra (su escala es propia y su recorte no mapea a un campo
+ * computable), una `planilla` tampoco (es una tabla: sus datos están escritos,
+ * no se miden) y una lámina sin clasificar menos todavía.
+ */
+const EJE_DE_LAMINA: Partial<Record<TipoLamina, 'planta' | 'vertical'>> = {
+  planta: 'planta',
+  corte: 'vertical',
+  vista: 'vertical',
+};
+
+/** Los tipos de entidad cuyo rectángulo es una medida de arquitectura. */
+const TIPOS_MEDIBLES: ReadonlySet<string> = new Set(['muro', 'tabique', 'ambiente']);
+
+/** Una medida sacada del dibujo, lista para escribir como deducción. */
+interface MedidaDeDibujo {
+  campo: string;
+  valor: number;
+  metodo: string;
+}
+
+/**
+ * Qué campos se pueden medir de esta entidad en esta lámina, con su valor.
+ *
+ * `medidaGrafica` devuelve el rectángulo en metros de obra; el mapeo a campos
+ * es el del §5.5: el ancho del bbox es el largo del elemento, el alto es su
+ * altura (solo donde el dibujo tiene eje vertical) y el producto es la
+ * superficie de un ambiente en planta. Solo se devuelven los campos que la
+ * entidad **no** tiene: la medición no compite con una cota escrita.
+ */
+export function medidasDeDibujo(
+  entidad: EntidadPersistida,
+  tipoLamina: TipoLamina | null,
+  escala: string,
+  tamanoPts: TamanoPagina,
+): MedidaDeDibujo[] {
+  const eje = tipoLamina === null ? undefined : EJE_DE_LAMINA[tipoLamina];
+  if (eje === undefined || !TIPOS_MEDIBLES.has(entidad.tipo)) return [];
+
+  const medida = medidaGrafica(entidad.bbox, tamanoPts, escala);
+  if (medida === null) return [];
+
+  const metodo = `medición gráfica sobre el dibujo a escala ${escala}`;
+  const falta = (campo: string): boolean => leerMedida(entidad, campo) === null;
+  const medidas: MedidaDeDibujo[] = [];
+
+  if (eje === 'vertical') {
+    // La única lectura honesta de un corte o una vista: la vertical.
+    if (medida.altoM > 0 && falta('alturaM')) {
+      medidas.push({ campo: 'alturaM', valor: medida.altoM, metodo });
+    }
+    return medidas;
+  }
+
+  if (entidad.tipo === 'ambiente') {
+    const superficie = redondearM2(medida.anchoM * medida.altoM);
+    if (superficie > 0 && falta('superficieM2')) {
+      medidas.push({ campo: 'superficieM2', valor: superficie, metodo });
+    }
+    return medidas;
+  }
+
+  if (medida.anchoM > 0 && falta('largoM')) {
+    medidas.push({ campo: 'largoM', valor: medida.anchoM, metodo });
+  }
+  return medidas;
+}
+
+/** Dos decimales, los mismos con los que el motor emite toda cantidad. */
+function redondearM2(valor: number): number {
+  return Math.round(valor * 100) / 100;
+}
+
+/**
+ * Mide sobre el dibujo lo que ninguna cota declaró, para las láminas de este
+ * documento.
+ *
+ * Las deducciones que salen de acá nacen **validadas por regla propia** (§5.5):
+ * no pasan por el umbral de 0,7 —su confianza es 0,5 fija— porque no son una
+ * deducción documental sino una medición, y el ítem que se apoye en ellas sale
+ * `origen: 'inferido'`, que es lo que las distingue de todo lo demás.
+ *
+ * Se mide solo lo de **este** documento: las láminas de otro se midieron cuando
+ * se subió, y sus filas siguen ahí (una `validada` no la borra el recompute).
+ */
+async function medirDibujo(
+  entorno: Entorno,
+  obraId: string,
+  paginas: readonly PaginaDelDocumento[],
+): Promise<{ medidas: number; actualizadas: number }> {
+  const { db } = entorno;
+  const resumen = { medidas: 0, actualizadas: 0 };
+  if (paginas.length === 0) return resumen;
+
+  const ids = paginas.map((pagina) => pagina.laminaId);
+  const [planos, elementos, previas] = await Promise.all([
+    db.select().from(laminas).where(inArray(laminas.id, ids)),
+    db.select().from(entidades).where(inArray(entidades.laminaId, ids)),
+    db.select().from(deducciones).where(eq(deducciones.obraId, obraId)),
+  ]);
+
+  const tamanos = new Map(paginas.map((pagina) => [pagina.laminaId, pagina.tamanoPts]));
+  const porLamina = new Map(planos.map((plano) => [plano.id, plano]));
+  const porClave = new Map(previas.map((fila) => [`${fila.entidadId}::${fila.campo}`, fila]));
+
+  for (const fila of elementos) {
+    const plano = porLamina.get(fila.laminaId);
+    // Una escala utilizable es la confirmada **o** la declarada-asumida: las dos
+    // son el número con el que la lámina ya se computó. Sin escala no se mide,
+    // que es la regla que evita un cómputo entero de números inventados.
+    if (!plano || plano.escala === null || denominadorDeEscala(plano.escala) === null) continue;
+    const tamanoPts = tamanos.get(fila.laminaId);
+    if (tamanoPts === undefined) continue;
+
+    const entidad = comoEntidadPersistida(fila);
+    const medidas = medidasDeDibujo(entidad, plano.tipo, plano.escala, tamanoPts);
+    for (const medida of medidas) {
+      const escrita = await escribirMedicion(db, obraId, entidad, medida, porClave, plano.id);
+      if (escrita === 'creada') resumen.medidas += 1;
+      if (escrita === 'actualizada') resumen.actualizadas += 1;
+    }
+  }
+
+  return resumen;
+}
+
+/**
+ * Upsert de una medición por `(obra, entidad, campo)`, **sin pisar lo que
+ * alguien decidió**: una deducción rechazada o validada a mano se respeta, y
+ * una propuesta del motor de reglas también —esa se apoya en documentación, que
+ * le gana a medir un rectángulo—.
+ */
+async function escribirMedicion(
+  db: Db,
+  obraId: string,
+  entidad: { id: string; bbox: BBox; laminaId: string },
+  medida: MedidaDeDibujo,
+  previas: ReadonlyMap<string, Deduccion>,
+  laminaId: string,
+): Promise<'creada' | 'actualizada' | null> {
+  const previa = previas.get(`${entidad.id}::${medida.campo}`);
+  if (previa !== undefined && previa.regla !== 'medicion_grafica') return null;
+  if (previa !== undefined && previa.estado === 'rechazada') return null;
+
+  const fuentes: Fuente[] = [{ laminaId, bbox: entidad.bbox, detalle: medida.metodo }];
+  const valores = {
+    obraId,
+    entidadId: entidad.id,
+    campo: medida.campo,
+    regla: 'medicion_grafica' as const,
+    fuentesJson: fuentes,
+    valorJson: { [medida.campo]: medida.valor, [MARCA_METODO]: medida.metodo },
+    confianza: CONFIANZA_MEDICION,
+    // §5.5: la medición gráfica se auto-valida por regla propia, no por umbral.
+    estado: 'validada' as const,
+    validadoPor: null,
+  };
+
+  if (previa === undefined) {
+    await db.insert(deducciones).values(valores);
+    await auditarAgente(obraId, ACCION_DEDUCCION_APLICADA, `deducciones:${entidad.id}.${medida.campo}`, {
+      regla: 'medicion_grafica',
+      valor: medida.valor,
+      confianza: CONFIANZA_MEDICION,
+      metodo: medida.metodo,
+      laminaId,
+    });
+    return 'creada';
+  }
+
+  const igual =
+    previa.estado === 'validada' &&
+    previa.validadoPor === null &&
+    previa.confianza === CONFIANZA_MEDICION &&
+    igualJson(previa.valorJson, valores.valorJson) &&
+    igualJson(previa.fuentesJson, fuentes);
+  if (igual) return null;
+
+  await db.update(deducciones).set(valores).where(eq(deducciones.id, previa.id));
+  await auditarAgente(obraId, ACCION_DEDUCCION_APLICADA, `deducciones:${entidad.id}.${medida.campo}`, {
+    regla: 'medicion_grafica',
+    valor: { antes: previa.valorJson[medida.campo], despues: medida.valor },
+    metodo: medida.metodo,
+  });
+  return 'actualizada';
+}
+
+// ---------------------------------------------------------------------------
+// Fase 3: el cruce del expediente
+// ---------------------------------------------------------------------------
+
+/**
+ * Compacta la obra a texto, se la da al cruce y aplica lo que vuelve.
+ *
+ * Una llamada por obra, la más grande del pipeline, y la única que ve el
+ * expediente entero. Devuelve las láminas que el cruce pidió releer, que es lo
+ * que alimenta la fase siguiente.
+ */
+async function cruzarObra(entorno: Entorno, obra: Obra): Promise<RelecturaPedida[]> {
+  const { db } = entorno;
+
+  const memoria = memoriaCompacta(await armarEntradaMemoria(db, obra));
+  // El mismo ctx que ve una lámina, pero con el índice **completo**: el cruce no
+  // mira una lámina, mira todas. De ahí sale también `nombreObra`, con el que el
+  // mock resuelve su fixture y el prompt real nombra la obra.
+  const ctx = await contextoDeObra(db, obra);
+
+  const crudo = await entorno.cruce.cruzar(memoria, ctx);
+  const expediente = await expedienteDelCruce(db, obra.id);
+  const { resultado } = await aplicarCruce(db, obra.id, crudo, expediente);
+  return resultado.relecturas;
+}
+
+// ---------------------------------------------------------------------------
+// Las envolturas tolerantes de cada fase
+// ---------------------------------------------------------------------------
+
+/**
+ * Recomputa la obra sin tirar la corrida si falla.
+ *
+ * Mismo criterio que `recomputarTolerante` por lámina: el análisis ya está
+ * guardado y el cómputo es derivado. Lo que cambia es que acá el fallo queda
+ * anotado en `fallos`, y eso deja el análisis en `{fase: 'error'}` — porque un
+ * expediente analizado cuyo cómputo no se pudo recalcular **no está listo**, y
+ * decir que sí sería mentirle a la pantalla.
+ */
+async function recomputarObraTolerante(
+  entorno: Entorno,
+  obraId: string,
+  fallos: string[],
+): Promise<void> {
+  if (entorno.recomputar === 'diferido') return;
+  try {
+    await entorno.recomputar(obraId, { db: entorno.db, resumen: false });
+  } catch (error) {
+    const errorDetalle = detalleDeError(error);
+    fallos.push(`el cómputo no se pudo recalcular (${errorDetalle})`);
+    await auditarAgente(obraId, 'recomputo_fallido', `obras:${obraId}`, {
+      errorDetalle,
+      motivo: 'Las láminas quedaron analizadas; el cómputo de la obra quedó sin recalcular.',
+    });
+  }
+}
+
+/** Mide sobre el dibujo sin tirar la corrida si falla. */
+async function medirTolerante(
+  entorno: Entorno,
+  obraId: string,
+  paginas: readonly PaginaDelDocumento[],
+  fallos: string[],
+): Promise<void> {
+  try {
+    await medirDibujo(entorno, obraId, paginas);
+  } catch (error) {
+    const errorDetalle = detalleDeError(error);
+    fallos.push(`la medición gráfica no corrió (${errorDetalle})`);
+    await auditarAgente(obraId, 'medicion_fallida', `obras:${obraId}`, {
+      errorDetalle,
+      motivo: 'Las láminas quedaron analizadas; lo que no tiene cota quedó sin medir.',
+    });
+  }
+}
+
+/**
+ * Corre el cruce sin tirar la corrida si falla.
+ *
+ * Es la fase más cara y la que sale a la red con el expediente entero: un
+ * timeout del provider no puede convertir veinticinco láminas analizadas en un
+ * upload fallido. Lo que se pierde si falla son las relaciones entre láminas
+ * —la obra queda como estaba, con sus huecos honestos en la bandeja— y la
+ * corrida siguiente vuelve a intentarlo (`aplicarCruce` es idempotente).
+ */
+async function cruzarTolerante(
+  entorno: Entorno,
+  obra: Obra,
+  fallos: string[],
+): Promise<RelecturaPedida[]> {
+  try {
+    return await cruzarObra(entorno, obra);
+  } catch (error) {
+    const errorDetalle = detalleDeError(error);
+    fallos.push(`el cruce del expediente no corrió (${errorDetalle})`);
+    await auditarAgente(obra.id, ACCION_CRUCE_FALLIDO, `obras:${obra.id}`, {
+      errorDetalle,
+      motivo: 'Las láminas quedaron analizadas y computadas; el expediente no se cruzó.',
+    });
+    return [];
+  }
 }
 
 /**
@@ -609,9 +1176,19 @@ async function resumirTolerante(db: Db, obraId: string): Promise<void> {
  * La reparación es volver a correrla: el botón de la bandeja la dispara a mano
  * y `buscarDatosFaltantes` es idempotente.
  */
-async function buscarTolerante(entorno: Entorno, obraId: string): Promise<void> {
+async function buscarTolerante(
+  entorno: Entorno,
+  obraId: string,
+  relecturas: readonly RelecturaPedida[] = [],
+): Promise<void> {
   try {
-    await entorno.buscar(obraId, { db: entorno.db, storage: entorno.storage });
+    await entorno.buscar(obraId, {
+      db: entorno.db,
+      storage: entorno.storage,
+      // Lo que el cruce pidió releer cambia el ORDEN de las candidatas, no la
+      // lista de objetivos (ver `DepsBusqueda.relecturas`).
+      ...(relecturas.length > 0 ? { relecturas } : {}),
+    });
   } catch (error) {
     await auditarAgente(obraId, ACCION_BUSQUEDA_FALLIDA, `obras:${obraId}`, {
       errorDetalle: detalleDeError(error),
@@ -1142,7 +1719,12 @@ async function reclamarLamina(db: Db, laminaId: string): Promise<Lamina | null> 
  * pantalla lo puede mostrar. La reparación es volver a correr el recompute:
  * `recomputarObra` es idempotente.
  */
-async function recomputarTolerante(entorno: Entorno, lamina: Lamina): Promise<boolean> {
+async function recomputarTolerante(entorno: Entorno, lamina: Lamina): Promise<boolean | 'diferido'> {
+  // Durante la extracción en paralelo el recompute no corre por lámina: corre
+  // una sola vez, en la fase de cruce (ver `DepsPipeline.recomputar`). Queda
+  // dicho en la auditoría de la lámina para que nadie lea un `recomputado:
+  // true` que no ocurrió.
+  if (entorno.recomputar === 'diferido') return 'diferido';
   try {
     // El recompute rehace el resumen, salvo cuando quien manda es
     // `procesarDocumento`, que lo apaga acá y lo rehace una sola vez al final
@@ -1223,11 +1805,17 @@ export function procesarLamina(laminaId: string, deps: DepsPipeline = {}): Promi
  *    están en centímetros"). `textoInstrucciones` devuelve `null` si el estudio
  *    no escribió nada, y entonces el campo no viaja y el prompt queda como antes.
  */
-async function contextoDeObra(db: Db, obra: Obra, laminaId: string): Promise<ObraContexto> {
+async function contextoDeObra(db: Db, obra: Obra, laminaId?: string): Promise<ObraContexto> {
+  // Sin `laminaId` el índice es el expediente completo: es el ctx del **cruce**,
+  // que no mira una lámina sino todas.
+  const alcance =
+    laminaId === undefined
+      ? eq(laminas.obraId, obra.id)
+      : and(eq(laminas.obraId, obra.id), ne(laminas.id, laminaId));
   const otras = await db
     .select({ codigo: laminas.codigo, titulo: laminas.titulo, tipo: laminas.tipo })
     .from(laminas)
-    .where(and(eq(laminas.obraId, obra.id), ne(laminas.id, laminaId)))
+    .where(alcance)
     .orderBy(laminas.numeroPagina);
 
   const { instruccionesExtraccion } = await leerConfig(db, obra.estudioId);
@@ -1237,6 +1825,11 @@ async function contextoDeObra(db: Db, obra: Obra, laminaId: string): Promise<Obr
   return {
     obraId: obra.id,
     tipoObra: obra.tipo,
+    // El nombre de la obra: los providers de lámina lo ignoran y **el cruce lo
+    // necesita** —lo nombra en el prompt y el mock resuelve su fixture con
+    // `slug(nombreObra)`—. Sin esto, el cruce de toda obra vuelve vacío y nadie
+    // se entera: las cinco listas vacías son una respuesta válida.
+    nombreObra: obra.nombre,
     ...(typeof titular === 'string' && titular.trim() !== '' ? { resumen: titular } : {}),
     indiceLaminas: otras,
     ...(instrucciones !== null ? { instruccionesEstudio: instrucciones } : {}),

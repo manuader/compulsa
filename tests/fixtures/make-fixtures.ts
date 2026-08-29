@@ -9,11 +9,15 @@
  *   tests/fixtures/pdfs/sin-escala.pdf       1 página sin escala declarada
  *   tests/fixtures/pdfs/escala-declarada.pdf 1 página con escala declarada NO verificada
  *   tests/fixtures/pdfs/obra-busqueda.pdf    2 páginas (planta sin acotar + planilla vacía)
+ *   tests/fixtures/pdfs/obra-fases.pdf       2 páginas (planta sin alturas + corte)
  *   tests/fixtures/analysis/obra-demo-p1..p3.json      qué "ve" el provider mock
  *   tests/fixtures/analysis/obra-reforma-p1..p2.json   ídem, para el golden 2
  *   tests/fixtures/analysis/escala-declarada-p1.json   ídem, para la escala asumida
  *   tests/fixtures/analysis/obra-busqueda-p1..p2.json  ídem, para la búsqueda dirigida
+ *   tests/fixtures/analysis/obra-fases-p1..p2.json     ídem, para el pipeline por fases
  *   tests/fixtures/analysis/busqueda/obra-busqueda-p2.json  qué "encuentra" la búsqueda
+ *   tests/fixtures/analysis/busqueda/obra-fases-p2.json     ídem, la altura en el corte
+ *   tests/fixtures/analysis/cruce/obra-fases.json      qué **relaciona** el cruce (por obra)
  *
  * `sin-escala.pdf` NO tiene fixture de análisis a propósito: es el caso que
  * ejercita el bloqueo por escala del pipeline (RF-201).
@@ -25,6 +29,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import { zCruceFixture } from '@/lib/analysis/cruce-mock';
 import { zAnalisisLamina, type AnalisisLamina } from '@/lib/analysis/tipos';
 import type { BBox } from '@/types/domain';
 
@@ -43,6 +48,8 @@ const DIR_PDFS = new URL('pdfs/', import.meta.url);
 const DIR_ANALISIS = new URL('analysis/', import.meta.url);
 /** Fixtures de la búsqueda dirigida: otra familia de providers, otra carpeta. */
 const DIR_BUSQUEDA = new URL('analysis/busqueda/', import.meta.url);
+/** Fixtures del cruce: la única familia cuya clave es la **obra**, no la lámina. */
+const DIR_CRUCE = new URL('analysis/cruce/', import.meta.url);
 
 // ---------------------------------------------------------------------------
 // Qué ve el provider mock en cada página de obra-demo.pdf.
@@ -171,7 +178,10 @@ const P3: AnalisisLamina = {
     disciplina: 'arquitectura',
     tipoLamina: 'planilla',
     escala: null,
-    escalaConfiable: true,
+    // Una planilla no imprime escala y el prompt manda `escalaConfiable: true`
+    // SOLO tras verificar contra ≥ 2 cotas: el provider real no puede devolver
+    // otra cosa que `false` acá (tests/CLAUDE.md, regla 6).
+    escalaConfiable: false,
     revision: '0',
     confianza: 0.9,
   },
@@ -280,7 +290,10 @@ const R2: AnalisisLamina = {
     disciplina: 'arquitectura',
     tipoLamina: 'planilla',
     escala: null,
-    escalaConfiable: true,
+    // Una planilla no imprime escala y el prompt manda `escalaConfiable: true`
+    // SOLO tras verificar contra ≥ 2 cotas: el provider real no puede devolver
+    // otra cosa que `false` acá (tests/CLAUDE.md, regla 6).
+    escalaConfiable: false,
     revision: '1',
     confianza: 0.9,
   },
@@ -397,7 +410,10 @@ const B2: AnalisisLamina = {
     disciplina: 'arquitectura',
     tipoLamina: 'planilla',
     escala: null,
-    escalaConfiable: true,
+    // Una planilla no imprime escala y el prompt manda `escalaConfiable: true`
+    // SOLO tras verificar contra ≥ 2 cotas: el provider real no puede devolver
+    // otra cosa que `false` acá (tests/CLAUDE.md, regla 6).
+    escalaConfiable: false,
     revision: '0',
     confianza: 0.9,
   },
@@ -408,6 +424,170 @@ const B2: AnalisisLamina = {
 const LAMINAS_BUSQUEDA: Lamina[] = [
   { clave: 'obra-busqueda-p1', encabezado: 'PLANTA PB — 1:100', analisis: B1 },
   { clave: 'obra-busqueda-p2', encabezado: 'PLANILLA DE CARPINTERÍAS — DET00', analisis: B2 },
+];
+
+// ---------------------------------------------------------------------------
+// obra-fases.pdf — la obra que ejercita el pipeline por fases (§4)
+//
+// Dos láminas y tres caminos que ninguna otra obra de fixtures recorre:
+//
+//   · **el cruce**: T1 está dibujado en la planta sin altura, y la altura de
+//     local está acotada en el corte. Ninguna regla determinista lo une —el
+//     corte no dibuja un T1 del que copiar—, así que el único camino es el
+//     cruce del expediente (`analysis/cruce/obra-fases.json`);
+//   · **la medición gráfica**: M1 no tiene largo acotado en la planta y M2 no
+//     tiene altura acotada en el corte. Los dos rectángulos sí están dibujados,
+//     y las dos láminas declaran escala 1:50: sus medidas salen de medir el
+//     dibujo, con origen `inferido`;
+//   · **la relectura de un dato de obra**: T2 se queda sin altura después del
+//     cruce, así que la consulta agrupada `dato_obra.altura_local.PB` sigue
+//     abierta y la búsqueda dirigida vuelve al corte a buscarla
+//     (`analysis/busqueda/obra-fases-p2.json`).
+//
+// Los bboxes de M1 y M2 están elegidos para que la medición dé números
+// redondos con la hoja A4 apaisada y la escala 1:50: M1 mide 7,43 m de largo y
+// M2, 2,60 m de alto.
+// ---------------------------------------------------------------------------
+
+const F1: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANTA PB',
+    codigo: 'A-01',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planta',
+    escala: '1:50',
+    escalaConfiable: true,
+    revision: '0',
+    confianza: 0.94,
+  },
+  entidades: [
+    {
+      // Sin `alturaM`: la planta no acota la altura de los tabiques, la declara
+      // el corte una vez para todo el local.
+      tipo: 'tabique',
+      nombre: 'T1',
+      bbox: [0.2, 0.2, 0.02, 0.3],
+      confianza: 0.9,
+      estadoReforma: 'nueva',
+      atributos: { tipo: 'durlock', largoM: 4, caras: 2, nivel: 'PB' },
+    },
+    {
+      tipo: 'tabique',
+      nombre: 'T2',
+      bbox: [0.5, 0.2, 0.02, 0.24],
+      confianza: 0.9,
+      estadoReforma: 'nueva',
+      atributos: { tipo: 'durlock', largoM: 3, caras: 2, nivel: 'PB' },
+    },
+    {
+      // Sin `largoM`: el muro está dibujado y no acotado. En planta, el ancho
+      // del rectángulo ES el largo del muro.
+      tipo: 'muro',
+      nombre: 'M1',
+      bbox: [0.06, 0.8, 0.5, 0.02],
+      confianza: 0.88,
+      estadoReforma: 'nueva',
+      atributos: { tipo: 'mamposteria', alturaM: 2.6, nivel: 'PB' },
+    },
+  ],
+};
+
+const F2: AnalisisLamina = {
+  rotulo: {
+    titulo: 'CORTE A-A',
+    codigo: 'A-02',
+    disciplina: 'arquitectura',
+    tipoLamina: 'corte',
+    escala: '1:50',
+    escalaConfiable: true,
+    revision: '0',
+    confianza: 0.93,
+  },
+  entidades: [
+    {
+      // Sin `alturaM`: en un corte, el alto del rectángulo ES la altura.
+      tipo: 'muro',
+      nombre: 'M2',
+      bbox: [0.15, 0.3, 0.3, 0.2476],
+      confianza: 0.87,
+      estadoReforma: 'nueva',
+      atributos: { tipo: 'mamposteria', largoM: 3, nivel: 'PB' },
+    },
+  ],
+};
+
+const LAMINAS_FASES: Lamina[] = [
+  { clave: 'obra-fases-p1', encabezado: 'PLANTA PB — 1:50', analisis: F1 },
+  { clave: 'obra-fases-p2', encabezado: 'CORTE A-A — 1:50', analisis: F2 },
+];
+
+/**
+ * Qué relaciona el cruce en el expediente de la obra Obra Fases.
+ *
+ * La clave del fixture es la obra —`slug(nombreObra)`— y no la lámina: el cruce
+ * es **una** llamada por obra. Se escribe crudo, con los valores como texto y
+ * las láminas por código de rótulo, que es lo único que el modelo conoce.
+ *
+ * Lo que declara, y por qué cada cosa:
+ *
+ *   · `nivel.PB` — un hecho de la obra por encima del umbral: se escribe en
+ *     `datos_obra`;
+ *   · `altura_revestimiento.general` a 0,50 — por debajo del umbral: NO se
+ *     escribe, y queda contado en la auditoría del cruce;
+ *   · el `alturaM` de T1 leído en el corte — un campo que una lámina completa
+ *     de otra: nace como deducción `cruce` **validada** y el ítem de seco sale
+ *     `deducido`, citando el corte;
+ *   · una relectura del corte — la fase 4 lo lee primero.
+ *
+ * T2 queda deliberadamente afuera: sin su altura, la consulta agrupada
+ * `dato_obra.altura_local.PB` sigue abierta y hay algo que la búsqueda dirigida
+ * tenga que ir a buscar.
+ */
+const CRUCE_OBRA_FASES = {
+  datosObra: [
+    {
+      clave: 'nivel.PB',
+      valor: '0,00',
+      unidad: 'm',
+      laminaCodigo: 'A-02',
+      bbox: [0.62, 0.72, 0.12, 0.04],
+      confianza: 0.9,
+    },
+    {
+      clave: 'altura_revestimiento.general',
+      valor: '2,10',
+      unidad: 'm',
+      laminaCodigo: 'A-02',
+      confianza: 0.5,
+    },
+  ],
+  completados: [
+    {
+      laminaCodigo: 'A-01',
+      entidadNombre: 'T1',
+      campo: 'alturaM',
+      valor: '2,60',
+      fuenteLaminaCodigo: 'A-02',
+      bbox: [0.15, 0.3, 0.3, 0.25],
+      confianza: 0.85,
+    },
+  ],
+  identidades: [],
+  conflictos: [],
+  relecturas: [
+    { laminaCodigo: 'A-02', queBuscar: 'la altura de local de PB, acotada en el corte' },
+  ],
+};
+
+/** Lo que la búsqueda dirigida encuentra en el corte cuando le piden la altura. */
+const BUSQUEDA_OBRA_FASES_P2 = [
+  {
+    clave: 'dato_obra.altura_local.PB',
+    campo: 'valor',
+    valor: '2,60',
+    bbox: [0.15, 0.3, 0.3, 0.25],
+    confianza: 0.8,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -582,6 +762,7 @@ async function main(): Promise<void> {
   mkdirSync(DIR_PDFS, { recursive: true });
   mkdirSync(DIR_ANALISIS, { recursive: true });
   mkdirSync(DIR_BUSQUEDA, { recursive: true });
+  mkdirSync(DIR_CRUCE, { recursive: true });
 
   const escritos: string[] = [];
 
@@ -591,6 +772,7 @@ async function main(): Promise<void> {
     ['sin-escala.pdf', await sinEscala()],
     ['escala-declarada.pdf', await documentoDe(LAMINAS_ESCALA_DECLARADA)],
     ['obra-busqueda.pdf', await documentoDe(LAMINAS_BUSQUEDA)],
+    ['obra-fases.pdf', await documentoDe(LAMINAS_FASES)],
   ];
   for (const [nombre, bytes] of pdfs) {
     const destino = new URL(nombre, DIR_PDFS);
@@ -598,7 +780,13 @@ async function main(): Promise<void> {
     escritos.push(`${fileURLToPath(destino)} (${bytes.length} bytes)`);
   }
 
-  const todas = [...LAMINAS, ...LAMINAS_REFORMA, ...LAMINAS_ESCALA_DECLARADA, ...LAMINAS_BUSQUEDA];
+  const todas = [
+    ...LAMINAS,
+    ...LAMINAS_REFORMA,
+    ...LAMINAS_ESCALA_DECLARADA,
+    ...LAMINAS_BUSQUEDA,
+    ...LAMINAS_FASES,
+  ];
   for (const lamina of todas) {
     // Los fixtures son el contrato de los tests: si no validan, no se escriben.
     const analisis = zAnalisisLamina.parse(lamina.analisis);
@@ -607,9 +795,26 @@ async function main(): Promise<void> {
     escritos.push(`${fileURLToPath(destino)} (${analisis.entidades.length} entidades)`);
   }
 
-  const busqueda = new URL('obra-busqueda-p2.json', DIR_BUSQUEDA);
-  writeFileSync(busqueda, `${JSON.stringify(BUSQUEDA_OBRA_BUSQUEDA_P2, null, 2)}\n`, 'utf8');
-  escritos.push(`${fileURLToPath(busqueda)} (${BUSQUEDA_OBRA_BUSQUEDA_P2.length} hallazgos)`);
+  const busquedas: Array<[string, unknown[]]> = [
+    ['obra-busqueda-p2.json', BUSQUEDA_OBRA_BUSQUEDA_P2],
+    ['obra-fases-p2.json', BUSQUEDA_OBRA_FASES_P2],
+  ];
+  for (const [nombre, datos] of busquedas) {
+    const destino = new URL(nombre, DIR_BUSQUEDA);
+    writeFileSync(destino, `${JSON.stringify(datos, null, 2)}\n`, 'utf8');
+    escritos.push(`${fileURLToPath(destino)} (${datos.length} hallazgos)`);
+  }
+
+  // El fixture del cruce se valida contra el contrato del mock antes de
+  // escribirse, igual que los de análisis: un fixture que el provider no podría
+  // aceptar es un test que prueba otra cosa.
+  const cruce = new URL('obra-fases.json', DIR_CRUCE);
+  const validado = zCruceFixture.parse(CRUCE_OBRA_FASES);
+  writeFileSync(cruce, `${JSON.stringify(CRUCE_OBRA_FASES, null, 2)}\n`, 'utf8');
+  escritos.push(
+    `${fileURLToPath(cruce)} (${validado.completados.length} completados, ` +
+      `${validado.datosObra.length} datos de obra)`,
+  );
 
   console.log('Fixtures generados:');
   for (const linea of escritos) console.log(`  ${linea}`);
