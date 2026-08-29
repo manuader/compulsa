@@ -43,6 +43,13 @@
       "when": 1787940395309,
       "tag": "0005_youthful_shocker",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787965398271,
+      "tag": "0006_ancient_stature",
+      "breakpoints": true
     }
   ]
 }

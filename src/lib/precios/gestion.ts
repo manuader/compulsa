@@ -115,11 +115,14 @@ export const zDatosPrecio = z.object({
     .finite('El precio tiene que ser un número.')
     .positive('El precio tiene que ser mayor que cero.')
     .max(99_999_999_999.99, 'Ese precio no entra en la columna.'),
+  // Se normaliza a mayúsculas: «usd» y «USD» son la misma moneda, y sin esto
+  // el diff del upsert vería un cambio cada vez que alguien la escribe distinto.
   moneda: z
     .string()
     .trim()
     .min(1)
     .max(8, 'La moneda va con su código corto (ARS, USD).')
+    .transform((valor) => valor.toUpperCase())
     .default(MONEDA_DEFAULT),
   fecha: z
     .string()
@@ -177,6 +180,15 @@ export function fechaHoyIso(hoy: Date = new Date()): string {
   return `${hoy.getFullYear()}-${dosDigitos(hoy.getMonth() + 1)}-${dosDigitos(hoy.getDate())}`;
 }
 
+/**
+ * La fila **viva** de esa clave, o `undefined`.
+ *
+ * Filtra por `activo` igual que todas las lecturas: una fila que salió de la
+ * lista no existe para nadie. Que una clave inactiva se lea como ausente es
+ * justamente lo que hace que reimportarla la reviva — el `onConflictDoUpdate`
+ * de `guardarPrecio` cae sobre la fila que el `UNIQUE` sí ve y le vuelve a
+ * poner `activo = true`.
+ */
 async function buscarPorClave(
   db: Db,
   estudioId: string,
@@ -189,6 +201,7 @@ async function buscarPorClave(
       and(
         eq(preciosReferencia.estudioId, estudioId),
         eq(preciosReferencia.claveItem, claveItem),
+        eq(preciosReferencia.activo, true),
       ),
     );
   return fila;
@@ -198,12 +211,20 @@ async function buscarPorClave(
 // Lectura
 // ---------------------------------------------------------------------------
 
-/** La lista del estudio, ordenada por clave de ítem con colación es-AR. */
+/**
+ * La lista del estudio, ordenada por clave de ítem con colación es-AR.
+ *
+ * Solo las filas activas: las que se sacaron de la lista siguen en la base
+ * para que la auditoría tenga a qué apuntar (§7 de `src/db/CLAUDE.md`), pero no
+ * las ve ni la pantalla ni la cascada de precios.
+ */
 export async function listarPrecios(db: Db, estudioId: string): Promise<PrecioReferencia[]> {
   const filas = await db
     .select()
     .from(preciosReferencia)
-    .where(eq(preciosReferencia.estudioId, estudioId));
+    .where(
+      and(eq(preciosReferencia.estudioId, estudioId), eq(preciosReferencia.activo, true)),
+    );
   return filas.sort((a, b) => COLACION.compare(a.claveItem, b.claveItem));
 }
 
@@ -237,6 +258,31 @@ export async function listaDelEstudio(
  * `'csv'` el import. Un ítem que se cargó a mano y después vino en un CSV
  * **queda como `'csv'`**: el origen describe la última escritura, que es lo que
  * la pantalla necesita mostrar para explicar de dónde salió el número.
+ *
+ * ## La escritura es una sola sentencia, a propósito
+ *
+ * Leer y después decidir entre `INSERT` y `UPDATE` es un check-then-act: dos
+ * pedidos simultáneos sobre la misma clave —la pantalla y un import, dos
+ * pestañas, dos personas del estudio— pueden leer «no existe» los dos y el
+ * segundo `INSERT` se estrella contra el `UNIQUE (estudio_id, clave_item)` con
+ * un 500 crudo en la cara del usuario. Por eso el write es **siempre**
+ * `INSERT … ON CONFLICT DO UPDATE` sobre esa misma clave (el patrón que ya usan
+ * `plataforma/checklists.ts` y `compulsa/flujo.ts`): gane quien gane la
+ * carrera, la fila queda escrita una sola vez y con el último valor.
+ *
+ * La lectura previa **queda**, pero solo para dos cosas que no son la
+ * integridad: calcular el diff de la auditoría y saltear la escritura cuando no
+ * cambió nada. Bajo una carrera ese diff puede quedar un poco viejo —el «antes»
+ * que se audita no es exactamente el que pisó el otro escritor— y eso es
+ * aceptable; un 500 no lo es.
+ *
+ * ## Revivir en vez de duplicar
+ *
+ * `buscarPorClave` no ve las filas inactivas, así que una clave que se había
+ * sacado de la lista se lee como ausente y entra por el camino del alta. El
+ * `ON CONFLICT` cae sobre la fila que sigue estando y le pone `activo = true`
+ * con los valores nuevos: la clave vuelve a la lista, con su id de siempre y su
+ * historia de auditoría intacta.
  */
 export async function guardarPrecio(
   db: Db,
@@ -252,12 +298,43 @@ export async function guardarPrecio(
 
   const existente = await buscarPorClave(db, actor.estudioId, validos.claveItem);
 
-  if (!existente) {
-    const [precio] = await db
-      .insert(preciosReferencia)
-      .values({ estudioId: actor.estudioId, ...validos, origen })
-      .returning();
+  const diff: Record<string, { antes: unknown; despues: unknown }> = {};
+  if (existente) {
+    const campos = ['descripcion', 'unidad', 'precio', 'moneda', 'fecha'] as const;
+    for (const campo of campos) {
+      if (existente[campo] === validos[campo]) continue;
+      diff[campo] = { antes: existente[campo], despues: validos[campo] };
+    }
+    if (existente.origen !== origen) {
+      diff.origen = { antes: existente.origen, despues: origen };
+    }
 
+    // Nada cambió: ni escritura ni auditoría.
+    if (Object.keys(diff).length === 0) {
+      return { ok: true, precio: existente, creado: false, cambios: {} };
+    }
+  }
+
+  // Un solo write, atómico. `activo: true` en el `set` es lo que revive una
+  // clave que se había sacado de la lista.
+  const [precio] = await db
+    .insert(preciosReferencia)
+    .values({ estudioId: actor.estudioId, ...validos, origen, activo: true })
+    .onConflictDoUpdate({
+      target: [preciosReferencia.estudioId, preciosReferencia.claveItem],
+      set: {
+        descripcion: validos.descripcion,
+        unidad: validos.unidad,
+        precio: validos.precio,
+        moneda: validos.moneda,
+        fecha: validos.fecha,
+        origen,
+        activo: true,
+      },
+    })
+    .returning();
+
+  if (!existente) {
     await auditar(actor, 'precio_referencia_creado', `precios_referencia:${precio.id}`, {
       claveItem: precio.claveItem,
       descripcion: precio.descripcion,
@@ -270,31 +347,6 @@ export async function guardarPrecio(
 
     return { ok: true, precio, creado: true, cambios: {} };
   }
-
-  const diff: Record<string, { antes: unknown; despues: unknown }> = {};
-  const set: Partial<typeof preciosReferencia.$inferInsert> = {};
-
-  const campos = ['descripcion', 'unidad', 'precio', 'moneda', 'fecha'] as const;
-  for (const campo of campos) {
-    if (existente[campo] === validos[campo]) continue;
-    diff[campo] = { antes: existente[campo], despues: validos[campo] };
-    set[campo] = validos[campo] as never;
-  }
-  if (existente.origen !== origen) {
-    diff.origen = { antes: existente.origen, despues: origen };
-    set.origen = origen;
-  }
-
-  // Nada cambió: ni escritura ni auditoría.
-  if (Object.keys(diff).length === 0) {
-    return { ok: true, precio: existente, creado: false, cambios: {} };
-  }
-
-  const [precio] = await db
-    .update(preciosReferencia)
-    .set(set)
-    .where(eq(preciosReferencia.id, existente.id))
-    .returning();
 
   await auditar(actor, 'precio_referencia_editado', `precios_referencia:${precio.id}`, {
     claveItem: precio.claveItem,
@@ -311,12 +363,22 @@ export async function guardarPrecio(
 /**
  * Saca un ítem de la lista de referencia.
  *
+ * **Es un `activo = false`, no un `DELETE`** (§7 de `src/db/CLAUDE.md`): la
+ * auditoría apunta a la fila por id, y borrarla dejaría un
+ * `precio_referencia_eliminado` colgado de un registro que ya no existe —un
+ * rastro que no se puede leer es peor que no tenerlo—. La fila desaparece de
+ * todas las lecturas igual, que es lo que el usuario pidió.
+ *
  * Los ítems del cómputo que se estaban costeando con esta fila pierden su
  * precio en el próximo recompute y pasan a la fuente que siga en la cascada
- * (el índice) o a ninguna. No hay copia: la lista es la fuente.
+ * (el índice) o a ninguna.
+ *
+ * Volver a cargar esa clave —a mano o por CSV— **revive esta misma fila**
+ * (`guardarPrecio`), con su id y su historia.
  *
  * Un id de otro estudio y un id inventado dan el mismo error: no se filtra
- * existencia (RNF-4).
+ * existencia (RNF-4). Una fila que ya estaba inactiva es un no-op: no escribe
+ * ni audita de nuevo.
  */
 export async function eliminarPrecio(
   db: Db,
@@ -331,8 +393,12 @@ export async function eliminarPrecio(
     .from(preciosReferencia)
     .where(eq(preciosReferencia.id, precioId));
   if (!fila || fila.estudioId !== actor.estudioId) throw new PrecioNoEncontradoError(precioId);
+  if (!fila.activo) return;
 
-  await db.delete(preciosReferencia).where(eq(preciosReferencia.id, fila.id));
+  await db
+    .update(preciosReferencia)
+    .set({ activo: false })
+    .where(eq(preciosReferencia.id, fila.id));
 
   await auditar(actor, 'precio_referencia_eliminado', `precios_referencia:${fila.id}`, {
     claveItem: fila.claveItem,
@@ -340,6 +406,7 @@ export async function eliminarPrecio(
     precio: fila.precio,
     moneda: fila.moneda,
     fecha: fila.fecha,
+    activo: { antes: true, despues: false },
   });
 }
 

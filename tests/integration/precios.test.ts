@@ -191,6 +191,34 @@ describe('guardarPrecio: upsert por (estudio, clave_item)', () => {
     expect(await acciones()).toEqual(['precio_referencia_creado']);
   });
 
+  it('dos escrituras simultáneas sobre la misma clave no chocan contra el UNIQUE', async () => {
+    // Leer-y-después-decidir es un check-then-act: los dos escritores podían
+    // leer «no existe» y el segundo INSERT se estrellaba contra el
+    // `UNIQUE (estudio_id, clave_item)` con un 500 crudo. El write es una sola
+    // sentencia `ON CONFLICT DO UPDATE`, así que gane quien gane la carrera
+    // queda una fila sola y nadie explota.
+    const resultados = await Promise.all([
+      guardarPrecio(db, actor, { ...VENTANA, precio: 145000 }, 'manual'),
+      guardarPrecio(db, actor, { ...VENTANA, precio: 158000 }, 'csv'),
+    ]);
+
+    expect(resultados.every((r) => r.ok)).toBe(true);
+    expect(await filasDe(estudioId)).toHaveLength(1);
+
+    const [fila] = await filasDe(estudioId);
+    expect([145000, 158000]).toContain(fila.precio);
+  });
+
+  it('la moneda se guarda en mayúsculas: «usd» y «USD» son la misma', async () => {
+    const alta = await guardarPrecio(db, actor, { ...VENTANA, moneda: 'usd' }, 'manual');
+    expect(alta.ok && alta.precio.moneda).toBe('USD');
+
+    // Y por eso volver a guardarla escrita distinto no es un cambio.
+    const otra = await guardarPrecio(db, actor, { ...VENTANA, moneda: 'Usd' }, 'manual');
+    expect(otra.ok && otra.cambios).toEqual({});
+    expect(await acciones()).toEqual(['precio_referencia_creado']);
+  });
+
   it('un precio que no es positivo no entra, y lo dice por campo', async () => {
     const resultado = await guardarPrecio(db, actor, { ...VENTANA, precio: 0 }, 'manual');
 
@@ -211,14 +239,73 @@ describe('guardarPrecio: upsert por (estudio, clave_item)', () => {
 });
 
 describe('eliminarPrecio', () => {
-  it('borra la fila del estudio y lo audita', async () => {
+  it('la saca de la lista sin borrar la fila: la auditoría tiene a qué apuntar', async () => {
     const alta = await guardarPrecio(db, actor, VENTANA, 'manual');
     if (!alta.ok) throw new Error('el alta tenía que andar');
 
     await eliminarPrecio(db, actor, alta.precio.id);
 
-    expect(await filasDe(estudioId)).toHaveLength(0);
+    // Para todas las lecturas, no existe.
+    expect(await listarPrecios(db, estudioId)).toHaveLength(0);
+    expect((await listaDelEstudio(db, estudioId)).size).toBe(0);
+
+    // Pero la fila sigue, inactiva: el `precio_referencia_eliminado` referencia
+    // su id y un rastro colgado de un registro borrado no se puede leer (§7).
+    const todas = await filasDe(estudioId);
+    expect(todas).toHaveLength(1);
+    expect(todas[0].activo).toBe(false);
+    expect(todas[0].id).toBe(alta.precio.id);
+
     expect(await acciones()).toEqual(['precio_referencia_creado', 'precio_referencia_eliminado']);
+  });
+
+  it('borrar dos veces no escribe ni audita de nuevo', async () => {
+    const alta = await guardarPrecio(db, actor, VENTANA, 'manual');
+    if (!alta.ok) throw new Error('el alta tenía que andar');
+
+    await eliminarPrecio(db, actor, alta.precio.id);
+    await eliminarPrecio(db, actor, alta.precio.id);
+
+    expect(await acciones()).toEqual(['precio_referencia_creado', 'precio_referencia_eliminado']);
+  });
+
+  it('volver a cargar la clave revive LA MISMA fila, no crea una segunda', async () => {
+    const alta = await guardarPrecio(db, actor, VENTANA, 'manual');
+    if (!alta.ok) throw new Error('el alta tenía que andar');
+    await eliminarPrecio(db, actor, alta.precio.id);
+
+    const revivida = await guardarPrecio(db, actor, { ...VENTANA, precio: 160000 }, 'csv');
+
+    expect(revivida.ok).toBe(true);
+    if (!revivida.ok) return;
+    // El mismo id: la fila volvió con su historia, no nació otra.
+    expect(revivida.precio.id).toBe(alta.precio.id);
+    expect(revivida.precio.activo).toBe(true);
+    expect(revivida.precio.precio).toBe(160000);
+    expect(revivida.precio.origen).toBe('csv');
+
+    expect(await filasDe(estudioId)).toHaveLength(1);
+    expect(await listarPrecios(db, estudioId)).toHaveLength(1);
+  });
+
+  it('revivirla por import también, y cuenta como nueva en el resumen', async () => {
+    const { filas } = importarCsvPrecios(
+      ['clave_item,descripcion,unidad,precio', 'aberturas.ventana.dvh,Ventana DVH,m2,145000'].join(
+        '\n',
+      ),
+    );
+    const primera = await persistirImportPrecios(db, actor, filas, HOY);
+    expect(primera.nuevos).toBe(1);
+
+    const [fila] = await filasDe(estudioId);
+    await eliminarPrecio(db, actor, fila.id);
+
+    const segunda = await persistirImportPrecios(db, actor, filas, HOY);
+
+    // Para el usuario la clave no estaba y ahora está: es una nueva.
+    expect(segunda).toMatchObject({ nuevos: 1, actualizados: 0, sinCambios: 0 });
+    expect(await filasDe(estudioId)).toHaveLength(1);
+    expect(await listarPrecios(db, estudioId)).toHaveLength(1);
   });
 
   it('un id de otro estudio no existe (RNF-4)', async () => {
