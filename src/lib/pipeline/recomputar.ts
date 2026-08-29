@@ -1121,21 +1121,28 @@ function auditar(
  *
  * El orden importa y es este:
  *
- *  1. Se leen las entidades y las deducciones ya decididas, y las **validadas**
- *     se aplican como una capa encima de las entidades
- *     (`aplicarDeduccionesValidadas`): así el dato validado sobrevive a un
- *     reanálisis de la lámina y los ítems que dependen de él salen marcados
+ *  1. Se leen las entidades, las deducciones ya decididas y los **datos de obra**
+ *     (§5.2), y las deducciones validadas se aplican como una capa encima de las
+ *     entidades (`aplicarDeduccionesValidadas`): así el dato validado sobrevive
+ *     a un reanálisis de la lámina y los ítems que dependen de él salen marcados
  *     `origen: 'deducido'`.
- *  2. `computarObra()` produce cómputo y consultas; `deducir()` produce
- *     propuestas nuevas e inconsistencias.
- *  3. Las inconsistencias del motor de deducción entran a la bandeja por el
+ *  2. `deducir()` produce propuestas nuevas e inconsistencias. Va **antes** de
+ *     computar y no después: lo que nace validado (`estadoInicialDeduccion`) se
+ *     suma a la capa del paso 1, así que el cómputo de esta misma corrida ya lo
+ *     usa. Al revés, la planilla mostraba el dato recién en el recompute
+ *     siguiente.
+ *  3. `computarObraConPlantillas()` produce cómputo y consultas, con la capa de
+ *     deducciones, el tipo de cada lámina y los datos de obra.
+ *  4. Las inconsistencias del motor de deducción entran a la bandeja por el
  *     mismo camino que el resto de los hallazgos (`deduccion.*` no es un
  *     namespace protegido, ver `claves.ts`): se emiten en esta misma pasada, así
  *     que el conciliador puede abrirlas y cerrarlas solo.
- *  4. Se refresca el resumen ejecutivo (`persistirResumen`), que es una lectura
+ *  5. La cascada de precios (§5.6) corre sobre los ítems ya sincronizados: el
+ *     precio es del ítem que quedó activo, con la cantidad que quedó.
+ *  6. Se refresca el resumen ejecutivo (`persistirResumen`), que es una lectura
  *     del estado que se acaba de sincronizar.
  *
- * `deps.resumen = false` saltea el paso 4, y lo usa **solo** `procesarLamina`:
+ * `deps.resumen = false` saltea el paso 6, y lo usa **solo** `procesarLamina`:
  * ahí el recompute corre una vez por lámina y `procesarDocumento` rehace el
  * resumen una sola vez al final, con todas analizadas. Publicar N resúmenes a
  * medio hacer sería ruido en `auditoria` y en la pantalla.

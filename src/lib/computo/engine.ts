@@ -367,7 +367,14 @@ function correrPlantillas(
 
   hallazgos.push(...sanityChecks(entidades));
 
-  return { items, hallazgos: deduplicarPorClave(hallazgos), origenPorEntidad };
+  // El mapa vacío no se declara: una obra donde ningún campo salió de un dato de
+  // obra devuelve exactamente el `{ items, hallazgos }` de siempre (misma regla
+  // que `conOrigenes()` en las plantillas).
+  return {
+    items,
+    hallazgos: deduplicarPorClave(hallazgos),
+    ...(origenPorEntidad.size === 0 ? {} : { origenPorEntidad }),
+  };
 }
 
 /**
@@ -466,5 +473,11 @@ export function computarObraConPlantillas(
 
   // Los hallazgos son los de la pasada real: la de control es una hipótesis
   // ("¿qué pasaría si el dato deducido no estuviera?"), no el estado de la obra.
-  return { items, hallazgos: resultado.hallazgos, origenPorEntidad: resultado.origenPorEntidad };
+  return {
+    items,
+    hallazgos: resultado.hallazgos,
+    ...(resultado.origenPorEntidad === undefined
+      ? {}
+      : { origenPorEntidad: resultado.origenPorEntidad }),
+  };
 }
