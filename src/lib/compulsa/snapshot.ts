@@ -43,10 +43,15 @@ export const SPECS_CRITICAS_POR_RUBRO: Record<RubroId, readonly string[]> = {
   // el material), y además el sistema ya viaja en la clave y en la descripción
   // del ítem — `sanitaria.canieria.ac.20`, "Cañería de agua caliente Ø 20".
   sanitaria: ['material', 'diametro'],
+  // El material de una terminación suelta (un cuadro de locales dice
+  // "porcelanato"): cambiarlo por otro no es un descuento, es otro piso. El
+  // material que declara un ambiente ya viaja en la descripción del ítem
+  // ("Solado de porcelanato"), que es por rubro y no por entidad.
   terminaciones: ['material'],
   // Eléctrica no tiene spec de compra: el tipo de boca ES el ítem y el circuito
   // es información de proyecto, no algo que el proveedor pueda sustituir.
   electrica: [],
+  // Lo que se demuele no tiene spec: se contrata la tarea, no un material.
   demolicion: [],
 };
 

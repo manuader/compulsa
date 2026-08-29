@@ -32,6 +32,15 @@
  * Sin el parámetro `laminas` no hay forma de saber qué lámina es cuál, así que
  * el conteo vuelve a ser "una por aparición": es el comportamiento histórico y
  * el que usan los tests de rubro puro. El pipeline siempre lo pasa.
+ *
+ * ## Lo que se retira no es de este rubro
+ *
+ * Una carpintería marcada `demoler` **no se computa acá**. Sacarla es una tarea
+ * de demolición —la contrata el mismo que tira los muros, no el carpintero que
+ * fabrica las nuevas— y desde que existe el rubro `demolicion` (§5.7) esas
+ * unidades las cuenta `demolicion.carpinterias`. Este rubro llegó a emitir
+ * también un `aberturas.retiro.<tag>`: con los dos vivos, una obra de reforma
+ * pedía dos veces el mismo retiro en la misma planilla.
  */
 import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import { armarItem } from '@/lib/computo/presentacion';
@@ -130,7 +139,6 @@ export const plantillaAberturas = {
     const items: ItemComputo[] = [];
     const hallazgos: HallazgoDetectado[] = [];
     const nuevas = new Map<string, EntidadPersistida[]>();
-    const retiros = new Map<string, EntidadPersistida[]>();
     const sinMedidas = new Set<string>();
     const avisados = new Set<string>();
 
@@ -162,15 +170,11 @@ export const plantillaAberturas = {
 
     for (const entidad of entidades) {
       if (entidad.tipo !== 'abertura') continue;
-      const alcance = alcanceDeReforma(entidad.estadoReforma);
-      if (alcance === 'ninguno') continue; // lo existente no se computa
+      // Lo existente no se computa; lo que se retira es del rubro demolición.
+      if (alcanceDeReforma(entidad.estadoReforma) !== 'completo') continue;
 
       const tag = tagDe(entidad);
       const clave = claveDeTag(entidad);
-      if (alcance === 'demolicion') {
-        agregar(retiros, clave, entidad); // el retiro no necesita medidas
-        continue;
-      }
 
       const faltantes = MEDIDAS.filter(({ campo }) => leerMedida(entidad, campo) === null);
       if (faltantes.length > 0) {
@@ -213,25 +217,6 @@ export const plantillaAberturas = {
           compra: { tipo: 'medida' },
           // Todas las entidades del grupo: la planilla no suma cantidad, pero es
           // documentación del ítem y su fuente tiene que quedar citada (P1).
-          entidades: grupo,
-          ...(conteo.supuesto ? { origen: 'supuesto' as const } : {}),
-        }),
-      );
-    }
-
-    for (const [clave, grupo] of retiros) {
-      const tag = tagDe(grupo[0]!);
-      const conteo = contarInstancias(grupo, tipoDe);
-      if (conteo.supuesto) avisarCantidadSupuesta(clave, tag, grupo);
-      items.push(
-        armarItem({
-          rubro: RUBRO,
-          claveItem: `${RUBRO}.retiro.${tag}`,
-          descripcion: `Retiro de ${tag}`,
-          unidad: 'u',
-          cantNeta: conteo.cantidad,
-          desperdicioPct: 0,
-          compra: { tipo: 'global' },
           entidades: grupo,
           ...(conteo.supuesto ? { origen: 'supuesto' as const } : {}),
         }),

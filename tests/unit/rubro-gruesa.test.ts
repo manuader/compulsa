@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { plantillaGruesa } from '@/lib/rubros/gruesa';
-import type { ItemComputo } from '@/types/domain';
+import type { DatoObraResuelto, Fuente, ItemComputo } from '@/types/domain';
 
 function muro(over: Partial<EntidadPersistida> & { id: string }): EntidadPersistida {
   return {
@@ -73,22 +73,19 @@ describe('plantilla gruesa: muro de 6 × 2,60 m (15,6 m²)', () => {
 });
 
 describe('plantilla gruesa: reforma y huecos', () => {
-  it('un muro a demoler computa demolición: 3 × 2,60 = 7,8 m² sin desperdicio', () => {
+  it('un muro a demoler NO es obra gruesa: sus m² los computa el rubro demolición', () => {
     const aDemoler = muro({
       id: 'm2',
       nombre: 'M2',
       estadoReforma: 'demoler',
       atributos: { largoM: 3, alturaM: 2.6, tipo: 'mamposteria' },
     });
-    const { items } = plantillaGruesa.computar([aDemoler], 'reforma');
+    const { items, hallazgos } = plantillaGruesa.computar([aDemoler], 'reforma');
 
-    expect(items.map((i) => i.claveItem)).toEqual(['gruesa.demolicion']);
-    const demolicion = items[0]!;
-    expect(demolicion.unidad).toBe('m2');
-    expect(demolicion.cantNeta).toBe(7.8);
-    expect(demolicion.desperdicioPct).toBe(0);
-    expect(demolicion.cantCompra).toBe(7.8);
-    expect(demolicion.presentacion).toBe('global');
+    // Antes salía `gruesa.demolicion`; con el rubro `demolicion` (§5.7) eso
+    // habría pedido la misma tarea dos veces en la misma planilla.
+    expect(items).toEqual([]);
+    expect(hallazgos).toEqual([]);
   });
 
   it('lo existente no se computa', () => {
@@ -98,7 +95,7 @@ describe('plantilla gruesa: reforma y huecos', () => {
     expect(hallazgos).toEqual([]);
   });
 
-  it('convive lo nuevo con lo que se demuele', () => {
+  it('lo nuevo se computa aunque en la obra haya muros a demoler', () => {
     const aDemoler = muro({
       id: 'm2',
       nombre: 'M2',
@@ -110,19 +107,53 @@ describe('plantilla gruesa: reforma y huecos', () => {
     const item = porClave(items);
 
     expect(item['gruesa.ladrillos']!.cantNeta).toBe(257.4); // el muro a demoler no aporta ladrillos
-    expect(item['gruesa.demolicion']!.cantNeta).toBe(7.8);
+    expect(item['gruesa.ladrillos']!.fuentes).toHaveLength(1); // ni su lámina
   });
 
-  it('sin alturaM el muro no se computa y sale hallazgo bloqueante', () => {
+  it('sin alturaM y sin dato de obra el muro no se computa: consulta de dato de obra', () => {
     const sinAltura = muro({ id: 'm4', nombre: 'M4', atributos: { largoM: 5, tipo: 'mamposteria' } });
     const { items, hallazgos } = plantillaGruesa.computar([sinAltura], 'nueva');
 
     expect(items).toEqual([]);
     expect(hallazgos).toHaveLength(1);
-    expect(hallazgos[0]!.clave).toBe('gruesa.altura_muros.M4');
+    expect(hallazgos[0]!.clave).toBe('dato_obra.altura_local.general');
     expect(hallazgos[0]!.tipo).toBe('faltante');
-    expect(hallazgos[0]!.bloqueante).toBe(true);
-    expect(hallazgos[0]!.targetRef).toEqual({ entidadId: 'm4', campos: ['alturaM'] });
+    expect(hallazgos[0]!.targetDato).toEqual({
+      clave: 'altura_local.general',
+      unidad: 'm',
+      entidades: ['m4'],
+    });
+  });
+
+  it('la altura del local computa los muros y su lámina queda citada', () => {
+    const corte: Fuente = { laminaId: 'L9', bbox: [0.2, 0.3, 0.5, 0.4], detalle: 'Corte A-A' };
+    const datos = new Map<string, DatoObraResuelto>([
+      [
+        'altura_local.general',
+        {
+          clave: 'altura_local.general',
+          valor: 2.6,
+          unidad: 'm',
+          origen: 'deducido',
+          fuentes: [corte],
+          confianza: 0.9,
+        },
+      ],
+    ]);
+    const sinAltura = muro({ id: 'm4', nombre: 'M4', atributos: { largoM: 6, tipo: 'mamposteria' } });
+    const { items, hallazgos, origenPorEntidad } = plantillaGruesa.computar(
+      [sinAltura],
+      'nueva',
+      undefined,
+      datos,
+    );
+    const item = porClave(items);
+
+    expect(hallazgos).toEqual([]);
+    expect(item['gruesa.ladrillos']!.cantNeta).toBe(257.4); // 6 × 2,60 × 16,5
+    expect(item['gruesa.ladrillos']!.fuentes.at(-1)).toEqual(corte);
+    expect(item['gruesa.arena']!.fuentes.at(-1)).toEqual(corte);
+    expect(origenPorEntidad!.get('m4')!.get('alturaM')).toBe('deducido');
   });
 
   it('un muro que no es de mampostería no se auto-computa (RF-506)', () => {

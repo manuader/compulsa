@@ -38,7 +38,15 @@ import {
 } from '@/lib/computo/presentacion';
 import { ETIQUETA_UNIDAD, formatearNumero, redondear2 } from '@/lib/computo/unidades';
 import { PLANTILLAS, type PlantillaRubro, type ResultadoComputo } from '@/lib/rubros/index';
-import { RUBROS, type ConfigEstudio, type ItemComputo, type RubroId, type TipoObra, type Unidad } from '@/types/domain';
+import {
+  RUBROS,
+  type ConfigEstudio,
+  type DatoObraResuelto,
+  type ItemComputo,
+  type RubroId,
+  type TipoObra,
+  type Unidad,
+} from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Núcleo puro: recálculo de la compra cuando cambia el desperdicio
@@ -270,14 +278,24 @@ function conConfig(
       entidades: readonly EntidadPersistida[],
       tipoObra: TipoObra,
       laminas?: readonly LaminaDeComputo[],
+      datosObra?: ReadonlyMap<string, DatoObraResuelto>,
     ): ResultadoComputo {
-      const { items, hallazgos } = plantilla.computar(entidades, tipoObra, laminas);
+      // Los datos de obra se pasan tal cual: la cadena de respaldo (§5.2) es de
+      // la plantilla, y una envoltura que se los comiera dejaría al pipeline
+      // preguntando alturas que la obra ya tiene resueltas.
+      const { items, hallazgos, origenPorEntidad } = plantilla.computar(
+        entidades,
+        tipoObra,
+        laminas,
+        datosObra,
+      );
       return {
         items: items.map((item) =>
           aplicarDesperdicio(item, desperdicioEfectivo(item, plantilla, desperdiciosPct)),
         ),
         // Los hallazgos no dependen del desperdicio: pasan tal cual.
         hallazgos,
+        ...(origenPorEntidad === undefined ? {} : { origenPorEntidad }),
       };
     },
   };

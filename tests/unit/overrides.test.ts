@@ -20,7 +20,14 @@ import { describe, expect, it } from 'vitest';
 import { computarRubro, type EntidadPersistida } from '@/lib/computo/engine';
 import { plantillasConConfig, recomputarCompra } from '@/lib/rubros/overrides';
 import { PLANTILLAS } from '@/lib/rubros/index';
-import { CONFIG_ESTUDIO_DEFAULT, zConfigEstudio, zMandato, type ConfigEstudio } from '@/types/domain';
+import {
+  CONFIG_ESTUDIO_DEFAULT,
+  zConfigEstudio,
+  zMandato,
+  type ConfigEstudio,
+  type DatoObraResuelto,
+  type Fuente,
+} from '@/types/domain';
 
 /** 5,02 × 2,50 m a dos caras = 25,10 m² netos de placa. */
 function tabique(): EntidadPersistida {
@@ -164,7 +171,46 @@ describe('plantillasConConfig: sin overrides es la identidad observable', () => 
     const { items, hallazgos } = computarRubro([sinAltura], plantillas.seco, 'nueva');
 
     expect(items).toEqual([]);
-    expect(hallazgos.map((h) => h.clave)).toEqual(['seco.altura_tabiques.T1']);
+    expect(hallazgos.map((h) => h.clave)).toEqual(['dato_obra.altura_local.general']);
+  });
+
+  it('los datos de obra llegan a la plantilla envuelta (cadena de respaldo)', () => {
+    // Si la envoltura se comiera el cuarto parámetro, el pipeline preguntaría
+    // alturas que la obra ya tiene resueltas y el ítem saldría sin la fuente
+    // del corte: el override de desperdicio no puede costar eso.
+    const sinAltura: EntidadPersistida = {
+      ...tabique(),
+      atributos: { largoM: 5, caras: 2, tipo: 'durlock' },
+    };
+    const corte: Fuente = { laminaId: 'L9', bbox: [0.2, 0.3, 0.5, 0.4], detalle: 'Corte A-A' };
+    const datosObra = new Map<string, DatoObraResuelto>([
+      [
+        'altura_local.general',
+        {
+          clave: 'altura_local.general',
+          valor: 2.5,
+          unidad: 'm',
+          origen: 'deducido',
+          fuentes: [corte],
+          confianza: 0.9,
+        },
+      ],
+    ]);
+
+    const plantillas = plantillasConConfig(config({ 'seco.placas': 15 }));
+    const { items, hallazgos, origenPorEntidad } = plantillas.seco.computar(
+      [sinAltura],
+      'nueva',
+      undefined,
+      datosObra,
+    );
+    const placas = items.find((item) => item.claveItem === 'seco.placas')!;
+
+    expect(hallazgos).toEqual([]);
+    expect(placas.cantNeta).toBe(25); // 5 × 2,50 × 2 caras
+    expect(placas.desperdicioPct).toBe(15); // el override sigue aplicándose
+    expect(placas.fuentes.at(-1)).toEqual(corte);
+    expect(origenPorEntidad!.get('t1')!.get('alturaM')).toBe('deducido');
   });
 });
 

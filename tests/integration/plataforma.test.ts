@@ -845,7 +845,7 @@ describe('checklists por estudio', () => {
   it('sin filas en la base, el checklist efectivo es el de las plantillas', async () => {
     const efectivo = await checklistEfectivo(db, estudioId, 'seco');
 
-    expect(efectivo.get('seco.altura_tabiques')).toEqual({ activo: true, bloqueante: true });
+    expect(efectivo.get('seco.largo_tabiques')).toEqual({ activo: true, bloqueante: true });
     expect(efectivo.get('pintura.vanos_sin_descontar')).toBeUndefined();
 
     const pintura = await checklistEfectivo(db, estudioId, 'pintura');
@@ -854,23 +854,23 @@ describe('checklists por estudio', () => {
   });
 
   it('el toggle se persiste y cambia el checklist efectivo', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
 
     const efectivo = await checklistEfectivo(db, estudioId, 'seco');
-    expect(efectivo.get('seco.altura_tabiques')).toEqual({ activo: false, bloqueante: true });
+    expect(efectivo.get('seco.largo_tabiques')).toEqual({ activo: false, bloqueante: true });
 
     const [fila] = await db
       .select()
       .from(checklistsEstudio)
       .where(and(eq(checklistsEstudio.estudioId, estudioId), eq(checklistsEstudio.rubro, 'seco')));
-    expect(fila.itemId).toBe('seco.altura_tabiques');
+    expect(fila.itemId).toBe('seco.largo_tabiques');
     expect(fila.descripcion).not.toBe('');
     expect(await acciones()).toContain('checklist_item_actualizado');
   });
 
   it('volver a guardar el mismo ítem actualiza la fila, no agrega otra', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', {
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', {
       activo: true,
       bloqueante: false,
     });
@@ -885,10 +885,10 @@ describe('checklists por estudio', () => {
   });
 
   it('el toggle de un estudio no toca al otro', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
 
     const ajeno = await checklistEfectivo(db, otroEstudioId, 'seco');
-    expect(ajeno.get('seco.altura_tabiques')).toEqual({ activo: true, bloqueante: true });
+    expect(ajeno.get('seco.largo_tabiques')).toEqual({ activo: true, bloqueante: true });
   });
 
   it('un ítem de checklist que no existe en la plantilla se rechaza', async () => {
@@ -899,7 +899,7 @@ describe('checklists por estudio', () => {
 
   it('un lectura no edita checklists', async () => {
     await expect(
-      guardarItemChecklist(db, comoRol('lectura'), 'seco', 'seco.altura_tabiques', {
+      guardarItemChecklist(db, comoRol('lectura'), 'seco', 'seco.largo_tabiques', {
         activo: false,
       }),
     ).rejects.toThrow(RolInsuficienteError);
@@ -912,14 +912,14 @@ describe('checklists por estudio', () => {
     expect(lista.map((i) => i.itemId)).toEqual(CHECKLIST_DEFAULT.seco.map((i) => i.itemId));
     const largo = lista.find((i) => i.itemId === 'seco.largo_tabiques');
     expect(largo).toMatchObject({ activo: true, bloqueante: false, personalizado: true });
-    const altura = lista.find((i) => i.itemId === 'seco.altura_tabiques');
-    expect(altura).toMatchObject({ activo: true, bloqueante: true, personalizado: false });
+    const sistema = lista.find((i) => i.itemId === 'seco.sistema_tabique');
+    expect(sistema).toMatchObject({ activo: true, bloqueante: true, personalizado: false });
   });
 });
 
 describe('el checklist manda sobre el gate de aprobación', () => {
   const HALLAZGOS = [
-    { rubro: 'seco' as const, bloqueante: true, estado: 'abierto' as const, checklistItem: 'seco.altura_tabiques' },
+    { rubro: 'seco' as const, bloqueante: true, estado: 'abierto' as const, checklistItem: 'seco.largo_tabiques' },
     { rubro: null, bloqueante: true, estado: 'abierto' as const, checklistItem: 'escala' },
   ];
 
@@ -931,7 +931,7 @@ describe('el checklist manda sobre el gate de aprobación', () => {
   });
 
   it('desactivar el ítem lo deja de frenar, y no toca al bloqueo por escala', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const efectivo = await checklistEfectivo(db, estudioId, 'seco');
     const ajustados = ajustarHallazgosAlChecklist(HALLAZGOS, efectivo);
 
@@ -941,7 +941,7 @@ describe('el checklist manda sobre el gate de aprobación', () => {
   });
 
   it('marcarlo no bloqueante también lo libera, sin sacarlo de la bandeja', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { bloqueante: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { bloqueante: false });
     const efectivo = await checklistEfectivo(db, estudioId, 'seco');
 
     expect(ajustarHallazgosAlChecklist(HALLAZGOS, efectivo)[0].bloqueante).toBe(false);
@@ -1020,7 +1020,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
       rubro: 'seco' as const,
       bloqueante: true,
       estado: 'abierto' as const,
-      checklistItem: 'seco.altura_tabiques',
+      checklistItem: 'seco.largo_tabiques',
     },
     {
       rubro: 'aberturas' as const,
@@ -1044,7 +1044,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
 
     const total = RUBROS.reduce((suma, rubro) => suma + CHECKLIST_DEFAULT[rubro].length, 0);
     expect(efectivo.size).toBe(total);
-    expect(efectivo.get('seco.altura_tabiques')).toEqual({ activo: true, bloqueante: true });
+    expect(efectivo.get('seco.largo_tabiques')).toEqual({ activo: true, bloqueante: true });
     expect(efectivo.get('aberturas.medidas_vano')).toEqual({ activo: true, bloqueante: true });
   });
 
@@ -1055,7 +1055,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
   });
 
   it('desactivar un ítem de checklist baja el contador', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const efectivo = await checklistEfectivoDeTodos(db, estudioId);
 
     expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(2);
@@ -1065,7 +1065,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
     await guardarItemChecklist(db, titular, 'aberturas', 'aberturas.medidas_vano', {
       bloqueante: false,
     });
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const efectivo = await checklistEfectivoDeTodos(db, estudioId);
 
     // Queda solo la de escala, que no está en ningún checklist.
@@ -1073,7 +1073,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
   });
 
   it('el checklist de otro estudio no afecta el contador de este (RNF-4)', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const ajeno = await checklistEfectivoDeTodos(db, otroEstudioId);
 
     expect(contarBloqueantes(CONSULTAS, ajeno)).toBe(3);
@@ -1084,7 +1084,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
     // `HallazgoParaGate` y tira la identidad de la fila, así que no sirve para
     // decidir qué mostrar. Con el `bloqueante` crudo, el encabezado decía «2
     // bloqueantes» y el filtro seguía listando tres.
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const efectivo = await checklistEfectivoDeTodos(db, estudioId);
 
     // La bandeja aplica primero el filtro de estado (por defecto, «abiertas») y
@@ -1315,7 +1315,7 @@ describe('matriz de roles contra los cores que mutan', () => {
       nombre: 'guardarItemChecklist',
       minimo: 'colaborador',
       correr: (actor) =>
-        guardarItemChecklist(db, actor, 'seco', 'seco.altura_tabiques', { activo: false }),
+        guardarItemChecklist(db, actor, 'seco', 'seco.largo_tabiques', { activo: false }),
     },
     {
       nombre: 'eliminarObra',

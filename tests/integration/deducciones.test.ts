@@ -392,7 +392,7 @@ describe('validar una deducción', () => {
     expect(placas?.origen).toBe('deducido');
     expect(placas?.cantNeta).toBe(26);
     expect(placas?.cantCompra).toBe(31.68);
-    expect((await hallazgoPorClave('seco.altura_tabiques.T1'))?.estado).toBe('descartado');
+    expect((await hallazgoPorClave('dato_obra.altura_local.general'))?.estado).toBe('descartado');
   });
 
   it('el dato validado sobrevive a un reanálisis de la lámina', async () => {
@@ -656,7 +656,7 @@ describe('rechazar una deducción', () => {
 
     // Y el tabique sigue sin computarse: el dato falta de verdad.
     expect(await itemPorClave('seco.placas')).toBeUndefined();
-    expect((await hallazgoPorClave('seco.altura_tabiques.T1'))?.estado).toBe('abierto');
+    expect((await hallazgoPorClave('dato_obra.altura_local.general'))?.estado).toBe('abierto');
   });
 
   it('un usuario de solo lectura tampoco rechaza', async () => {

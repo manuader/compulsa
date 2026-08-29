@@ -241,7 +241,9 @@ describe('el harness sabe ponerse en rojo', () => {
 describe('núcleo del harness', () => {
   it('deriva el rubro del prefijo de la clave y rechaza una clave sin rubro', () => {
     expect(rubroDeClave('seco.placas')).toBe('seco');
-    expect(rubroDeClave('aberturas.retiro.V2')).toBe('aberturas');
+    // Una clave de tres tramos: el rubro es el primero, no la clave entera.
+    expect(rubroDeClave('demolicion.carpinterias')).toBe('demolicion');
+    expect(rubroDeClave('terminaciones.solado.porcelanato')).toBe('terminaciones');
     expect(() => rubroDeClave('zocalos.madera')).toThrow(/no empieza con un rubro conocido/);
   });
 

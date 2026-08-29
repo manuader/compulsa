@@ -779,17 +779,17 @@ describe('confirmarLote', () => {
 
 describe('marcarExistente', () => {
   it('sobre un ambiente ya construido, sus ítems salen del cómputo', async () => {
-    // Sin altura no hay m² de pared, pero el cielorraso sí se computa: es el
+    // Sin perímetro no hay m² de pared, pero el cielorraso sí se computa: es el
     // caso donde la entidad tiene ítems Y una consulta abierta que la apunta.
     const entidadId = await insertarEntidad({
       tipo: 'ambiente',
       nombre: 'Estar',
-      atributos: { superficieM2: 20, perimetroM: 18 },
+      atributos: { superficieM2: 20, alturaM: 2.6 },
     });
     await recomputarObra(obraId);
 
-    const abierto = await hallazgoPorClave('pintura.altura_ambiente.Estar');
-    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['alturaM'] });
+    const abierto = await hallazgoPorClave('pintura.perimetro_ambiente.Estar');
+    expect(abierto?.targetRef).toEqual({ entidadId, campos: ['perimetroM'] });
     expect((await itemPorClave('pintura.latex_cielorrasos'))?.cantNeta).toBe(4);
 
     const resultado = await marcarExistente({ obraId, hallazgoId: abierto!.id }, actor);
@@ -800,7 +800,7 @@ describe('marcarExistente', () => {
 
     expect((await itemPorClave('pintura.latex_cielorrasos'))?.estado).toBe('anulado');
 
-    const resuelto = await hallazgoPorClave('pintura.altura_ambiente.Estar');
+    const resuelto = await hallazgoPorClave('pintura.perimetro_ambiente.Estar');
     expect(resuelto?.estado).toBe('respondido');
     expect(resuelto?.respuestaJson).toEqual({ tipo: 'existente' });
     expect(resuelto?.resueltoPor).toBe(usuarioId);
@@ -821,14 +821,14 @@ describe('marcarExistente', () => {
     const t2 = await insertarEntidad({
       tipo: 'tabique',
       nombre: 'T2',
-      atributos: { largoM: 2, tipo: 'durlock' },
+      atributos: { alturaM: 2.6, tipo: 'durlock' },
     });
     await recomputarObra(obraId);
 
     // Solo T1 computa: 3 × 2,60 × 2 caras = 15,6 m².
     expect((await itemPorClave('seco.placas'))?.cantNeta).toBe(15.6);
-    const abierto = await hallazgoPorClave('seco.altura_tabiques.T2');
-    expect(abierto?.targetRef).toEqual({ entidadId: t2, campos: ['alturaM'] });
+    const abierto = await hallazgoPorClave('seco.largo_tabiques.T2');
+    expect(abierto?.targetRef).toEqual({ entidadId: t2, campos: ['largoM'] });
 
     expect(await marcarExistente({ obraId, hallazgoId: abierto!.id }, actor)).toEqual({ ok: true });
 
@@ -838,7 +838,7 @@ describe('marcarExistente', () => {
 
     // Un recompute posterior no vuelve a abrir la consulta de T2.
     await recomputarObra(obraId);
-    expect((await hallazgoPorClave('seco.altura_tabiques.T2'))?.estado).toBe('respondido');
+    expect((await hallazgoPorClave('seco.largo_tabiques.T2'))?.estado).toBe('respondido');
   });
 });
 
@@ -928,12 +928,12 @@ describe('confirmarSupuesto y descarte', () => {
     await insertarEntidad({
       tipo: 'tabique',
       nombre: 'T1',
-      atributos: { largoM: 3, tipo: 'durlock' },
+      atributos: { alturaM: 2.6, tipo: 'durlock' },
     });
     await recomputarObra(obraId);
 
     const uno = await hallazgoPorClave('aberturas.medidas_vano.P1');
-    const dos = await hallazgoPorClave('seco.altura_tabiques.T1');
+    const dos = await hallazgoPorClave('seco.largo_tabiques.T1');
 
     const resultado = await descartarLote(
       { obraId, hallazgoIds: [uno!.id, dos!.id] },
@@ -942,7 +942,7 @@ describe('confirmarSupuesto y descarte', () => {
     expect(resultado).toEqual({ ok: true, descartados: 2, respondidas: 0 });
 
     expect((await hallazgoPorClave('aberturas.medidas_vano.P1'))?.estado).toBe('descartado');
-    expect((await hallazgoPorClave('seco.altura_tabiques.T1'))?.estado).toBe('descartado');
+    expect((await hallazgoPorClave('seco.largo_tabiques.T1'))?.estado).toBe('descartado');
     expect(
       (await auditoriaDelUsuario()).filter((r) => r.accion === 'hallazgo_descartado'),
     ).toHaveLength(2);
@@ -979,14 +979,14 @@ describe('confirmarSupuesto y descarte', () => {
     await insertarEntidad({
       tipo: 'tabique',
       nombre: 'T1',
-      atributos: { largoM: 3, tipo: 'durlock' },
+      atributos: { alturaM: 2.6, tipo: 'durlock' },
     });
     await recomputarObra(obraId);
 
     // La de la abertura ya está respondida; la del tabique sigue abierta.
     const respondida = await hallazgoPorClave('aberturas.medidas_vano.P1');
     await responderHallazgo({ obraId, hallazgoId: respondida!.id, valor: '2,05' }, actor);
-    const abierta = await hallazgoPorClave('seco.altura_tabiques.T1');
+    const abierta = await hallazgoPorClave('seco.largo_tabiques.T1');
 
     const resultado = await descartarLote(
       { obraId, hallazgoIds: [respondida!.id, abierta!.id] },
@@ -999,7 +999,7 @@ describe('confirmarSupuesto y descarte', () => {
     expect(intacta?.respuestaJson).toEqual({ tipo: 'valor', campo: 'altoM', valor: 2.05 });
     expect(intacta?.resueltoPor).toBe(usuarioId);
 
-    expect((await hallazgoPorClave('seco.altura_tabiques.T1'))?.estado).toBe('descartado');
+    expect((await hallazgoPorClave('seco.largo_tabiques.T1'))?.estado).toBe('descartado');
     expect(
       (await auditoriaDelUsuario()).filter((r) => r.accion === 'hallazgo_descartado'),
     ).toHaveLength(1);
