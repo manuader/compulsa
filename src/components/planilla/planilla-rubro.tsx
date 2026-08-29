@@ -72,6 +72,14 @@ export function totalesPorUnidad(
   }));
 }
 
+/** El subtotal del rubro, calculado y formateado en el server. */
+export interface SubtotalRubro {
+  /** `$ 1.234.500` — la suma de los subtotales de los ítems con precio. */
+  monto: string;
+  /** Cuántos ítems activos del rubro quedaron sin precio (0 ⇒ el subtotal es completo). */
+  sinPrecio: number;
+}
+
 export interface PlanillaRubroProps {
   obraId: string;
   rubro: RubroId;
@@ -80,6 +88,13 @@ export interface PlanillaRubroProps {
   /** Desperdicio de referencia del rubro: prellena el alta manual. */
   desperdicioDefaultPct: number;
   items: readonly ItemPlanilla[];
+  /**
+   * Lo que suman los ítems activos del rubro **que tienen precio**, ya
+   * formateado, y cuántos quedaron sin él. `null` ⇒ ninguno tiene precio: la
+   * fila de subtotal no se dibuja, porque un subtotal de nada es un cero que
+   * miente.
+   */
+  subtotal: SubtotalRubro | null;
   /** Consultas bloqueantes abiertas del rubro (0 ⇒ el gate da). */
   bloqueantes: number;
   /** `colaborador` o más: agregar, editar y anular ítems (RF-1201). */
@@ -95,6 +110,7 @@ export function PlanillaRubro({
   estadoRubro,
   desperdicioDefaultPct,
   items,
+  subtotal,
   bloqueantes,
   puedeEditar,
   puedeAprobar,
@@ -223,6 +239,8 @@ export function PlanillaRubro({
               <TableHeaderCell numeric>Desp. %</TableHeaderCell>
               <TableHeaderCell numeric>Cant. compra</TableHeaderCell>
               <TableHeaderCell>Presentación</TableHeaderCell>
+              <TableHeaderCell numeric>Precio unit.</TableHeaderCell>
+              <TableHeaderCell numeric>Subtotal</TableHeaderCell>
               <TableHeaderCell>Origen</TableHeaderCell>
               <TableHeaderCell numeric>Confianza</TableHeaderCell>
               <TableHeaderCell>Fuente</TableHeaderCell>
@@ -241,11 +259,28 @@ export function PlanillaRubro({
                 <TableCell numeric>{formatearNumero(total.cantNeta)}</TableCell>
                 <TableCell />
                 <TableCell numeric>{formatearNumero(total.cantCompra)}</TableCell>
-                <TableCell colSpan={5} className="text-xs font-normal text-neutral-500">
+                <TableCell colSpan={7} className="text-xs font-normal text-neutral-500">
                   Suma de los ítems activos que se ven en la tabla.
                 </TableCell>
               </TableRow>
             ))}
+
+            {/* El subtotal del rubro va sobre TODOS sus ítems activos, no sobre
+                los que quedaron a la vista: filtrar por origen cambia la tabla,
+                no lo que cuesta el rubro. */}
+            {subtotal ? (
+              <TableRow className="bg-neutral-100 font-semibold">
+                <TableCell colSpan={7}>Subtotal de {nombreRubro.toLowerCase()}</TableCell>
+                <TableCell numeric>{subtotal.monto}</TableCell>
+                <TableCell colSpan={4} className="text-xs font-normal text-neutral-500">
+                  {subtotal.sinPrecio === 0
+                    ? 'Todos los ítems del rubro tienen precio.'
+                    : subtotal.sinPrecio === 1
+                      ? 'No incluye 1 ítem sin precio.'
+                      : `No incluye ${subtotal.sinPrecio} ítems sin precio.`}
+                </TableCell>
+              </TableRow>
+            ) : null}
           </TableBody>
         </Table>
       )}
