@@ -88,6 +88,7 @@ import { textoInstrucciones } from '@/lib/analysis/prompt';
 import { registrarAuditoria } from '@/lib/audit';
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { denominadorDeEscala, medidaGrafica } from '@/lib/computo/medicion';
+import { esCampoDeducible } from '@/lib/deduccion/motor';
 import { leerMedida } from '@/lib/hallazgos/taxonomia';
 import { armarEntradaMemoria } from '@/lib/memoria/armar';
 import { memoriaCompacta } from '@/lib/memoria/compacta';
@@ -97,7 +98,7 @@ import { buscarDatosFaltantes } from '@/lib/pipeline/busqueda';
 import { claveEscala, claveEscalaRotulo } from '@/lib/pipeline/claves';
 import { ACCION_DEDUCCION_APLICADA, aplicarCruce, expedienteDelCruce } from '@/lib/pipeline/cruce';
 import { igualJson } from '@/lib/pipeline/json';
-import { capDeAnalisis, enParalelo } from '@/lib/pipeline/pool';
+import { capDeAnalisis, enParalelo, type ResultadoParalelo } from '@/lib/pipeline/pool';
 import { MIME_PDF, refDocumento, refLamina } from '@/lib/pipeline/refs';
 import {
   ACTOR_PIPELINE,
@@ -203,8 +204,11 @@ export const ACCION_FASE = 'analisis_fase';
 /** Acción con la que queda registrado el rótulo que leyó la fase de inventario. */
 export const ACCION_INVENTARIADA = 'lamina_inventariada';
 
-/** Acción con la que queda registrado que el inventario de una lámina falló. */
+/** Acción con la que queda registrado que el inventario falló (de una lámina, o entero). */
 export const ACCION_INVENTARIO_FALLIDO = 'lamina_inventario_fallido';
+
+/** Acción con la que queda registrada una lámina que se cayó dentro del lote paralelo. */
+export const ACCION_EXTRACCION_FALLIDA = 'lamina_extraccion_fallida';
 
 /**
  * Confianza fija de una medida sacada del dibujo (§5.5). No es un default
@@ -667,12 +671,12 @@ export async function procesarDocumento(
 
   // --- 1. Inventario: el índice del expediente, antes de extraer nada --------
   await marcarFase({ fase: 'inventario', total, completadas: 0 });
-  await inventariarDocumento(entorno, obra, documento, aProcesar, marcarFase);
+  await inventariarTolerante(entorno, obra, documento, aProcesar, marcarFase, fallos);
 
   // --- 2. Extracción en paralelo + medición gráfica --------------------------
   await marcarFase({ fase: 'extraccion', total, completadas: 0 });
   let completadas = 0;
-  await enParalelo(aProcesar, capDeAnalisis(), async (pagina) => {
+  const extracciones = await enParalelo(aProcesar, capDeAnalisis(), async (pagina) => {
     // `resumen: false` y `recomputar: 'diferido'`: el resumen se publica una
     // sola vez al final y la obra se recomputa una sola vez, en la fase de
     // cruce (ver `DepsPipeline.recomputar`).
@@ -680,6 +684,12 @@ export async function procesarDocumento(
     completadas += 1;
     await marcarFase({ fase: 'extraccion', total, completadas });
   });
+  // `procesarLamina` deja sus propios errores en la lámina y no lanza, así que
+  // lo que llegue acá es algo que se rompió **alrededor** del análisis (el
+  // storage, la base, el marcado de la fase). Descartar el resultado del pool
+  // sería tragárselo: el análisis terminaría en `listo` con una lámina que
+  // nadie miró.
+  await anotarFallosDelLote(obra.id, extracciones, aProcesar, fallos);
   await medirTolerante(entorno, obra.id, aProcesar, fallos);
 
   // --- 3. Cruce: el expediente mirado como conjunto --------------------------
@@ -897,30 +907,74 @@ export function medidasDeDibujo(
   if (medida === null) return [];
 
   const metodo = `medición gráfica sobre el dibujo a escala ${escala}`;
-  const falta = (campo: string): boolean => leerMedida(entidad, campo) === null;
+  /**
+   * Un campo se mide si **falta** y si es de los que el sistema puede deducir
+   * (RF-506, `esCampoDeducible`): nada estructural ni de seguridad entra por
+   * acá, y la lista no se mantiene en paralelo en este archivo.
+   */
+  const medible = (campo: string): boolean =>
+    leerMedida(entidad, campo) === null && esCampoDeducible(entidad.tipo, campo);
   const medidas: MedidaDeDibujo[] = [];
 
   if (eje === 'vertical') {
     // La única lectura honesta de un corte o una vista: la vertical.
-    if (medida.altoM > 0 && falta('alturaM')) {
+    if (medida.altoM > 0 && medible('alturaM')) {
       medidas.push({ campo: 'alturaM', valor: medida.altoM, metodo });
     }
     return medidas;
   }
 
   if (entidad.tipo === 'ambiente') {
+    // El área no depende de la orientación: un ambiente apaisado y uno vertical
+    // con el mismo rectángulo miden lo mismo.
     const superficie = redondearM2(medida.anchoM * medida.altoM);
-    if (superficie > 0 && falta('superficieM2')) {
+    if (superficie > 0 && medible('superficieM2')) {
       medidas.push({ campo: 'superficieM2', valor: superficie, metodo });
     }
     return medidas;
   }
 
-  if (medida.anchoM > 0 && falta('largoM')) {
-    medidas.push({ campo: 'largoM', valor: medida.anchoM, metodo });
+  const largo = largoDelDibujo(medida);
+  if (largo !== null && medible('largoM')) {
+    medidas.push({ campo: 'largoM', valor: largo, metodo });
   }
   return medidas;
 }
+
+/**
+ * Cuánto mide de largo un muro o un tabique dibujado en planta, o `null` si el
+ * dibujo no alcanza para decirlo.
+ *
+ * El bbox está alineado a los ejes de la hoja, así que **el largo no es el
+ * ancho del rectángulo**: el mismo tabique dibujado en vertical tiene un bbox
+ * angosto y alto, y leer su ancho daría el **espesor** —0,30 m en vez de 6 m—,
+ * un número plausible que entra al cómputo y nadie mira dos veces. El largo es
+ * el lado **más largo** de los dos.
+ *
+ * Y solo se mide si el rectángulo **identifica** el eje: un muro es largo y
+ * flaco, así que se exige una relación de aspecto de al menos
+ * `RELACION_MINIMA_MURO`. Un rectángulo casi cuadrado no dice para dónde corre
+ * el muro —puede ser un muro en L mal encuadrado, o el bloque entero de un
+ * núcleo— y ahí la respuesta honesta es no medir: la cota sigue faltando, la
+ * consulta sigue abierta, y nadie computó un número inventado.
+ */
+export function largoDelDibujo(medida: { anchoM: number; altoM: number }): number | null {
+  const largo = Math.max(medida.anchoM, medida.altoM);
+  const corto = Math.min(medida.anchoM, medida.altoM);
+  if (largo <= 0) return null;
+  // Un lado que redondea a cero es tan flaco como se puede: el eje está claro.
+  const relacion = corto > 0 ? largo / corto : Infinity;
+  return relacion >= RELACION_MINIMA_MURO ? largo : null;
+}
+
+/**
+ * Cuánto más largo que ancho tiene que ser el rectángulo de un muro para que su
+ * dibujo diga hacia dónde corre. Tres a uno: un tabique de 3 m tiene 0,10 de
+ * espesor (30:1) y hasta el más corto de una obra real pasa este filtro; lo que
+ * no lo pasa es un bloque cuadrado, que es justamente el caso en el que medir
+ * sería adivinar.
+ */
+export const RELACION_MINIMA_MURO = 3;
 
 /** Dos decimales, los mismos con los que el motor emite toda cantidad. */
 function redondearM2(valor: number): number {
@@ -996,7 +1050,12 @@ async function escribirMedicion(
 ): Promise<'creada' | 'actualizada' | null> {
   const previa = previas.get(`${entidad.id}::${medida.campo}`);
   if (previa !== undefined && previa.regla !== 'medicion_grafica') return null;
+  // El mismo criterio que `esDecidida()` en `cruce.ts`: una rechazada es una
+  // decisión suya, y una validada **por una persona** también —la bandeja de
+  // deducciones deja validar una medición a mano, y el `validado_por` es lo
+  // único que distingue esa fila de las que escribe esta función—.
   if (previa !== undefined && previa.estado === 'rechazada') return null;
+  if (previa !== undefined && previa.validadoPor !== null) return null;
 
   const fuentes: Fuente[] = [{ laminaId, bbox: entidad.bbox, detalle: medida.metodo }];
   const valores = {
@@ -1094,6 +1153,62 @@ async function recomputarObraTolerante(
     await auditarAgente(obraId, 'recomputo_fallido', `obras:${obraId}`, {
       errorDetalle,
       motivo: 'Las láminas quedaron analizadas; el cómputo de la obra quedó sin recalcular.',
+    });
+  }
+}
+
+/**
+ * Anota en `fallos` —y en `auditoria`— cada lámina cuyo turno del pool terminó
+ * en error.
+ *
+ * El pool devuelve un resultado **settled** por ítem justamente para esto: si
+ * quien llama descarta el array, un rechazo desaparece sin dejar rastro y la
+ * corrida termina diciendo `listo` con una lámina que nadie analizó. Con esto,
+ * la fase queda en `error` y la fila de auditoría dice cuál se cayó y por qué.
+ */
+async function anotarFallosDelLote(
+  obraId: string,
+  resultados: readonly ResultadoParalelo<unknown>[],
+  paginas: readonly PaginaDelDocumento[],
+  fallos: string[],
+): Promise<void> {
+  for (const [indice, resultado] of resultados.entries()) {
+    if (resultado.ok) continue;
+    const pagina = paginas[indice] as PaginaDelDocumento;
+    const errorDetalle = detalleDeError(resultado.error);
+    fallos.push(`la lámina ${pagina.numeroPagina} no se pudo analizar (${errorDetalle})`);
+    await auditarAgente(obraId, ACCION_EXTRACCION_FALLIDA, `laminas:${pagina.laminaId}`, {
+      errorDetalle,
+      numeroPagina: pagina.numeroPagina,
+      motivo: 'El análisis de la lámina se cortó antes de dejar su estado escrito.',
+    });
+  }
+}
+
+/**
+ * Corre el inventario sin tirar la corrida si falla.
+ *
+ * Un rótulo suelto que no se lee ya lo tolera `inventariarDocumento` lámina por
+ * lámina; esto cubre el otro caso —la fase entera se cae, por el storage o por
+ * la base— para que `analisis_json` no quede clavado en `inventario` para
+ * siempre. La extracción sigue igual: vuelve a leer cada rótulo por su cuenta.
+ */
+async function inventariarTolerante(
+  entorno: Entorno,
+  obra: Obra,
+  documento: Documento,
+  paginas: readonly PaginaDelDocumento[],
+  marcarFase: (estado: FaseAnalisis) => Promise<void>,
+  fallos: string[],
+): Promise<void> {
+  try {
+    await inventariarDocumento(entorno, obra, documento, paginas, marcarFase);
+  } catch (error) {
+    const errorDetalle = detalleDeError(error);
+    fallos.push(`el inventario de rótulos no corrió (${errorDetalle})`);
+    await auditarAgente(obra.id, ACCION_INVENTARIO_FALLIDO, `obras:${obra.id}`, {
+      errorDetalle,
+      motivo: 'El índice del expediente quedó sin armar; la extracción lee el rótulo igual.',
     });
   }
 }

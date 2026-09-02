@@ -49,8 +49,10 @@ import {
   aplicarCruce,
   claveConflicto,
   expedienteDelCruce,
+  RESPUESTA_CRUCE_RESUELTO,
 } from '@/lib/pipeline/cruce';
 import {
+  ACCION_CRUCE_FALLIDO,
   ACCION_FASE,
   CONFIANZA_MEDICION,
   MARCA_METODO,
@@ -376,7 +378,7 @@ describe('la relectura dirigida', () => {
 
 /**
  * Acciones que solo aparecen si la corrida escribió un dato de la obra. Es el
- * mismo set de `pipeline.test.ts` más las cuatro que trajeron las fases nuevas.
+ * mismo set de `pipeline.test.ts` más las cinco que trajeron las fases nuevas.
  */
 const ESCRITURAS_DE_DATOS = new Set([
   'computo_item_creado',
@@ -398,6 +400,56 @@ const ESCRITURAS_DE_DATOS = new Set([
   'deduccion_aplicada',
   'entidades_unificadas',
 ]);
+
+describe('una fase que se cae', () => {
+  /**
+   * El cruce es la fase más cara y la única que manda el expediente entero a la
+   * red. Un timeout suyo no puede convertir dos láminas analizadas en una
+   * subida perdida: lo persistido queda, la pantalla dice `error` con el
+   * detalle, y la corrida siguiente vuelve a intentarlo.
+   */
+  it('deja el análisis en error con el detalle y no tira lo ya persistido', async () => {
+    const revienta: CruceProvider = {
+      nombre: 'cruce-que-revienta',
+      async cruzar() {
+        throw new Error('el modelo no contestó a tiempo');
+      },
+    };
+
+    const bytes = await readFile(new URL('obra-fases.pdf', PDFS));
+    const archivo = new File([new Uint8Array(bytes)], 'obra-fases.pdf', {
+      type: 'application/pdf',
+    });
+    const documento = await subirDocumento(db, storage, obraId, usuarioId, archivo);
+    await procesarDocumento(documento.id, { db, storage, cruce: revienta });
+
+    // La fase queda contada, con el detalle del error adentro.
+    const fase = await faseDe(obraId);
+    expect(fase?.fase).toBe('error');
+    expect(fase?.detalle).toContain('el cruce del expediente no corrió');
+    expect(fase?.detalle).toContain('el modelo no contestó a tiempo');
+
+    // Y el fallo tiene su propia fila de auditoría, no solo el estado.
+    const [fallo] = await auditoriaDe(obraId, ACCION_CRUCE_FALLIDO);
+    expect(fallo.diffJson).toMatchObject({ errorDetalle: 'el modelo no contestó a tiempo' });
+
+    // Lo que se analizó, se computó y se midió sigue ahí: las fases anteriores
+    // no se tiran porque la tercera se haya caído.
+    const planos = await laminasDe(obraId);
+    expect(planos.map((l) => l.estadoAnalisis)).toEqual(['analizada', 'analizada']);
+    expect((await entidadesDe(obraId)).map((e) => e.nombre)).toEqual(['M1', 'M2', 'T1', 'T2']);
+    expect((await deduccionesDe(obraId)).map((d) => d.regla)).toEqual([
+      'medicion_grafica',
+      'medicion_grafica',
+    ]);
+    expect((await itemsDe(obraId)).length).toBeGreaterThan(0);
+
+    // Sin cruce no hay nada del cruce, y las fases siguientes corrieron igual.
+    expect(await db.select().from(datosObra).where(eq(datosObra.obraId, obraId))).toEqual([]);
+    const fases = (await auditoriaDe(obraId, ACCION_FASE)).map((fila) => fila.diffJson?.fase);
+    expect(fases).toEqual(['inventario', 'extraccion', 'cruce', 'relectura', 'error']);
+  });
+});
 
 describe('idempotencia', () => {
   it('re-procesar el mismo documento no reescribe ni audita: cero diffs fantasma', async () => {
@@ -498,6 +550,48 @@ describe('aplicarCruce', () => {
     // en la misma corrida— sin que nadie lo viera.
     await recomputarObra(obraId, { db, resumen: false });
     expect((await hallazgoPorClave(obraId, clave))?.estado).toBe('abierto');
+  });
+
+  /**
+   * El otro lado del namespace protegido: si el recompute no concilia las
+   * claves `cruce.*`, el cruce tiene que conciliarlas él. Una contradicción que
+   * el arquitecto arregló subiendo la revisión buena no puede quedarse abierta
+   * para siempre.
+   */
+  it('un conflicto que el cruce ya no encuentra se cierra solo; el que sigue, sigue abierto', async () => {
+    const queSigue = {
+      descripcion: 'La altura de local no coincide entre láminas.',
+      datoA: '2,60 m',
+      laminaCodigoA: 'A-02',
+      datoB: '2,80 m',
+      laminaCodigoB: 'A-01',
+      causaPosible: null,
+    };
+    const queSeResuelve = {
+      descripcion: 'El espesor del tabique no coincide entre láminas.',
+      datoA: '0,10 m',
+      laminaCodigoA: 'A-01',
+      datoB: '0,15 m',
+      laminaCodigoB: 'A-02',
+      causaPosible: null,
+    };
+    const expediente = await expedienteDelCruce(db, obraId);
+    const ctx = { obraId, tipoObra: 'nueva' as const };
+
+    const primero = await cruceQueDice({ conflictos: [queSigue, queSeResuelve] }).cruzar('', ctx);
+    const { resultado } = await aplicarCruce(db, obraId, primero, expediente);
+    const claves = resultado.conflictos.map(claveConflicto);
+    expect(claves).toHaveLength(2);
+
+    // La revisión nueva arregla uno de los dos: el cruce siguiente solo ve al otro.
+    const segundo = await cruceQueDice({ conflictos: [queSigue] }).cruzar('', ctx);
+    const { resumen } = await aplicarCruce(db, obraId, segundo, expediente);
+
+    expect(resumen.conflictosCerrados).toBe(1);
+    expect((await hallazgoPorClave(obraId, claves[0]))?.estado).toBe('abierto');
+    const cerrado = await hallazgoPorClave(obraId, claves[1]);
+    expect(cerrado?.estado).toBe('descartado');
+    expect(cerrado?.respuestaJson).toEqual({ ...RESPUESTA_CRUCE_RESUELTO });
   });
 
   it('la clave de un conflicto no depende de cómo lo redactó el modelo', async () => {

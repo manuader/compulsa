@@ -120,7 +120,7 @@ const ESCRITURAS_DE_DATOS = new Set([
   // fantasma que le cuesta créditos al usuario.
   'hallazgo_valor_propuesto',
   'hallazgo_sin_resultado',
-  // Las cuatro que trajo el pipeline por fases: el rótulo que persiste el
+  // Las cinco que trajo el pipeline por fases: el rótulo que persiste el
   // inventario, los hechos de obra y las deducciones que aplica el cruce, y las
   // entidades que unifica. Todas tienen que ser idempotentes por la misma razón
   // que las de arriba — una obra que no cambió no puede reescribirse sola.

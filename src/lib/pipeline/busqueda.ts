@@ -408,19 +408,30 @@ export function propuestaDeDato(
  */
 export interface OrdenDeBusqueda {
   /**
-   * Láminas que el **cruce** pidió releer. Van primero: el cruce miró el
-   * expediente entero y dijo dónde mirar, que es más información que la que
-   * tiene esta función.
+   * Láminas que el **cruce** pidió releer: miró el expediente entero y dijo
+   * dónde mirar, que es más información que la que tiene esta función.
    */
   prioritarias?: readonly string[];
   /**
-   * `true` si entre los objetivos hay una **altura de obra**. Entonces los
-   * cortes se leen antes que las planillas: una altura de local está acotada en
-   * el corte, no en una tabla de carpinterías.
+   * `true` si entre los objetivos hay una **altura de obra**. Una altura de
+   * local está acotada en el corte, no en una tabla de carpinterías.
    */
   cortes?: boolean;
   cap?: number;
 }
+
+/**
+ * Cuántos lugares del cap se les **reservan** a las láminas dirigidas —las que
+ * pidió el cruce y los cortes cuando falta una altura—.
+ *
+ * Es una reserva y no una inversión de prioridad, y la diferencia importa: con
+ * el cap en 8, poner todos los cortes adelante deja a una obra con nueve cortes
+ * sin abrir una sola planilla, que es exactamente donde están escritas las
+ * medidas de las carpinterías (la decisión 2 de este módulo). Con dos lugares
+ * alcanza —una altura está en el primer corte que se mire— y el resto de la
+ * lista sigue como estaba.
+ */
+export const RESERVA_DIRIGIDAS = 2;
 
 export function laminasCandidatas(
   todas: readonly LaminaCandidata[],
@@ -439,22 +450,35 @@ export function laminasCandidatas(
   const esCorte = (lamina: LaminaCandidata): boolean => lamina.tipo === 'corte' && analizada(lamina);
 
   const pedidas = new Set(opciones.prioritarias ?? []);
-  const prioritarias = todas.filter((lamina) => pedidas.has(lamina.id));
   const cortes = opciones.cortes === true ? todas.filter(esCorte) : [];
+  // Las dirigidas entran hasta la reserva; las que sobran **no son candidatas**,
+  // igual que antes de que esta prioridad existiera. No entran al final de la
+  // lista a propósito: engordarían el conteo del truncado y una obra con muchos
+  // cortes no volvería a marcar nunca un objetivo como "buscado y no está",
+  // pagándolo de nuevo en cada corrida (decisión 6).
+  const dirigidas = sinRepetir([
+    ...todas.filter((lamina) => pedidas.has(lamina.id)),
+    ...cortes,
+  ]).slice(0, RESERVA_DIRIGIDAS);
+
   const planillas = todas.filter(esPlanilla);
   const otras = todas.filter((lamina) => citadas.has(lamina.id));
 
   // Sin repetir: una lámina que es corte, está citada y además la pidió el
   // cruce se lee una sola vez, en la posición más temprana que le toque.
-  const ordenadas: LaminaCandidata[] = [];
+  const ordenadas = sinRepetir([...dirigidas, ...planillas, ...otras]);
+  return { laminas: ordenadas.slice(0, cap), truncado: ordenadas.length > cap };
+}
+
+function sinRepetir(laminas: readonly LaminaCandidata[]): LaminaCandidata[] {
   const vistas = new Set<string>();
-  for (const lamina of [...prioritarias, ...cortes, ...planillas, ...otras]) {
+  const unicas: LaminaCandidata[] = [];
+  for (const lamina of laminas) {
     if (vistas.has(lamina.id)) continue;
     vistas.add(lamina.id);
-    ordenadas.push(lamina);
+    unicas.push(lamina);
   }
-
-  return { laminas: ordenadas.slice(0, cap), truncado: ordenadas.length > cap };
+  return unicas;
 }
 
 // ---------------------------------------------------------------------------
@@ -949,8 +973,13 @@ export async function buscarDatosFaltantes(
     ...(truncado
       ? {
           truncadaPorCap: true,
-          laminasCandidatas: laminasCandidatas(todasLasLaminas, citadas, Number.MAX_SAFE_INTEGER)
-            .laminas.length,
+          // Con el MISMO ordenamiento de la corrida y solo el cap suelto: si
+          // acá se recalculara con otro criterio, el número diría cuántas
+          // candidatas habría tenido **otra** búsqueda.
+          laminasCandidatas: laminasCandidatas(todasLasLaminas, citadas, {
+            ...orden,
+            cap: Number.MAX_SAFE_INTEGER,
+          }).laminas.length,
           sinMarcarPorTruncado: vacios.length,
         }
       : {}),

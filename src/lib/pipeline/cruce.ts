@@ -23,17 +23,21 @@
  *     `rechazada` tampoco se toca. El cruce completa huecos, no corrige
  *     personas.
  *  4. **Aplicar dos veces el mismo cruce = cero diffs.** Todo es upsert con
- *     comparación previa (`igualJson`), las listas se deduplican por clave
- *     antes de escribir —`sanearCruce` no deduplica a propósito— y las
- *     identidades reutilizan el `elemento_id` que ya exista en el grupo en vez
- *     de generar uno nuevo. Sin eso, cada corrida reescribía la obra entera y
- *     ahogaba `auditoria` en ruido.
+ *     comparación previa (`igualJson`); las dos listas que se escriben por
+ *     clave —datos de obra y campos completados— se deduplican antes de
+ *     escribir, porque `sanearCruce` no deduplica a propósito; y las identidades
+ *     reutilizan el `elemento_id` que ya exista en el grupo en vez de generar
+ *     uno nuevo. Sin eso, cada corrida reescribía la obra entera y ahogaba
+ *     `auditoria` en ruido.
  *  5. **Las contradicciones son avisos, no frenos.** Nacen como hallazgo
  *     `inconsistencia` **no bloqueante**, con una clave estable derivada de los
  *     dos datos y las dos láminas: el mismo conflicto redactado de otra manera
- *     no abre una consulta nueva. Y su prefijo (`cruce.`) está protegido del
+ *     no abre una consulta nueva. Su prefijo (`cruce.`) está protegido del
  *     conciliador del recompute (`claves.ts`), que si no las cerraría a los
- *     milisegundos de abrirlas.
+ *     milisegundos de abrirlas — y por eso mismo **el cruce las concilia**: un
+ *     cruce exitoso cierra las que ya no encuentra
+ *     (`cerrarConflictosResueltos`), igual que hace la doble pasada con las
+ *     suyas. Un cruce que se cayó no cierra nada.
  *
  * ## Lo que esta fase NO hace (v1, documentado a propósito)
  *
@@ -77,7 +81,7 @@ import {
 } from '@/lib/analysis/cruce-tipos';
 import { registrarAuditoria } from '@/lib/audit';
 import { UMBRAL_DEDUCCION } from '@/lib/deduccion/motor';
-import { claveConflictoCruce } from '@/lib/pipeline/claves';
+import { claveConflictoCruce, PREFIJO_CRUCE } from '@/lib/pipeline/claves';
 import { canonicalizar, igualJson } from '@/lib/pipeline/json';
 import { ACTOR_PIPELINE } from '@/lib/pipeline/recomputar';
 import type { Fuente } from '@/types/domain';
@@ -103,6 +107,23 @@ export const ACCION_IDENTIDAD = 'entidades_unificadas';
 
 /** El origen de un dato de obra que resolvió el cruce: se apoya en documentación. */
 const ORIGEN_CRUCE = 'deducido' as const;
+
+/**
+ * Respuesta con la que un cruce posterior cierra una contradicción que ya no
+ * encuentra. Hermana de `RESPUESTA_VERIFICADO` (`verificacion.ts`), y por el
+ * mismo motivo: la consulta no se descarta porque alguien la ignore sino porque
+ * el sistema volvió a mirar y el motivo dejó de existir.
+ */
+export const RESPUESTA_CRUCE_RESUELTO = {
+  auto: 'el cruce volvió a leer el expediente y las dos láminas ya no se contradicen',
+} as const;
+
+/**
+ * El namespace de las contradicciones, sin la huella:
+ * `cruce.conflicto.` — se arma con la misma función que las claves, así que no
+ * pueden separarse.
+ */
+const PREFIJO_CONFLICTO = claveConflictoCruce('');
 
 // ---------------------------------------------------------------------------
 // El expediente contra el que se resuelve lo que dijo el modelo
@@ -248,6 +269,8 @@ export interface ResumenCruce {
   identidadesUnificadas: number;
   conflictosAbiertos: number;
   conflictosActualizados: number;
+  /** Contradicciones que este cruce ya no encuentra y cerró solo. */
+  conflictosCerrados: number;
   relecturas: number;
 }
 
@@ -262,6 +285,7 @@ function resumenVacio(): ResumenCruce {
     identidadesUnificadas: 0,
     conflictosAbiertos: 0,
     conflictosActualizados: 0,
+    conflictosCerrados: 0,
     relecturas: 0,
   };
 }
@@ -532,8 +556,11 @@ async function aplicarConflictos(
   refs: ReadonlyMap<string, string>,
   resumen: ResumenCruce,
 ): Promise<void> {
+  const emitidas = new Set<string>();
+
   for (const conflicto of conflictos) {
     const clave = claveConflicto(conflicto);
+    emitidas.add(clave);
     const campos = {
       tipo: 'inconsistencia' as const,
       rubro: null,
@@ -579,6 +606,49 @@ async function aplicarConflictos(
     resumen.conflictosActualizados += 1;
     await auditar(obraId, 'hallazgo_actualizado', `hallazgos:${clave}`, {
       descripcion: { antes: previo.descripcion, despues: campos.descripcion },
+    });
+  }
+
+  await cerrarConflictosResueltos(db, obraId, emitidas, resumen);
+}
+
+/**
+ * Cierra los conflictos abiertos que **este** cruce ya no encuentra.
+ *
+ * Es el conciliador que el prefijo protegido se debe: `esClaveDelMotor()` deja
+ * las claves `cruce.*` afuera del recompute —si no, el recompute de la fase 5
+ * cerraría el aviso milisegundos después de abrirlo— y a cambio el cruce tiene
+ * que administrarlas, exactamente como `verificarComputo` administra las suyas.
+ * Sin esto, una contradicción que el arquitecto arregló subiendo la revisión
+ * buena se quedaba abierta para siempre, y la bandeja terminaba llena de avisos
+ * de láminas que ya no dicen lo que decían.
+ *
+ * **Solo lo llama un cruce que salió bien**: `cruzarTolerante` corta antes si el
+ * provider se cayó, y con razón — un timeout no significa que las
+ * contradicciones se resolvieron. Sin esa condición, la primera caída del
+ * modelo barrería la bandeja entera.
+ */
+async function cerrarConflictosResueltos(
+  db: Db,
+  obraId: string,
+  emitidas: ReadonlySet<string>,
+  resumen: ResumenCruce,
+): Promise<void> {
+  const abiertos = await db
+    .select()
+    .from(hallazgos)
+    .where(and(eq(hallazgos.obraId, obraId), eq(hallazgos.estado, 'abierto')));
+
+  for (const fila of abiertos) {
+    if (!fila.clave.startsWith(PREFIJO_CONFLICTO) || emitidas.has(fila.clave)) continue;
+
+    await db
+      .update(hallazgos)
+      .set({ estado: 'descartado', respuestaJson: { ...RESPUESTA_CRUCE_RESUELTO } })
+      .where(eq(hallazgos.id, fila.id));
+    resumen.conflictosCerrados += 1;
+    await auditar(obraId, 'hallazgo_descartado', `hallazgos:${fila.clave}`, {
+      ...RESPUESTA_CRUCE_RESUELTO,
     });
   }
 }
