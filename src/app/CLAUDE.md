@@ -1,14 +1,15 @@
 # CLAUDE.md — src/app (workspace UI + API)
 
-El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más la agenda de proveedores y las tres del estudio.
+El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más la agenda de proveedores y las cinco del estudio (tablero, usuarios, configuración, **precios** y auditoría).
 
 ## Reglas de UI
 
 1. **es-AR, voseo, terminología del rubro** ("Subí la documentación", "Aprobar rubro", durlock, premarco, DVH). Nada de spanglish ni de "usted".
 2. **Server Components por defecto;** `"use client"` solo donde hay interactividad real (visor, grilla editable, formularios). Data fetching en el server con `getDb()`; mutaciones vía Server Actions o route handlers de `src/app/api/`.
 3. **Toda página de obra valida pertenencia:** helper `requireObra(obraId)` — sesión válida + obra del estudio del usuario; si no, `notFound()`. Nunca consultes una obra por id sin pasar por ahí (aislamiento RNF-4).
-4. **El visor y la planilla están acoplados por contrato, no por imports:** la fila de la planilla linkea a `/obras/[obraId]/laminas/[laminaId]?highlight=<bboxId>`; el visor lee `highlight` y resalta el bbox (RF-303: < 2 s). Ese query param es API pública interna — no lo renombres sin buscar sus usos. `resolverDestacado` lo resuelve contra las fuentes del hallazgo (`hallazgos.laminasJson`) **y también contra `valorPropuesto.fuente`**, con la de la propuesta adelante: una propuesta de la búsqueda dirigida puede vivir en una lámina que el hallazgo no cita, y sin eso el link abría el plano sin resaltar nada. Fue una **ampliación** del contrato, no un cambio: lo que resolvía antes sigue resolviendo igual.
+4. **El visor y la planilla están acoplados por contrato, no por imports:** la fila de la planilla linkea a `/obras/[obraId]/laminas/[laminaId]?highlight=<bboxId>`; el visor lee `highlight` y resalta el bbox (RF-303: < 2 s). Ese query param es API pública interna — no lo renombres sin buscar sus usos. `resolverDestacado` lo resuelve contra las cinco tablas que llevan provenance —entidades, ítems, hallazgos, deducciones y **datos de obra**— y, dentro del hallazgo, contra sus fuentes (`hallazgos.laminasJson`), contra `valorPropuesto.fuente` (con la de la propuesta adelante: una propuesta de la búsqueda dirigida puede vivir en una lámina que el hallazgo no cita) y contra **las entidades que nombra `target_dato`** (una consulta de dato de obra nace sin fuentes propias, y lo que hay para mirar es dónde está dibujado cada afectado — que es exactamente lo que el panel embebido resalta: las dos vistas dibujan lo mismo o hay un bug de provenance). Todo esto fueron **ampliaciones** del contrato, no cambios: lo que resolvía antes sigue resolviendo igual.
 5. **Donde hay que mirar el plano para contestar, el plano se embebe — no se navega.** Las dos solapas de la bandeja son split view (`grid lg:grid-cols-2 lg:items-start`, lista a la izquierda y `<PanelVisor>` `lg:sticky` a la derecha, apilado abajo de `lg`); el `?highlight=` queda degradado a un "Abrir en página completa". El panel se alimenta solo por `GET /api/laminas/[laminaId]/marcas`. Confirmar un número que el sistema dice haber leído en algún lado, sin ver ese lado, es firmar a ciegas.
+   **También la planilla de cómputo** (`/obras/[obraId]/computo`), desde 2026-09-02: la grilla a la izquierda y el plano a la derecha, clickear la lámina de una fila resalta sus fuentes, y «página completa» queda como acción secundaria. Es la pantalla de la lista por excelencia y era la última que seguía navegando. Una columna sola abajo de `xl`: doce columnas partidas al medio no se leen.
    **`destacados` se le pasa como referencia estable** (guardada en el estado de la selección, nunca recalculada en el render, y el vacío es una constante de módulo): `Overlay` hace `scrollIntoView` en un `useEffect([destacados])` y un array nuevo por render scrollea de más con cada redibujo.
 6. **Estados visibles:** el expediente dice **en qué fase está el análisis** mientras corre (inventario → extracción → cruce → relectura → listo, con su cuenta y su detalle de error), y refresca solo hasta que termina; una lámina siempre muestra su `estado_analisis` (pendiente / procesando / analizada / bloqueada por escala / error) y una lámina bloqueada explica qué necesita (medida de referencia). Una lámina computada con la escala que el rótulo declara pero nadie verificó **lo dice** ("escala asumida") y ofrece confirmarla en un click, desde el expediente **y** desde la propia página del visor. Nada de spinners eternos sin explicación.
 7. **Acciones destructivas o de aprobación piden confirmación** (aprobar rubro, descartar hallazgo) y quedan en `auditoria`.
@@ -31,8 +32,8 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
                                     resumen ejecutivo, «Preguntale al expediente» (RF-106)
                                     y «Qué cambió» (historial de recomputos)
        /laminas/[laminaId]          visor (pdf.js + overlay SVG de entidades/hallazgos)
-       /computo                     planilla por rubro (grilla editable, aprobar rubro,
-                                    export, «Verificar cómputo» RF-306)
+       /computo                     planilla por rubro con el plano embebido al lado (grilla
+                                    editable, aprobar rubro, export, «Verificar cómputo» RF-306)
        /bandeja                     bandeja en dos solapas (`?solapa=preguntas|revisar`), las
                                     dos con el plano embebido al lado (split view):
                                       · **Preguntas** — consultas abiertas: lo único que espera
@@ -44,7 +45,9 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
                                       · **Para revisar** — lo que el sistema aplicó solo:
                                         deducciones auto-validadas (rechazar revierte y reabre
                                         el faltante), las que no llegaron al umbral (validar /
-                                        rechazar) y los ítems `inferido`, con memoria .md y
+                                        rechazar), **los hechos de obra que escribió el cruce**
+                                        (rechazar borra la fila y la consulta agrupada vuelve a
+                                        «Preguntas») y los ítems `inferido`, con memoria .md y
                                         planilla derivada .xlsx. Informa; no bloquea
        /deducciones                 redirige a `/bandeja?solapa=revisar` conservando `?regla=`
        /compulsas                   las compulsas del rubro, con su versión y su hash
@@ -69,7 +72,8 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
 /estudio/precios                    lista de precios de referencia del estudio: tabla, alta a
                                     mano e import CSV con preview y errores por línea (la ve
                                     cualquier rol; los formularios, colaborador para arriba)
-/estudio/auditoria                  auditoría del estudio, paginada por cursor
+/estudio/auditoria                  auditoría del estudio, paginada por cursor, con el consumo
+                                    de modelo por obra arriba (RNF-7: tokens, no pesos)
 
 /api/archivos/[...ref]                              descarga de archivos del estudio
 /api/laminas/[laminaId]                             reclasificar / confirmar escala
@@ -84,7 +88,8 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
 /api/obras/[obraId]/memoria                         memoria de obra (.md, §27): documentación
                                                     analizada, datos de obra, elementos,
                                                     relaciones, conflictos, qué falta y qué se
-                                                    infirió midiendo el dibujo
+                                                    infirió midiendo el dibujo. Se baja desde el
+                                                    resumen del expediente
 /api/obras/[obraId]/deducciones/memoria             memoria de deducciones (.md)
 /api/obras/[obraId]/compulsas/[compulsaId]/reporte  comparativa (.xlsx) y orden de compra (.pdf,
                                                     con `?documento=orden-compra`)
