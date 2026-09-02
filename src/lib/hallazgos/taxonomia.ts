@@ -244,6 +244,22 @@ export function hallazgoInconsistencia(entrada: EntradaInconsistencia): Hallazgo
 export const PREFIJO_DATO_OBRA = 'dato_obra.';
 
 /**
+ * El único "campo" de una consulta de dato de obra.
+ *
+ * Un `targetRef` pide campos con nombre de dominio (`anchoM`, `altoM`); un
+ * `targetDato` pide **un** valor, y qué valor es lo dice la clave del dato
+ * (`altura_local.PB`). Inventarle un nombre de campo —`alturaM`— sería mentir
+ * sobre a qué entidad pertenece: no pertenece a ninguna, es un hecho de la obra.
+ *
+ * Vive acá, en el módulo puro de la taxonomía, porque son tres los que tienen
+ * que coincidir en la misma cadena y ninguno puede importar a los otros dos: la
+ * búsqueda dirigida la usa para pedir el valor (`valores: { valor }`), el
+ * resolver de la bandeja para leerlo al responder, y la pantalla para nombrar su
+ * input. Si se separan, la tarjeta manda una clave que el server no acepta.
+ */
+export const CAMPO_DATO_OBRA = 'valor';
+
+/**
  * El dato de obra que respalda un campo, o `null` si no está.
  *
  * Es el **único lector válido** del mapa de datos de obra: una plantilla no

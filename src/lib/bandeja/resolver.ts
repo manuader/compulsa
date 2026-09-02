@@ -56,17 +56,18 @@ import { z } from 'zod';
 
 import { parsearCantidad } from '@/app/obras/[obraId]/computo/actions';
 import { getDb, type Db } from '@/db/client';
-import { entidades, hallazgos, laminas, type Hallazgo } from '@/db/schema';
+import { datosObra, entidades, hallazgos, laminas, type Hallazgo } from '@/db/schema';
 import { esCampoDeMedida } from '@/lib/analysis/busqueda-tipos';
 import type { AnalysisProvider } from '@/lib/analysis/index';
 import { registrarAuditoria } from '@/lib/audit';
 import { enumerar, etiquetaCampo } from '@/lib/deduccion/motor';
 import { camposDelTarget } from '@/lib/hallazgos/target';
+import { CAMPO_DATO_OBRA } from '@/lib/hallazgos/taxonomia';
 import { PREFIJO_ESCALA } from '@/lib/pipeline/claves';
 import { actualizarLamina } from '@/lib/pipeline/procesar';
 import { recomputarObra } from '@/lib/pipeline/recomputar';
 import type { StorageAdapter } from '@/lib/storage/index';
-import type { EstadoHallazgo } from '@/types/domain';
+import type { EstadoHallazgo, TargetDato } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Contratos
@@ -501,6 +502,20 @@ export async function responderHallazgo(
     return responderEscala(db, hallazgo, laminaId, escala, notaLimpia, actor, deps);
   }
 
+  // La otra cosa a la que puede apuntar una consulta: un hecho de la obra
+  // entera (§5.2). No se escribe en ninguna entidad —el dato no es de ninguna—
+  // y el recompute lo propaga a las N que lo estaban esperando.
+  const dato = hallazgo.targetDato;
+  if (dato) {
+    if (valores) {
+      for (const campo of Object.keys(valores)) {
+        if (campo !== CAMPO_DATO_OBRA) return { ok: false, error: campoDesconocido(campo) };
+      }
+    }
+    const propuesto = camposEscritos(valores)[0]?.[1] ?? '';
+    return responderDatoObra(db, hallazgo, dato, texto !== '' ? texto : propuesto, notaLimpia, actor);
+  }
+
   // `camposDelTarget()` es el único lector válido del `target_ref`: las filas
   // viejas guardaron `campo` singular y las nuevas guardan `campos`.
   const target = hallazgo.targetRef;
@@ -608,6 +623,108 @@ export async function responderHallazgo(
       : { tipo: 'nota', nota: notaLimpia ?? texto };
 
   await cerrar(db, hallazgo, actor, 'respondido', respuesta);
+  return { ok: true };
+}
+
+/**
+ * El texto que la tarjeta necesita cuando no hay dato: pedirlo, y decir cuál es
+ * la otra salida. Un dato de obra **no** se responde con una nota: la consulta
+ * quedaría cerrada, el hecho seguiría faltando y las N entidades que lo esperan
+ * seguirían sin computar, sin nada que lo diga (mismo agujero que el "0").
+ */
+export const DATO_OBRA_SIN_VALOR =
+  'Escribí el dato para responder la consulta, o descartala si no aplica a esta obra.';
+
+/**
+ * Responde una consulta de **dato de obra** (§5.2): un hecho que vale para toda
+ * la obra —la altura de local de PB, la altura de revestimiento del baño—.
+ *
+ * Es la contracara de la deduplicación de preguntas. A los cuatro tabiques de
+ * PB les falta la misma altura y la bandeja lo pregunta **una vez**; responderlo
+ * escribe **una** fila en `datos_obra` y el recompute la propaga: los cuatro
+ * ítems salen computados en esa misma pasada.
+ *
+ * Tres cosas que no son negociables:
+ *
+ *  - **El dato no se escribe en ninguna entidad.** Copiarlo a los cuatro
+ *    tabiques haría creer que la planta acota lo que no acota; el valor entra al
+ *    cálculo por la cadena de respaldo (`src/lib/rubros/respaldo.ts`) y queda
+ *    declarado de dónde salió.
+ *  - **`origen: 'explicito'` y `definido_por` = quien contestó.** Lo cargó una
+ *    persona: es lo más fuerte que hay, le gana a cualquier deducción y el
+ *    pipeline no lo pisa (`datos_obra.definido_por`, `src/db/schema.ts`).
+ *  - **P1 se cumple con el origen declarado**, no con un bbox inventado: el dato
+ *    no se leyó en ninguna lámina, así que `fuentes_json` va vacío y quien
+ *    responde queda anotado en `definido_por`, que es la otra forma válida de
+ *    declarar de dónde salió un dato.
+ *
+ * Un dato **con unidad** es una medida y se valida como tal (positiva, con coma
+ * decimal y sin unidad tipeada); uno sin unidad es un texto y entra tal cual
+ * (`solado`, `revestimiento`).
+ */
+async function responderDatoObra(
+  db: Db,
+  hallazgo: Hallazgo,
+  dato: TargetDato,
+  crudo: string,
+  nota: string | null,
+  actor: ActorBandeja,
+): Promise<ResultadoAccion> {
+  const texto = crudo.trim();
+  if (texto === '') return { ok: false, error: DATO_OBRA_SIN_VALOR };
+
+  let valor: number | string = texto;
+  if (dato.unidad !== undefined) {
+    const numero = await parsearCantidad(texto);
+    if (numero === null) return { ok: false, error: noEsUnaMedida(texto) };
+    if (numero <= 0) return { ok: false, error: MEDIDA_NO_POSITIVA };
+    valor = numero;
+  } else if (texto.length > 60) {
+    return { ok: false, error: 'El valor no puede pasar de 60 caracteres.' };
+  }
+
+  const obraId = hallazgo.obraId;
+  const [previo] = await db
+    .select()
+    .from(datosObra)
+    .where(and(eq(datosObra.obraId, obraId), eq(datosObra.clave, dato.clave)));
+
+  const fila = {
+    obraId,
+    clave: dato.clave,
+    valorJson: { valor, ...(dato.unidad === undefined ? {} : { unidad: dato.unidad }) },
+    origen: 'explicito' as const,
+    fuentesJson: [],
+    confianza: 1,
+    metodo: null,
+    definidoPor: actor.usuarioId,
+    updatedAt: new Date(),
+  };
+
+  if (previo) {
+    await db.update(datosObra).set(fila).where(eq(datosObra.id, previo.id));
+  } else {
+    await db.insert(datosObra).values(fila);
+  }
+
+  await auditar(obraId, actor, 'dato_obra_definido', `datos_obra:${dato.clave}`, {
+    valor: { antes: previo?.valorJson.valor ?? null, despues: valor },
+    origen: { antes: previo?.origen ?? null, despues: 'explicito' },
+    // A cuántas entidades les faltaba: es lo que convierte una respuesta en N
+    // ítems computados, y es lo que hay que poder leer después en la auditoría.
+    afectadas: dato.entidades.length,
+  });
+
+  // Orden de la regla 3 del módulo: el dato, después el hallazgo, y recién ahí
+  // el recompute — que cerraría la consulta con su respuesta automática.
+  await cerrar(
+    db,
+    hallazgo,
+    actor,
+    'respondido',
+    conNota({ tipo: 'dato_obra', clave: dato.clave, valor }, nota),
+  );
+  await recomputarObra(obraId, { db });
   return { ok: true };
 }
 
@@ -891,6 +1008,22 @@ export async function confirmarLote(
         actor,
         deps,
       );
+      if (resultado.ok) confirmadas += 1;
+      else salteadas += 1;
+      continue;
+    }
+
+    // Un dato de obra tiene su propio camino: confirmarlo escribe `datos_obra`,
+    // no un atributo de una entidad (`propuestaDeDato` en `busqueda.ts` deja el
+    // contrato escrito). Recomputa él solo, y por eso no toca `huboEscritura`:
+    // el hecho ya está aplicado cuando el lote sigue con la próxima.
+    const dato = fila.targetDato;
+    if (dato) {
+      const propuesto = propuesta.valores[CAMPO_DATO_OBRA];
+      const resultado =
+        propuesto === undefined
+          ? { ok: false as const, error: '' }
+          : await responderDatoObra(db, fila, dato, String(propuesto), notaLimpia, actor);
       if (resultado.ok) confirmadas += 1;
       else salteadas += 1;
       continue;
