@@ -23,7 +23,13 @@
  *  5. **listo** — recompute final, «qué cambió» y resumen ejecutivo.
  *
  * `obras.analisis_json` lleva la fase en curso (`FaseAnalisis`) para que el
- * expediente pueda decir "analizando 12/25" en vez de un spinner eterno.
+ * expediente pueda decir "analizando 12/25" en vez de un spinner eterno, **con
+ * su `desde`**: todo esto corre adentro del POST del upload (`maxDuration =
+ * 300`), así que una corrida grande se pasa del límite y muere en el medio de
+ * una fase. Sin la hora, esa fase se lee como viva para siempre; con ella,
+ * `faseVencida()` la lee como abandonada y la pantalla ofrece reintentar. El
+ * reintento es `reintentarCruce()`, que rehace las tres fases de obra —cruce,
+ * relectura y cómputo final— sin volver a subir el PDF.
  *
  * **Todas las fases son tolerantes.** Una que falla queda anotada, la corrida
  * sigue con las que puede y el estado final es `{fase: 'error', detalle}` — lo
