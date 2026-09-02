@@ -14,7 +14,7 @@
  *
  * ## Ojo al integrar con la rama del pipeline
  *
- * `faseColgada`/`selloDeFase` son **la mitad de pantalla** de algo que el
+ * `etiquetaDeEstado` es **la mitad de pantalla** de algo que el
  * pipeline resolvió del otro lado en paralelo: `FaseAnalisis.desde` y
  * `faseVencida(fase, ahora)` en `types/domain.ts`, con
  * `TTL_FASE_ANALISIS_MS`. Cuando las dos ramas estén juntas, esto se borra y
@@ -25,9 +25,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   etiquetaDeEstado,
-  FASE_VIEJA_MS,
-  faseColgada,
-  selloDeFase,
 } from '@/app/obras/[obraId]/expediente/progreso-ui';
 import type { FaseAnalisis } from '@/types/domain';
 
@@ -64,33 +61,3 @@ describe('etiquetaDeEstado: el badge no puede decir «Analizando» cuando falló
   });
 });
 
-describe('faseColgada: un pipeline que se murió sin escribir su error', () => {
-  const AHORA = Date.parse('2026-09-02T18:00:00.000Z');
-  const CORRIENDO: FaseAnalisis = { fase: 'extraccion', total: 25, completadas: 3 };
-
-  it('sin sello no se puede saber, y no se inventa', () => {
-    expect(selloDeFase(CORRIENDO)).toBeNull();
-    expect(faseColgada(CORRIENDO, AHORA)).toBe(false);
-  });
-
-  it('una fase que se movió recién no está colgada', () => {
-    const fase = conSello(CORRIENDO, new Date(AHORA - FASE_VIEJA_MS + 60_000).toISOString());
-    expect(faseColgada(fase, AHORA)).toBe(false);
-  });
-
-  it('una que hace más del TTL que no se mueve, sí', () => {
-    const fase = conSello(CORRIENDO, new Date(AHORA - FASE_VIEJA_MS - 60_000).toISOString());
-    expect(faseColgada(fase, AHORA)).toBe(true);
-  });
-
-  it('una terminada nunca está colgada, por vieja que sea', () => {
-    const vieja = new Date(AHORA - 30 * FASE_VIEJA_MS).toISOString();
-    expect(faseColgada(conSello({ fase: 'listo' }, vieja), AHORA)).toBe(false);
-    expect(faseColgada(conSello({ fase: 'error' }, vieja), AHORA)).toBe(false);
-    expect(faseColgada(null, AHORA)).toBe(false);
-  });
-
-  it('un sello ilegible no cuelga la fase: se comporta como si no estuviera', () => {
-    expect(faseColgada(conSello(CORRIENDO, 'cuando sea'), AHORA)).toBe(false);
-  });
-});

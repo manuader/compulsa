@@ -47,6 +47,7 @@ import { unirFuentes } from '@/lib/computo/presentacion';
 import { describirValor, enumerar, etiquetaCampo } from '@/lib/deduccion/motor';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
 import {
+  comoTexto,
   estaContradicha,
   mismoDato,
   recomputarObra,
@@ -185,11 +186,12 @@ export function explicarDeduccion(
 /** "Superada por la documentación, que ahora dice 2,40 m: se computa con eso." */
 function frase(fila: Pick<Deduccion, 'campo' | 'valorJson'>): string {
   const documentado = valorQueDocumenta(fila);
-  const escrito =
-    documentado === null || typeof documentado === 'boolean'
-      ? String(documentado)
-      : describirValor(fila.campo, documentado);
-  return `Superada por la documentación, que ahora dice ${escrito}: se computa con eso.`;
+  // Sin valor documentado no se inventa uno: `String(null)` imprimía
+  // literalmente «que ahora dice null», que es lo que el arquitecto leía.
+  if (documentado === null) {
+    return 'Superada por la documentación: se computa con lo que dice la lámina.';
+  }
+  return `Superada por la documentación, que ahora dice ${comoTexto(fila.campo, documentado)}: se computa con eso.`;
 }
 
 /** Códigos de las láminas citadas, sin repetir y en el orden en que aparecen. */

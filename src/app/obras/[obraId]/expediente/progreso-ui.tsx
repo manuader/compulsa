@@ -25,7 +25,7 @@ import { useEffect, useState } from 'react';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import type { FaseAnalisis } from '@/types/domain';
+import { faseVencida, type FaseAnalisis } from '@/types/domain';
 
 /** Cada cuánto se vuelve a preguntar mientras el análisis corre. */
 export const REFRESCO_MS = 4000;
@@ -35,55 +35,6 @@ export function enCurso(fase: FaseAnalisis | null): boolean {
   return fase !== null && fase.fase !== 'listo' && fase.fase !== 'error';
 }
 
-/**
- * Cuánto puede pasar sin noticias antes de que «Analizando» deje de ser cierto.
- *
- * Diez minutos: el doble del `maxDuration` del POST del upload, que es adentro
- * de donde corre el análisis. Pasado eso, lo que hay no es un análisis lento
- * sino uno que se cortó sin poder escribir su fase — el proceso se murió, el
- * deploy reinició, la máquina se quedó sin memoria.
- *
- * **Es el mismo número que `TTL_FASE_ANALISIS_MS` de `types/domain.ts`**, que
- * escribe la rama del pipeline: cuando las dos estén juntas, esta constante se
- * borra y se importa aquella.
- */
-export const FASE_VIEJA_MS = 10 * 60 * 1000;
-
-/**
- * La marca de tiempo que el pipeline deja en cada avance de fase
- * (`FaseAnalisis.desde`), o `null` si esta versión todavía no la escribe.
- *
- * Se lee con un ensanchamiento explícito y no con un `any` porque el campo lo
- * agrega la rama del pipeline en paralelo a esta: hasta que estén juntas, esto
- * devuelve `null` y la pantalla se comporta como antes. El día que el tipo lo
- * declare, este acceso sigue siendo el mismo y el `typeof` sobra sin molestar
- * — y entonces `faseColgada` se borra y su lugar lo ocupa `faseVencida()`, que
- * es la misma función del lado del dominio.
- */
-export function selloDeFase(fase: FaseAnalisis): string | null {
-  const sello = (fase as FaseAnalisis & { desde?: unknown }).desde;
-  return typeof sello === 'string' ? sello : null;
-}
-
-/**
- * `true` si la fase quedó **colgada**: dice que está corriendo pero hace rato
- * que nadie la toca. Gemela de `faseVencida()` de `types/domain.ts`, que la
- * rama del pipeline escribió del lado del dominio; sobrevive una sola.
- *
- * Sin esto, un pipeline que se murió sin escribir su error deja la pantalla
- * diciendo «Analizando las láminas · 3 de 25» para siempre, con la barra
- * quieta y el polling pidiendo cada cuatro segundos. Un spinner eterno con otra
- * cara es justo lo que el §6 de `app/CLAUDE.md` prohíbe.
- *
- * Sin sello no se puede saber, y no se inventa: devuelve `false`.
- */
-export function faseColgada(fase: FaseAnalisis | null, ahora: number): boolean {
-  if (fase === null || !enCurso(fase)) return false;
-  const sello = selloDeFase(fase);
-  if (sello === null) return false;
-  const cuando = Date.parse(sello);
-  return Number.isFinite(cuando) && ahora - cuando > FASE_VIEJA_MS;
-}
 
 /** "3 de 25", o `null` si la fase no lleva la cuenta. */
 function avance(fase: FaseAnalisis): string | null {
@@ -190,7 +141,7 @@ export function ProgresoAnalisis({ fase, reintentoDeCruce = null }: ProgresoAnal
     }
     // La misma vuelta que refresca revisa el reloj: si la fase dejó de moverse,
     // la pantalla lo dice en vez de seguir prometiendo que algo pasa.
-    const revisar = (): void => setColgada(faseColgada(fase, Date.now()));
+    const revisar = (): void => setColgada(faseVencida(fase, Date.now()));
     revisar();
     const id = setInterval(() => {
       revisar();

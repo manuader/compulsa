@@ -1031,8 +1031,12 @@ export function conMarcasDe(
 }
 
 /** Un valor de atributo, escrito para leer. */
-function comoTexto(campo: string, valor: number | string | boolean): string {
-  return typeof valor === 'boolean' ? String(valor) : describirValor(campo, valor);
+export function comoTexto(campo: string, valor: number | string | boolean): string {
+  // `String(true)` mete un "true" en una oración en castellano. Hoy todos los
+  // `CAMPOS_DEDUCIBLES` son numéricos, así que la rama es latente — pero lo era
+  // también el `null` que terminó impreso en la pantalla de revisión.
+  if (typeof valor === 'boolean') return valor ? 'sí' : 'no';
+  return describirValor(campo, valor);
 }
 
 /**
@@ -1055,6 +1059,7 @@ function hallazgoContradiccion(superada: DeduccionSuperada): HallazgoDetectado {
   const nombre = superada.entidad.nombre;
   const deducido = comoTexto(campo, superada.valorDeducido);
   const documentado = comoTexto(campo, superada.valorDocumentado);
+  const dice = `la documentación ahora dice ${documentado}`;
 
   return hallazgoInconsistencia({
     rubro: null, // es coherencia del expediente, no de un rubro
@@ -1062,7 +1067,7 @@ function hallazgoContradiccion(superada: DeduccionSuperada): HallazgoDetectado {
     checklistItem: 'deduccion.contradicha',
     descripcion:
       `${etiquetaCampo(campo)} de ${nombre} se validó en ${deducido} por la regla ` +
-      `«${TITULO_REGLA[regla]}», pero la documentación ahora dice ${documentado}. ` +
+      `«${TITULO_REGLA[regla]}», pero ${dice}. ` +
       `Computo con ${documentado}, que es lo que está escrito; la deducción quedó superada. ` +
       'Revisá cuál de los dos vale.',
     fuentes: unirFuentes(superada.deduccion.fuentesJson, [fuenteDeEntidad(superada.entidad)]),
