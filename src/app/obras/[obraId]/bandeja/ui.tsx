@@ -433,7 +433,12 @@ export function destacadosDeConsulta(consulta: ConsultaVista, laminaId: string):
  * consulta no apunta a ninguno de los dos.
  */
 export function nombreDeConsulta(consulta: ConsultaVista): string {
-  return consulta.entidad ?? consulta.datoObra?.etiqueta ?? consulta.clave;
+  if (consulta.entidad !== null) return consulta.entidad;
+  if (consulta.datoObra !== null) return consulta.datoObra.etiqueta;
+  // La de escala no apunta a ninguna de las dos y su clave es `escala.<uuid>`,
+  // que en el título del panel se leía «A-01 · escala.9f3c…».
+  if (consulta.esEscala) return 'la escala de la lámina';
+  return consulta.clave;
 }
 
 /**
@@ -648,11 +653,15 @@ function TarjetaConsulta({
           {abierta ? null : (
             <Badge tone={TONO_ESTADO[consulta.estado]}>{ETIQUETA_ESTADO[consulta.estado]}</Badge>
           )}
-          {/* La clave técnica queda —sirve para hablar de una fila con nosotros—
-              pero como dato secundario y con el nombre legible adelante, que es
-              lo que el arquitecto está mirando. */}
+          {/* La clave técnica queda —sirve para hablar de una fila con
+              nosotros— pero deja de ser lo único que nombra a la consulta. El
+              nombre legible se agrega solo cuando aporta algo: la entidad ya
+              sale abajo en «Sobre:», así que acá el que faltaba era el del
+              hecho de obra, que no tiene otro lugar donde aparecer. */}
           <span className="ml-auto flex flex-wrap items-baseline gap-2">
-            <span className="text-xs text-neutral-500">{nombreDeConsulta(consulta)}</span>
+            {consulta.datoObra ? (
+              <span className="text-xs text-neutral-500">{consulta.datoObra.etiqueta}</span>
+            ) : null}
             <span
               className="font-mono text-xs text-neutral-400"
               title="Identificador de la consulta"
