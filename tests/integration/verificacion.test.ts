@@ -10,6 +10,7 @@
  *  - el mismo PDF subido como `casa-deduccion.pdf` usa fixtures **sin** `-b` ⇒
  *    las dos pasadas leen lo mismo y no hay ni una consulta.
  */
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,7 +19,15 @@ import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { setDbForTests, type Db } from '@/db/client';
-import { auditoria, computoItems, estudios, hallazgos, obras, usuarios } from '@/db/schema';
+import {
+  auditoria,
+  computoItems,
+  entidades,
+  estudios,
+  hallazgos,
+  obras,
+  usuarios,
+} from '@/db/schema';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import {
   ACCION_VERIFICACION,
@@ -230,5 +239,48 @@ describe('el recompute no se lleva puestas las consultas de verificación', () =
       fila.clave.startsWith('verificacion.'),
     );
     expect(despues.map((fila) => fila.estado)).toEqual(antes.map(() => 'abierto'));
+  });
+});
+
+describe('la segunda pasada unifica igual que el cómputo', () => {
+  /**
+   * El T1 de la planta y el T1 del corte son UN tabique (§5.3), y el cruce se lo
+   * escribe. La primera pasada lo cuenta una vez porque `recomputarObra`
+   * unifica; la segunda lo contaba dos, porque `verificarComputo` computaba sin
+   * unificar — y encima sus entidades sintéticas ni siquiera llevaban el
+   * `elemento_id`. Resultado: «el cómputo dice 26 m² y la segunda lectura dice
+   * 52», una consulta falsa por cada elemento que el cruce agrupó, pegada en la
+   * bandeja hasta la verificación siguiente (`verificacion.*` es prefijo
+   * protegido).
+   */
+  async function unificarLosT1(): Promise<string> {
+    const elementoId = randomUUID();
+    const filas = await db
+      .select()
+      .from(entidades)
+      .where(and(eq(entidades.obraId, obraId), eq(entidades.nombre, 'T1')));
+    expect(filas).toHaveLength(2);
+    for (const fila of filas) {
+      await db.update(entidades).set({ elementoId }).where(eq(entidades.id, fila.id));
+    }
+    const { recomputarObra } = await import('@/lib/pipeline/recomputar');
+    await recomputarObra(obraId, { db });
+    return elementoId;
+  }
+
+  it('no inventa un desvío del 100 % por cada elemento unificado', async () => {
+    await subirYProcesar('casa-deduccion.pdf');
+    await unificarLosT1();
+
+    // 5,00 × 2,60 × 2 caras = 26 m² netos ⇒ 31,68 m² de compra. UNA vez.
+    expect(await cantidadDe('seco.placas')).toBe(31.68);
+
+    const resultado = await verificarComputo(db, { storage }, actor, obraId);
+
+    expect(resultado.diferencias).toEqual([]);
+    const abiertas = (await todosLosHallazgos()).filter((fila) =>
+      fila.clave.startsWith('verificacion.'),
+    );
+    expect(abiertas).toEqual([]);
   });
 });

@@ -11,7 +11,8 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { EntidadPersistida } from '@/lib/computo/engine';
+import type { CamposDeducidos, EntidadPersistida } from '@/lib/computo/engine';
+import type { Origen } from '@/types/domain';
 import { mismaLectura, unificarPorElemento } from '@/lib/computo/unificar';
 
 const ELEMENTO = 'elem-1';
@@ -263,7 +264,9 @@ describe('unificarPorElemento: el nivel de evidencia manda sobre quién quedó d
   // ganaba la planta por ser la base, y la consulta le decía al arquitecto que
   // 6,12 era «la lectura más confiable» — es la evidencia más débil que el
   // sistema produce.
-  const ORIGENES_MEDIDO = new Map([['ent-planta', new Map([['largoM', 'inferido' as const]])]]);
+  const ORIGENES_MEDIDO: CamposDeducidos = new Map([
+    ['ent-planta', new Map<string, Origen>([['largoM', 'inferido']])],
+  ]);
 
   it('un campo medido sobre el dibujo pierde contra la cota escrita en la hermana', () => {
     const planta = enPlanta({ atributos: { largoM: 6.12 } });
@@ -293,9 +296,9 @@ describe('unificarPorElemento: el nivel de evidencia manda sobre quién quedó d
   });
 
   it('a igual nivel de evidencia gana la base y el conflicto se emite', () => {
-    const origenes = new Map([
-      ['ent-planta', new Map([['largoM', 'inferido' as const]])],
-      ['ent-corte', new Map([['largoM', 'inferido' as const]])],
+    const origenes: CamposDeducidos = new Map([
+      ['ent-planta', new Map<string, Origen>([['largoM', 'inferido']])],
+      ['ent-corte', new Map<string, Origen>([['largoM', 'inferido']])],
     ]);
     const { entidades, conflictos } = unificarPorElemento(
       [enPlanta({ atributos: { largoM: 6.12 } }), enCorte({ confianza: 0.8, atributos: { largoM: 6 } })],
@@ -318,9 +321,9 @@ describe('unificarPorElemento: el nivel de evidencia manda sobre quién quedó d
   });
 
   it('lo deducido le gana a lo medido, y lo escrito a los dos', () => {
-    const origenes = new Map([
-      ['ent-planta', new Map([['largoM', 'inferido' as const]])],
-      ['ent-corte', new Map([['largoM', 'deducido' as const]])],
+    const origenes: CamposDeducidos = new Map([
+      ['ent-planta', new Map<string, Origen>([['largoM', 'inferido']])],
+      ['ent-corte', new Map<string, Origen>([['largoM', 'deducido']])],
     ]);
     const { entidades } = unificarPorElemento(
       [enPlanta({ atributos: { largoM: 6.12 } }), enCorte({ confianza: 0.8, atributos: { largoM: 6 } })],

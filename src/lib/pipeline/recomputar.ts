@@ -843,7 +843,7 @@ function comoNumero(valor: unknown): number | null {
  * reemplazado por la cota de la hermana, y dejar la marca vieja haría que el
  * ítem se declarara `inferido` computando con un número escrito.
  */
-function mergearAportes(
+export function mergearAportes(
   camposDeducidos: CamposDeducidos,
   aportes: ReadonlyMap<string, ReadonlyMap<string, string>>,
 ): CamposDeducidos {
