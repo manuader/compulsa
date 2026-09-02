@@ -347,6 +347,21 @@ export interface EntradaDatoObraFaltante {
  * alguien conteste. Y sale **sin fuentes**: el dato no se leyó en ninguna
  * lámina, así que no hay bbox honesto que citar (P1 no se cumple citando
  * cualquier cosa).
+ *
+ * ## Ojo: el texto subcuenta a los afectados, y el número no
+ *
+ * La misma clave la emiten varios rubros —a `dato_obra.altura_local.PB` la
+ * abren seco (por los tabiques), gruesa (por el muro) y pintura (por los
+ * ambientes)—, y el conciliador de hallazgos se queda con **la primera**. O
+ * sea: la tarjeta dice «Afecta a T1, T2, T3 y T4» aunque responderla también
+ * compute el muro y los dos ambientes.
+ *
+ * El comportamiento es el correcto (una pregunta, una respuesta, todo se
+ * computa); lo que queda corto es el **texto**, y por eso está anotado acá y no
+ * arreglado: juntar los afectados de todos los rubros en una descripción exige
+ * que las plantillas se vean entre sí, que es exactamente lo que la cadena de
+ * respaldo evita. Si algún día se arregla, se arregla del lado del que
+ * concilia, no acá.
  */
 export function hallazgoDatoObraFaltante(entrada: EntradaDatoObraFaltante): HallazgoDetectado {
   const nombres = entrada.entidades.map((entidad) => entidad.nombre);
