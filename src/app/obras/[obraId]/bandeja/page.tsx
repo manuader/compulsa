@@ -41,11 +41,13 @@ import { PLANTILLAS } from '@/lib/rubros/index';
 import { RUBROS, type EstadoHallazgo } from '@/types/domain';
 
 import { esRegla, SolapaRevisar } from './revisar';
+// `fuentesDeAfectadas` NO se importa de `./ui`: ese archivo es `'use client'` y
+// llamar desde el server a una función que él exporta tira 500 en runtime con
+// `tsc` verde. Vive en `./plano`, que es un módulo hoja sin `'use client'`.
+import { fuentesDeAfectadas, type FuenteVista } from './plano';
 import {
   BandejaConsultas,
-  fuentesDeAfectadas,
   type ConsultaVista,
-  type FuenteVista,
   type GrupoConsultas,
   type LaminaCitada,
 } from './ui';

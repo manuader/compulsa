@@ -1,0 +1,50 @@
+{
+  "rotulo": {
+    "titulo": "CUADRO DE LOCALES",
+    "codigo": "A-06",
+    "disciplina": "arquitectura",
+    "tipoLamina": "planilla",
+    "escala": null,
+    "escalaConfiable": false,
+    "revision": "0",
+    "confianza": 0.9
+  },
+  "entidades": [
+    {
+      "tipo": "terminacion",
+      "nombre": "Cielorraso Estar",
+      "bbox": [
+        0.1,
+        0.3,
+        0.6,
+        0.08
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "ubicacion": "cielorraso",
+        "material": "yeso",
+        "superficieM2": 20,
+        "ambiente": "Estar"
+      }
+    },
+    {
+      "tipo": "terminacion",
+      "nombre": "Cielorraso Baño",
+      "bbox": [
+        0.1,
+        0.42,
+        0.6,
+        0.08
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "ubicacion": "cielorraso",
+        "material": "yeso",
+        "superficieM2": 6,
+        "ambiente": "Baño"
+      }
+    }
+  ]
+}

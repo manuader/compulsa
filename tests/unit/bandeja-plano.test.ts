@@ -12,19 +12,25 @@
  * dato. Confirmar sin ver esa fila es confirmar a ciegas, que es justo lo que
  * la ola entera viene a evitar.
  *
- * Los tres helpers son puros y viven en el `ui.tsx` de la bandeja, que es un
- * `'use client'`: acá se testean sin render, que es donde está la lógica.
+ * Los cinco helpers son puros y se testean sin render, que es donde está la
+ * lógica. Cuatro viven en el `ui.tsx` de la bandeja, que es un `'use client'`;
+ * el quinto, `fuentesDeAfectadas`, vive aparte en `plano.ts` **porque lo llama
+ * el Server Component**: una función que corre de los dos lados no puede vivir
+ * en un archivo con la directiva, o la página tira 500 en runtime con `tsc` y
+ * el build en verde (HANDOFF §7.23).
  */
 import { describe, expect, it } from 'vitest';
 
 import {
+  fuentesDeAfectadas,
+  type FuenteVista,
+} from '@/app/obras/[obraId]/bandeja/plano';
+import {
   armarMirada,
   destacadosDeConsulta,
-  fuentesDeAfectadas,
   laminasDeConsulta,
   miradaVigente,
   type ConsultaVista,
-  type FuenteVista,
   type GrupoConsultas,
 } from '@/app/obras/[obraId]/bandeja/ui';
 import type { BBox } from '@/types/domain';

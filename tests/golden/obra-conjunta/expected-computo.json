@@ -1,0 +1,142 @@
+[
+  {
+    "claveItem": "aberturas.V1",
+    "cantCompra": 1,
+    "derivacion": "V1 está dibujada en la planta A-01 SIN medidas y listada en la planilla A-05 CON medidas (1,20 × 1,00 m). La deducción «planilla ↔ plano» las baja a la entidad de la planta y, con confianza 0,95 × 0,90 = 0,86 ≥ 0,70, se auto-valida y se aplica en la misma corrida: nadie hace clic. Es UNA sola ventana (la planilla especifica, no suma) ⇒ 1 u neta, sin desperdicio, a medida: 1 u, origen 'deducido'."
+  },
+  {
+    "claveItem": "aberturas.P1",
+    "cantCompra": 1,
+    "derivacion": "Ídem V1 con la puerta P1 (0,80 × 2,05 m en A-05, sin acotar en A-01) ⇒ 1 u, origen 'deducido'."
+  },
+  {
+    "claveItem": "seco.placas",
+    "cantCompra": 72,
+    "derivacion": "Los cuatro tabiques de PB, ninguno acotado en altura: la altura sale del dato de obra altura_local.PB = 2,60 m que el cruce leyó en el corte A-02. Largos 4 + 3 + 2 + 3 = 12 m × 2,60 m × 2 caras = 62,40 m² netos. +12 % de desperdicio = 69,89 m²; 69,89 / 2,88 = 24,27 ⇒ 25 placas × 2,88 = 72,00 m². Origen 'deducido' y el ítem cita el corte."
+  },
+  {
+    "claveItem": "seco.soleras",
+    "cantCompra": 26,
+    "derivacion": "Solera inferior + superior de los cuatro tabiques: 2 × 12 m = 24 ml netos, sin desperdicio; 24 / 2,60 = 9,23 ⇒ 10 barras × 2,60 = 26,00 ml."
+  },
+  {
+    "claveItem": "seco.montantes",
+    "cantCompra": 35,
+    "derivacion": "Montantes cada 0,40 m, tabique por tabique: T1 ceil(4/0,40)+1 = 11; T2 ceil(3/0,40)+1 = 9; T3 ceil(2/0,40)+1 = 6; T4 = 9. Total 35 u netas, sin desperdicio y por unidad ⇒ 35 u."
+  },
+  {
+    "claveItem": "seco.tornillos",
+    "cantCompra": 1000,
+    "derivacion": "15 tornillos/m² × 62,40 m² = 936 u netas, sin desperdicio; 936 / 500 = 1,87 ⇒ 2 cajas × 500 = 1000 u."
+  },
+  {
+    "claveItem": "seco.masilla",
+    "cantCompra": 60,
+    "derivacion": "0,9 kg/m² × 62,40 m² = 56,16 kg netos, sin desperdicio; 56,16 / 15 = 3,74 ⇒ 4 baldes × 15 = 60 kg."
+  },
+  {
+    "claveItem": "seco.cinta",
+    "cantCompra": 180,
+    "derivacion": "2,3 ml/m² × 62,40 m² = 143,52 ml netos, sin desperdicio; 143,52 / 90 = 1,59 ⇒ 2 rollos × 90 = 180 ml."
+  },
+  {
+    "claveItem": "pintura.latex_paredes",
+    "cantCompra": 15,
+    "derivacion": "Paredes = perímetro × altura − vanos, con la altura del dato de obra: Estar 18 × 2,60 − 4 = 42,80 m² y Baño 10 × 2,60 − 2 = 24,00 m² ⇒ 66,80 m². 2 manos a 10 m²/L = 13,36 L netos; +5 % = 14,03 L; latas 1×10 + 1×4 + 1×1 = 15 L."
+  },
+  {
+    "claveItem": "pintura.latex_cielorrasos",
+    "cantCompra": 6,
+    "derivacion": "Cielorrasos = superficie de los ambientes: 20 + 6 = 26 m². 2 manos a 10 m²/L = 5,20 L netos; +5 % = 5,46 L; latas 1×4 + 2×1 = 6 L."
+  },
+  {
+    "claveItem": "gruesa.ladrillos",
+    "cantCompra": 396,
+    "derivacion": "M1: 6 m × 2,60 m (la altura, otra vez, del corte) = 15,60 m²; × 16,5 ladrillos/m² = 257,40 u netas; +5 % = 270,27; 270,27 / 198 = 1,37 ⇒ 2 pallets × 198 = 396 u."
+  },
+  {
+    "claveItem": "gruesa.cemento",
+    "cantCompra": 150,
+    "derivacion": "8 kg/m² × 15,60 m² = 124,80 kg netos, sin desperdicio; 124,80 / 50 = 2,50 ⇒ 3 bolsas × 50 = 150 kg."
+  },
+  {
+    "claveItem": "gruesa.cal",
+    "cantCompra": 200,
+    "derivacion": "12 kg/m² × 15,60 m² = 187,20 kg netos, sin desperdicio; 187,20 / 25 = 7,49 ⇒ 8 bolsas × 25 = 200 kg."
+  },
+  {
+    "claveItem": "gruesa.arena",
+    "cantCompra": 1,
+    "derivacion": "0,04 m³/m² × 15,60 m² = 0,62 m³ netos, sin desperdicio; a granel en múltiplos de 0,5: 0,62 / 0,5 = 1,25 ⇒ 2 × 0,5 = 1 m³."
+  },
+  {
+    "claveItem": "terminaciones.solado.porcelanato",
+    "cantCompra": 29,
+    "derivacion": "Porcelanato en Estar (20 m²) y Baño (6 m²) = 26 m² netos; +10 % = 28,60 m²; se compra por m² enteros ⇒ 29 m²."
+  },
+  {
+    "claveItem": "terminaciones.zocalo.madera",
+    "cantCompra": 19,
+    "derivacion": "Zócalo de madera solo en el Estar: su perímetro, 18 ml netos; +5 % = 18,90 ml ⇒ 19 ml."
+  },
+  {
+    "claveItem": "terminaciones.cielorraso.yeso",
+    "cantCompra": 30,
+    "derivacion": "Los cielorrasos salen del cuadro de locales A-06, que ya trae los m²: 20 + 6 = 26 m² netos; +12 % = 29,12 m² ⇒ 30 m²."
+  },
+  {
+    "claveItem": "terminaciones.revestimiento.ceramica",
+    "cantCompra": 24,
+    "derivacion": "Cerámica en el baño: perímetro 10 ml × la altura de revestimiento, que no está en ninguna lámina y la declara el cruce como dato de obra altura_revestimiento.general = 2,10 m ⇒ 21,00 m² netos; +10 % = 23,10 m² ⇒ 24 m²."
+  },
+  {
+    "claveItem": "terminaciones.contrapiso",
+    "cantCompra": 26,
+    "derivacion": "Debajo de cada m² de solado hay un contrapiso: los mismos 26 m² netos, sin desperdicio y contratado global ⇒ 26 m²."
+  },
+  {
+    "claveItem": "terminaciones.carpeta",
+    "cantCompra": 26,
+    "derivacion": "Ídem la carpeta de nivelación: 26 m²."
+  },
+  {
+    "claveItem": "sanitaria.canieria.ac.20",
+    "cantCompra": 8,
+    "derivacion": "Tres tramos de agua caliente Ø 20 escritos de tres maneras ('20', 'Ø20', '20mm') que normalizan al mismo diámetro: 2 + 3 + 1,5 = 6,50 ml netos; +5 % = 6,83 ml; 6,83 / 4 = 1,71 ⇒ 2 tiras de 4 m = 8 ml."
+  },
+  {
+    "claveItem": "sanitaria.canieria.af.20",
+    "cantCompra": 8,
+    "derivacion": "Agua fría Ø 20: 4 ml netos; +5 % = 4,20 ml; 4,20 / 4 = 1,05 ⇒ 2 tiras de 4 m = 8 ml."
+  },
+  {
+    "claveItem": "sanitaria.canieria.cloacal.110",
+    "cantCompra": 8,
+    "derivacion": "Desagüe cloacal Ø 110 ('Ø110' ⇒ '110'): 6 ml netos; +5 % = 6,30 ml; 6,30 / 4 = 1,58 ⇒ 2 tiras de 4 m = 8 ml."
+  },
+  {
+    "claveItem": "sanitaria.accesorio.codo90.20",
+    "cantCompra": 3,
+    "derivacion": "Tres codos a 90° de Ø 20 ⇒ 3 u netas, sin desperdicio y por unidad: 3 u."
+  },
+  {
+    "claveItem": "sanitaria.accesorio.te.20",
+    "cantCompra": 1,
+    "derivacion": "Una te de Ø 20 ⇒ 1 u."
+  },
+  {
+    "claveItem": "sanitaria.artefacto.inodoro",
+    "cantCompra": 1,
+    "derivacion": "Un inodoro en el Baño ⇒ 1 u. Tiene su tramo cloacal en el mismo ambiente (TR5), así que la correspondencia artefacto ↔ desagüe del §22 no abre nada."
+  },
+  {
+    "claveItem": "electrica.boca.toma",
+    "cantCompra": 2,
+    "derivacion": "Dos bocas de tomacorriente en IE-01 ⇒ 2 u netas, sin desperdicio y por unidad: 2 u."
+  },
+  {
+    "claveItem": "electrica.boca.luz",
+    "cantCompra": 3,
+    "derivacion": "Tres bocas de luz en IE-01 ⇒ 3 u."
+  }
+]

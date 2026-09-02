@@ -10,14 +10,17 @@
  *   tests/fixtures/pdfs/escala-declarada.pdf 1 página con escala declarada NO verificada
  *   tests/fixtures/pdfs/obra-busqueda.pdf    2 páginas (planta sin acotar + planilla vacía)
  *   tests/fixtures/pdfs/obra-fases.pdf       2 páginas (planta sin alturas + corte)
+ *   tests/fixtures/pdfs/obra-conjunta.pdf    6 páginas (el expediente completo: golden 3)
  *   tests/fixtures/analysis/obra-demo-p1..p3.json      qué "ve" el provider mock
  *   tests/fixtures/analysis/obra-reforma-p1..p2.json   ídem, para el golden 2
  *   tests/fixtures/analysis/escala-declarada-p1.json   ídem, para la escala asumida
  *   tests/fixtures/analysis/obra-busqueda-p1..p2.json  ídem, para la búsqueda dirigida
  *   tests/fixtures/analysis/obra-fases-p1..p2.json     ídem, para el pipeline por fases
+ *   tests/fixtures/analysis/obra-conjunta-p1..p6.json  ídem, para el golden 3
  *   tests/fixtures/analysis/busqueda/obra-busqueda-p2.json  qué "encuentra" la búsqueda
  *   tests/fixtures/analysis/busqueda/obra-fases-p2.json     ídem, la altura en el corte
  *   tests/fixtures/analysis/cruce/obra-fases.json      qué **relaciona** el cruce (por obra)
+ *   tests/fixtures/analysis/cruce/obra-conjunta.json   ídem, los dos hechos de la obra del golden 3
  *
  * `sin-escala.pdf` NO tiene fixture de análisis a propósito: es el caso que
  * ejercita el bloqueo por escala del pipeline (RF-201).
@@ -627,6 +630,441 @@ const BUSQUEDA_OBRA_BUSQUEDA_P2: HallazgoBuscado[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// obra-conjunta.pdf — el expediente completo, que es el golden 3
+//
+// Es la obra que prueba de qué se trató la ola: **el expediente es un conjunto**.
+// Seis láminas que por separado no alcanzan y juntas cierran el cómputo:
+//
+//   · **A-01, la planta**: cuatro tabiques y un muro **sin altura**, dos
+//     ambientes **sin altura**, y dos carpinterías dibujadas y no acotadas. Con
+//     la lógica vieja esta lámina abría cinco consultas de altura idénticas;
+//   · **A-02, el corte**: la altura de local de PB, 2,60 m, acotada una sola vez
+//     para todo el nivel. El cruce la lee y la escribe como **dato de obra**
+//     `altura_local.PB`, y de ahí la toman los cinco elementos y los dos
+//     ambientes por la cadena de respaldo: cero consultas de altura;
+//   · **A-05, la planilla de carpinterías**: las medidas de V1 y P1, que la
+//     planta no acota. La deducción planilla↔plano las baja sola;
+//   · **IS-01, la sanitaria**: tramos de agua fría, caliente y cloacal, con sus
+//     accesorios y un inodoro que tiene su desagüe en el mismo ambiente;
+//   · **IE-01, la eléctrica**: dos tomas y tres bocas de luz;
+//   · **A-06, el cuadro de locales**: los cielorrasos, que la planta no dice.
+//
+// El único número que NO está escrito en ninguna lámina es hasta dónde llega el
+// revestimiento del baño: lo declara el cruce como
+// `altura_revestimiento.general` = 2,10 m, otro hecho de la obra entera.
+//
+// Nada de esta obra pide un clic: `validarDeducciones` queda en `false` a
+// propósito. Todo lo que se aplica se auto-valida por confianza (≥ 0,70), y lo
+// que el golden mide es la obra tal como sale del pipeline.
+// ---------------------------------------------------------------------------
+
+const C1: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANTA PB',
+    codigo: 'A-01',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planta',
+    escala: '1:50',
+    escalaConfiable: true,
+    revision: '0',
+    confianza: 0.95,
+  },
+  entidades: [
+    {
+      // Sin `alturaM`: la altura de local la declara el corte, una vez.
+      tipo: 'ambiente',
+      nombre: 'Estar',
+      bbox: [0.08, 0.2, 0.3, 0.4],
+      confianza: 0.92,
+      estadoReforma: 'na',
+      atributos: {
+        superficieM2: 20,
+        perimetroM: 18,
+        vanosM2: 4,
+        nivel: 'PB',
+        solado: 'porcelanato',
+        zocalo: 'madera',
+      },
+    },
+    {
+      // El baño lleva revestimiento y no lleva zócalo: hasta qué altura llega
+      // no está en ninguna lámina, lo declara el cruce para toda la obra.
+      tipo: 'ambiente',
+      nombre: 'Baño',
+      bbox: [0.42, 0.2, 0.16, 0.22],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: {
+        superficieM2: 6,
+        perimetroM: 10,
+        vanosM2: 2,
+        nivel: 'PB',
+        solado: 'porcelanato',
+        revestimiento: 'cerámica',
+      },
+    },
+    // Los cuatro tabiques del caso: mismo local, misma altura, ninguno acotado.
+    // Todos con `largoM` escrito, así que la medición gráfica no tiene nada que
+    // hacer acá — lo único que falta es la altura, y viene del corte.
+    {
+      tipo: 'tabique',
+      nombre: 'T1',
+      bbox: [0.38, 0.2, 0.015, 0.4],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'durlock', largoM: 4, caras: 2, nivel: 'PB' },
+    },
+    {
+      tipo: 'tabique',
+      nombre: 'T2',
+      bbox: [0.42, 0.42, 0.16, 0.015],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'durlock', largoM: 3, caras: 2, nivel: 'PB' },
+    },
+    {
+      tipo: 'tabique',
+      nombre: 'T3',
+      bbox: [0.62, 0.2, 0.015, 0.2],
+      confianza: 0.88,
+      estadoReforma: 'na',
+      atributos: { tipo: 'durlock', largoM: 2, caras: 2, nivel: 'PB' },
+    },
+    {
+      tipo: 'tabique',
+      nombre: 'T4',
+      bbox: [0.62, 0.44, 0.015, 0.24],
+      confianza: 0.88,
+      estadoReforma: 'na',
+      atributos: { tipo: 'durlock', largoM: 3, caras: 2, nivel: 'PB' },
+    },
+    {
+      // El muro de mampostería, también sin altura: la misma del local.
+      tipo: 'muro',
+      nombre: 'M1',
+      bbox: [0.06, 0.18, 0.02, 0.44],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'mamposteria', largoM: 6, nivel: 'PB' },
+    },
+    {
+      // Dibujada y no acotada: sus medidas están en la planilla A-05.
+      tipo: 'abertura',
+      nombre: 'V1',
+      bbox: [0.16, 0.18, 0.1, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tag: 'V1', tipologia: 'ventana' },
+    },
+    {
+      tipo: 'abertura',
+      nombre: 'P1',
+      bbox: [0.2, 0.6, 0.06, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tag: 'P1', tipologia: 'puerta' },
+    },
+  ],
+};
+
+const C2: AnalisisLamina = {
+  rotulo: {
+    titulo: 'CORTE A-A',
+    codigo: 'A-02',
+    disciplina: 'arquitectura',
+    tipoLamina: 'corte',
+    escala: '1:50',
+    escalaConfiable: true,
+    revision: '0',
+    confianza: 0.93,
+  },
+  entidades: [
+    {
+      // La altura de local, acotada. Una cota `total` sin parciales no le da
+      // nada que cerrar a `cierre_cotas`: está acá para que el corte diga lo
+      // que dice, y el que la usa es el cruce.
+      tipo: 'cota',
+      nombre: 'H local PB',
+      bbox: [0.62, 0.3, 0.04, 0.26],
+      confianza: 0.92,
+      estadoReforma: 'na',
+      atributos: { valorM: 2.6, sobre: 'local PB', tramo: 'total' },
+    },
+  ],
+};
+
+const C3: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANILLA DE CARPINTERÍAS',
+    codigo: 'A-05',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planilla',
+    escala: null,
+    // Una planilla no imprime escala (tests/CLAUDE.md, regla 6).
+    escalaConfiable: false,
+    revision: '0',
+    confianza: 0.9,
+  },
+  entidades: [
+    {
+      tipo: 'abertura',
+      nombre: 'V1',
+      bbox: [0.1, 0.3, 0.6, 0.08],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tag: 'V1', tipologia: 'ventana', anchoM: 1.2, altoM: 1 },
+    },
+    {
+      tipo: 'abertura',
+      nombre: 'P1',
+      bbox: [0.1, 0.42, 0.6, 0.08],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tag: 'P1', tipologia: 'puerta', anchoM: 0.8, altoM: 2.05 },
+    },
+  ],
+};
+
+const C4: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANTA SANITARIA',
+    codigo: 'IS-01',
+    disciplina: 'instalaciones',
+    tipoLamina: 'planta',
+    escala: '1:50',
+    escalaConfiable: true,
+    revision: '0',
+    confianza: 0.9,
+  },
+  entidades: [
+    // Agua caliente: tres tramos del mismo diámetro escrito de tres maneras
+    // (el corralón los cotiza como uno solo).
+    {
+      tipo: 'tramo',
+      nombre: 'TR1',
+      bbox: [0.1, 0.24, 0.18, 0.012],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { sistema: 'ac', diametro: '20', longitudM: 2, ambiente: 'Baño' },
+    },
+    {
+      tipo: 'tramo',
+      nombre: 'TR2',
+      bbox: [0.1, 0.3, 0.26, 0.012],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { sistema: 'ac', diametro: 'Ø20', longitudM: 3, ambiente: 'Baño' },
+    },
+    {
+      tipo: 'tramo',
+      nombre: 'TR3',
+      bbox: [0.1, 0.36, 0.14, 0.012],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { sistema: 'ac', diametro: '20mm', longitudM: 1.5, ambiente: 'Baño' },
+    },
+    {
+      tipo: 'tramo',
+      nombre: 'TR4',
+      bbox: [0.1, 0.42, 0.32, 0.012],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { sistema: 'af', diametro: '20', longitudM: 4, ambiente: 'Baño' },
+    },
+    {
+      // El desagüe del baño: sin él, el inodoro abriría la inconsistencia de
+      // correspondencia del §22.
+      tipo: 'tramo',
+      nombre: 'TR5',
+      bbox: [0.1, 0.5, 0.44, 0.016],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { sistema: 'cloacal', diametro: 'Ø110', longitudM: 6, ambiente: 'Baño' },
+    },
+    {
+      tipo: 'accesorio',
+      nombre: 'A1',
+      bbox: [0.28, 0.236, 0.016, 0.02],
+      confianza: 0.88,
+      estadoReforma: 'na',
+      atributos: { tipo: 'codo90', sistema: 'ac', diametro: '20' },
+    },
+    {
+      tipo: 'accesorio',
+      nombre: 'A2',
+      bbox: [0.36, 0.296, 0.016, 0.02],
+      confianza: 0.88,
+      estadoReforma: 'na',
+      atributos: { tipo: 'codo90', sistema: 'ac', diametro: '20' },
+    },
+    {
+      tipo: 'accesorio',
+      nombre: 'A3',
+      bbox: [0.24, 0.356, 0.016, 0.02],
+      confianza: 0.88,
+      estadoReforma: 'na',
+      atributos: { tipo: 'codo90', sistema: 'ac', diametro: 'Ø20' },
+    },
+    {
+      tipo: 'accesorio',
+      nombre: 'A4',
+      bbox: [0.18, 0.296, 0.016, 0.02],
+      confianza: 0.88,
+      estadoReforma: 'na',
+      atributos: { tipo: 'te', sistema: 'ac', diametro: '20' },
+    },
+    {
+      tipo: 'artefacto',
+      nombre: 'Inodoro',
+      bbox: [0.56, 0.48, 0.06, 0.06],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'inodoro', ambiente: 'Baño' },
+    },
+  ],
+};
+
+const C5: AnalisisLamina = {
+  rotulo: {
+    titulo: 'PLANTA ELÉCTRICA',
+    codigo: 'IE-01',
+    disciplina: 'instalaciones',
+    tipoLamina: 'planta',
+    escala: '1:50',
+    escalaConfiable: true,
+    revision: '0',
+    confianza: 0.9,
+  },
+  entidades: [
+    {
+      tipo: 'boca',
+      nombre: 'B1',
+      bbox: [0.12, 0.26, 0.02, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'toma', circuito: 'TUG1' },
+    },
+    {
+      tipo: 'boca',
+      nombre: 'B2',
+      bbox: [0.2, 0.26, 0.02, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'toma', circuito: 'TUG1' },
+    },
+    {
+      tipo: 'boca',
+      nombre: 'B3',
+      bbox: [0.28, 0.26, 0.02, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'luz', circuito: 'IUG1' },
+    },
+    {
+      tipo: 'boca',
+      nombre: 'B4',
+      bbox: [0.36, 0.26, 0.02, 0.02],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { tipo: 'luz', circuito: 'IUG1' },
+    },
+    {
+      tipo: 'boca',
+      nombre: 'B5',
+      bbox: [0.44, 0.26, 0.02, 0.02],
+      confianza: 0.88,
+      estadoReforma: 'na',
+      atributos: { tipo: 'luz', circuito: 'IUG2' },
+    },
+  ],
+};
+
+const C6: AnalisisLamina = {
+  rotulo: {
+    titulo: 'CUADRO DE LOCALES',
+    codigo: 'A-06',
+    disciplina: 'arquitectura',
+    tipoLamina: 'planilla',
+    escala: null,
+    escalaConfiable: false,
+    revision: '0',
+    confianza: 0.9,
+  },
+  entidades: [
+    {
+      // El cuadro de locales trae la terminación con sus m² ya resueltos: no
+      // necesita ni perímetro ni altura.
+      tipo: 'terminacion',
+      nombre: 'Cielorraso Estar',
+      bbox: [0.1, 0.3, 0.6, 0.08],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { ubicacion: 'cielorraso', material: 'yeso', superficieM2: 20, ambiente: 'Estar' },
+    },
+    {
+      tipo: 'terminacion',
+      nombre: 'Cielorraso Baño',
+      bbox: [0.1, 0.42, 0.6, 0.08],
+      confianza: 0.9,
+      estadoReforma: 'na',
+      atributos: { ubicacion: 'cielorraso', material: 'yeso', superficieM2: 6, ambiente: 'Baño' },
+    },
+  ],
+};
+
+const LAMINAS_CONJUNTA: Lamina[] = [
+  { clave: 'obra-conjunta-p1', encabezado: 'PLANTA PB — 1:50', analisis: C1 },
+  { clave: 'obra-conjunta-p2', encabezado: 'CORTE A-A — 1:50', analisis: C2 },
+  { clave: 'obra-conjunta-p3', encabezado: 'PLANILLA DE CARPINTERÍAS', analisis: C3 },
+  { clave: 'obra-conjunta-p4', encabezado: 'PLANTA SANITARIA — 1:50', analisis: C4 },
+  { clave: 'obra-conjunta-p5', encabezado: 'PLANTA ELECTRICA — 1:50', analisis: C5 },
+  { clave: 'obra-conjunta-p6', encabezado: 'CUADRO DE LOCALES', analisis: C6 },
+];
+
+/**
+ * Qué relaciona el cruce en el expediente de la obra Obra Conjunta.
+ *
+ * Dos hechos que valen para **toda la obra** y que ninguna entidad lleva
+ * escritos encima:
+ *
+ *   · `altura_local.PB` = 2,60 m, leída en el corte A-02. Es el corazón del
+ *     golden: los cuatro tabiques, el muro y los dos ambientes la toman por la
+ *     cadena de respaldo, sus ítems salen `deducido` citando el corte, y la
+ *     consulta agrupada `dato_obra.altura_local.PB` **no existe**;
+ *   · `altura_revestimiento.general` = 2,10 m, leída en el cuadro de locales,
+ *     que es lo que le falta al revestimiento del baño para tener m².
+ *
+ * Las dos por encima del umbral de 0,70: se escriben en `datos_obra` y se
+ * aplican en la misma corrida. `completados` queda vacío a propósito — lo que
+ * este caso prueba no es completar un campo de una entidad, sino que **un hecho
+ * del expediente alcanza para todas las que lo esperan**.
+ */
+const CRUCE_OBRA_CONJUNTA = {
+  datosObra: [
+    {
+      clave: 'altura_local.PB',
+      valor: '2,60',
+      unidad: 'm',
+      laminaCodigo: 'A-02',
+      bbox: [0.62, 0.3, 0.04, 0.26],
+      confianza: 0.9,
+    },
+    {
+      clave: 'altura_revestimiento.general',
+      valor: '2,10',
+      unidad: 'm',
+      laminaCodigo: 'A-06',
+      bbox: [0.1, 0.54, 0.6, 0.06],
+      confianza: 0.85,
+    },
+  ],
+  completados: [],
+  identidades: [],
+  conflictos: [],
+  relecturas: [],
+};
+
+// ---------------------------------------------------------------------------
 // Dibujo
 // ---------------------------------------------------------------------------
 
@@ -773,6 +1211,7 @@ async function main(): Promise<void> {
     ['escala-declarada.pdf', await documentoDe(LAMINAS_ESCALA_DECLARADA)],
     ['obra-busqueda.pdf', await documentoDe(LAMINAS_BUSQUEDA)],
     ['obra-fases.pdf', await documentoDe(LAMINAS_FASES)],
+    ['obra-conjunta.pdf', await documentoDe(LAMINAS_CONJUNTA)],
   ];
   for (const [nombre, bytes] of pdfs) {
     const destino = new URL(nombre, DIR_PDFS);
@@ -786,6 +1225,7 @@ async function main(): Promise<void> {
     ...LAMINAS_ESCALA_DECLARADA,
     ...LAMINAS_BUSQUEDA,
     ...LAMINAS_FASES,
+    ...LAMINAS_CONJUNTA,
   ];
   for (const lamina of todas) {
     // Los fixtures son el contrato de los tests: si no validan, no se escriben.
@@ -805,16 +1245,22 @@ async function main(): Promise<void> {
     escritos.push(`${fileURLToPath(destino)} (${datos.length} hallazgos)`);
   }
 
-  // El fixture del cruce se valida contra el contrato del mock antes de
+  // Los fixtures del cruce se validan contra el contrato del mock antes de
   // escribirse, igual que los de análisis: un fixture que el provider no podría
   // aceptar es un test que prueba otra cosa.
-  const cruce = new URL('obra-fases.json', DIR_CRUCE);
-  const validado = zCruceFixture.parse(CRUCE_OBRA_FASES);
-  writeFileSync(cruce, `${JSON.stringify(CRUCE_OBRA_FASES, null, 2)}\n`, 'utf8');
-  escritos.push(
-    `${fileURLToPath(cruce)} (${validado.completados.length} completados, ` +
-      `${validado.datosObra.length} datos de obra)`,
-  );
+  const cruces: Array<[string, unknown]> = [
+    ['obra-fases.json', CRUCE_OBRA_FASES],
+    ['obra-conjunta.json', CRUCE_OBRA_CONJUNTA],
+  ];
+  for (const [nombre, datos] of cruces) {
+    const destino = new URL(nombre, DIR_CRUCE);
+    const validado = zCruceFixture.parse(datos);
+    writeFileSync(destino, `${JSON.stringify(datos, null, 2)}\n`, 'utf8');
+    escritos.push(
+      `${fileURLToPath(destino)} (${validado.completados.length} completados, ` +
+        `${validado.datosObra.length} datos de obra)`,
+    );
+  }
 
   console.log('Fixtures generados:');
   for (const linea of escritos) console.log(`  ${linea}`);

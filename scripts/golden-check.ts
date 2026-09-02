@@ -29,7 +29,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { resetDb, setDbForTests, type Db } from '@/db/client';
-import { computoItems, deducciones, estudios, obras, usuarios } from '@/db/schema';
+import { computoItems, deducciones, estudios, hallazgos, obras, usuarios } from '@/db/schema';
 import { crearProviderMock } from '@/lib/analysis/mock';
 import { validarDeduccion } from '@/lib/deduccion/persistencia';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
@@ -138,6 +138,16 @@ export interface ResultadoGolden {
    * número. Vacío en la comparación pura, que no corre el pipeline.
    */
   origenes: Record<string, Origen>;
+  /**
+   * Las claves de los hallazgos que quedaron **abiertos** al final de la
+   * corrida, ordenadas. Tampoco entra en el contrato de precisión, y existe por
+   * el mismo motivo que `origenes`: el golden 3 no se sostiene con las
+   * cantidades solas. Que los tabiques computen 62,40 m² no dice nada si el
+   * arquitecto igual tiene cuatro consultas de altura esperándolo en la
+   * bandeja; lo que esta ola cambió es justamente que no las tiene. Vacío en la
+   * comparación pura, que no corre el pipeline.
+   */
+  hallazgosAbiertos: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +229,17 @@ export function compararComputo(
     extras.length === 0 &&
     porRubro.every((fila) => fila.errorProm <= UMBRAL_ERROR_RUBRO);
 
-  return { caso, config, comparaciones, ausentes: ausentes.sort(), extras, porRubro, ok, origenes: {} };
+  return {
+    caso,
+    config,
+    comparaciones,
+    ausentes: ausentes.sort(),
+    extras,
+    porRubro,
+    ok,
+    origenes: {},
+    hallazgosAbiertos: [],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -367,10 +387,17 @@ export async function correrCasoGolden(caso: string): Promise<ResultadoGolden> {
       .from(computoItems)
       .where(and(eq(computoItems.obraId, obra.id), eq(computoItems.estado, 'activo')));
 
+    const abiertos = await db
+      .select({ clave: hallazgos.clave })
+      .from(hallazgos)
+      .where(and(eq(hallazgos.obraId, obra.id), eq(hallazgos.estado, 'abierto')))
+      .orderBy(hallazgos.clave);
+
     const reales = new Map(filas.map((fila) => [fila.claveItem, fila.cantCompra]));
     return {
       ...compararComputo(caso, config, esperados, reales),
       origenes: Object.fromEntries(filas.map((fila) => [fila.claveItem, fila.origen])),
+      hallazgosAbiertos: abiertos.map((fila) => fila.clave),
     };
   } finally {
     await rm(raizStorage, { recursive: true, force: true });

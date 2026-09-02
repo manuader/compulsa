@@ -32,13 +32,33 @@
  * `estudioId` del actor solo para leer el checklist y filtraba las tres queries
  * por `obra_id` pelado: con el id de una obra ajena aprobaba su rubro, que es la
  * llave de `lanzarCompulsa`. `tsc` no lo ve y ninguna suite lo miraba.
+ *
+ * ## El cuarto, de la misma familia: `'use client'` mirado desde el server
+ *
+ * La frontera corre para los dos lados. Lo que un archivo `'use client'`
+ * exporta **hacia el server** no es la función: es una referencia serializable
+ * que solo sirve para renderizar como componente o pasar como prop. Un Server
+ * Component que **llama** a una función exportada de ahí compila con `tsc`,
+ * pasa la suite y tira 500 en runtime: «Attempted to call X() from the server
+ * but X is on the client».
+ *
+ * Pasó con `fuentesDeAfectadas` en la bandeja, y la pantalla entera se caía al
+ * abrir una obra con una consulta de dato de obra. La pieza pura se mudó a
+ * `bandeja/plano.ts`, que no lleva la directiva. `import type` sigue estando
+ * bien: los tipos se borran y nunca llegan a ser un valor.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 const SRC = path.join(process.cwd(), 'src');
+
+/** Un archivo del árbol de mentira que usa el test del chequeo 4. */
+function escribir(destino: string, contenido: string): void {
+  writeFileSync(destino, contenido, 'utf8');
+}
 const API = path.join(SRC, 'app', 'api');
 
 /** Todos los `.ts`/`.tsx` de un directorio, sin entrar a `node_modules`. */
@@ -245,5 +265,229 @@ describe('imports que el bundler no sigue', () => {
       .map(({ archivo }) => path.relative(process.cwd(), archivo));
 
     expect(ofensores).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Un Server Component no llama a una función de un `'use client'`
+// ---------------------------------------------------------------------------
+
+/** La directiva vale solo si es lo primero del archivo, igual que `use server`. */
+function tieneDirectivaUseClient(fuente: string): boolean {
+  const primera = fuente
+    .replace(/^\uFEFF/, '')
+    .split('\n')
+    .map((linea) => linea.trim())
+    .find(
+      (linea) =>
+        linea !== '' && !linea.startsWith('//') && !linea.startsWith('/*') && !linea.startsWith('*'),
+    );
+  return primera === `'use client';` || primera === '"use client";';
+}
+
+/**
+ * El prefijo del alias de `src/`, leído del `tsconfig.json` en vez de escrito a
+ * mano.
+ *
+ * `paths` dice `"@/*": ["./src/*"]`, y de ahí sale el `'@/'` que hay que
+ * reconocer en un import. Se lee y no se hardcodea por dos razones: si mañana
+ * el alias cambia, este chequeo lo sigue solo; y si alguien lo saca, el test
+ * falla acá con un mensaje que lo dice, en vez de volverse silenciosamente
+ * ciego a la mitad de los imports del repo.
+ */
+function prefijoDelAlias(): string {
+  const tsconfig = JSON.parse(readFileSync(path.join(process.cwd(), 'tsconfig.json'), 'utf8')) as {
+    compilerOptions?: { paths?: Record<string, string[]> };
+  };
+  const paths = tsconfig.compilerOptions?.paths ?? {};
+  const entrada = Object.entries(paths).find(([, destinos]) =>
+    destinos.some((destino) => destino.replace(/^\.\//, '').startsWith('src/')),
+  );
+  if (entrada === undefined) {
+    throw new Error(
+      'No encontré en tsconfig.json un alias de `paths` que apunte a src/. ' +
+        'Si el alias cambió, actualizá este chequeo: sin él solo ve los imports relativos.',
+    );
+  }
+  // `"@/*"` → `"@/"`.
+  return entrada[0].replace(/\*$/, '');
+}
+
+const ALIAS_SRC = prefijoDelAlias();
+
+/**
+ * Los nombres de **valor** que un archivo importa de cada specifier del repo.
+ *
+ * Cuentan los relativos (`./ui`) **y los del alias** (`@/app/…/ui`), que es el
+ * estilo dominante para cruzar directorios: mirar solo los relativos dejaba el
+ * chequeo ciego justo donde una llamada nueva es más probable, y el bug volvería
+ * en silencio. Los paquetes de `node_modules` no interesan: no llevan directiva.
+ *
+ * `import type { X } from './y'` y una lista de solo `{ type A, type B }` no
+ * cuentan: se borran al compilar y nunca llegan a ser un valor en runtime.
+ * De `{ X as Y }` se queda con `Y`, que es como se lo usa acá.
+ */
+function importsDeValorDelRepo(fuente: string): Map<string, string[]> {
+  const porSpecifier = new Map<string, string[]>();
+  // La cláusula no puede tener comillas ni `;`: sin eso el `*?` salta por
+  // encima de un `from '…'` anterior y le atribuye a este módulo los nombres
+  // que en realidad venían de drizzle.
+  const re = /import\s+(type\s+)?([^;']*?)\s+from\s+'([^']+)'/g;
+  let encontrado: RegExpExecArray | null;
+  while ((encontrado = re.exec(fuente)) !== null) {
+    const [, esType, clausula, specifier] = encontrado;
+    if (esType !== undefined || specifier === undefined) continue;
+    if (!specifier.startsWith('.') && !specifier.startsWith(ALIAS_SRC)) continue;
+    const nombres = (clausula ?? '')
+      .replace(/[{}]/g, '')
+      .split(',')
+      .map((n) => n.trim())
+      .filter((n) => n !== '' && !n.startsWith('type '))
+      .map((n) => (n.includes(' as ') ? (n.split(' as ')[1] as string).trim() : n));
+    if (nombres.length === 0) continue;
+    porSpecifier.set(specifier, [...(porSpecifier.get(specifier) ?? []), ...nombres]);
+  }
+  return porSpecifier;
+}
+
+/**
+ * El archivo real detrás de un specifier, con su extensión.
+ *
+ * `'./plano'` se resuelve contra el directorio del que importa; `'@/app/x/ui'`,
+ * contra `raizSrc` — que en la corrida de verdad es `src/` y en el test del
+ * propio chequeo es un directorio temporal, así que el mismo código resuelve
+ * las dos formas en los dos escenarios.
+ */
+function resolverImport(desde: string, specifier: string, raizSrc: string): string | null {
+  const base = specifier.startsWith(ALIAS_SRC)
+    ? path.resolve(raizSrc, specifier.slice(ALIAS_SRC.length))
+    : path.resolve(path.dirname(desde), specifier);
+  const candidatos = [
+    `${base}.ts`,
+    `${base}.tsx`,
+    path.join(base, 'index.ts'),
+    path.join(base, 'index.tsx'),
+  ];
+  for (const candidato of candidatos) {
+    try {
+      if (statSync(candidato).isFile()) return candidato;
+    } catch {
+      // no existe: probamos el siguiente
+    }
+  }
+  return null;
+}
+
+/**
+ * ¿El archivo **llama** a ese nombre, o solo lo renderiza?
+ *
+ * Es la distinción que hace útil al chequeo. Importar un componente de un
+ * `'use client'` y ponerlo en el JSX (`<BandejaConsultas … />`) es exactamente
+ * para lo que existe la directiva. Lo que rompe es **invocarlo**
+ * (`fuentesDeAfectadas(...)`): ahí del otro lado no hay función, hay una
+ * referencia serializable, y Next tira «Attempted to call X() from the server».
+ */
+function loLlama(fuente: string, nombre: string): boolean {
+  return new RegExp(`(?<![\\w.$])${nombre}\\s*\\(`).test(fuente);
+}
+
+/**
+ * Todo módulo **sin** `'use client'` que **llame** a un nombre exportado por uno
+ * que sí la tiene, bajo `raizSrc`.
+ *
+ * `raizSrc` es a la vez el árbol que se recorre y la raíz contra la que se
+ * resuelve el alias, así que el test del propio chequeo puede apuntarlo a un
+ * directorio temporal y ejercitar exactamente este código.
+ */
+function ofensoresDeFrontera(raizSrc: string): string[] {
+  const fuentes = new Map(
+    archivosDeFuente(raizSrc).map((archivo) => [archivo, readFileSync(archivo, 'utf8')]),
+  );
+
+  const ofensores: string[] = [];
+  for (const [archivo, fuente] of fuentes) {
+    if (tieneDirectivaUseClient(fuente)) continue; // cliente → cliente está bien
+    for (const [specifier, nombres] of importsDeValorDelRepo(fuente)) {
+      const destino = resolverImport(archivo, specifier, raizSrc);
+      if (destino === null) continue;
+      const fuenteDestino = fuentes.get(destino) ?? readFileSync(destino, 'utf8');
+      if (!tieneDirectivaUseClient(fuenteDestino)) continue;
+      for (const nombre of nombres) {
+        if (!loLlama(fuente, nombre)) continue; // lo renderiza, no lo llama
+        ofensores.push(
+          `${path.relative(raizSrc, archivo)} llama a ${nombre}(), que exporta ` +
+            `${path.relative(raizSrc, destino)} y es 'use client'`,
+        );
+      }
+    }
+  }
+  return ofensores.sort();
+}
+
+describe('la frontera client/server, mirada desde el server', () => {
+  it("ningún módulo de server llama a una función de un 'use client'", () => {
+    expect(ofensoresDeFrontera(SRC)).toEqual([]);
+  });
+
+  /**
+   * El chequeo mirándose a sí mismo, sobre un árbol de mentira.
+   *
+   * Un guard que nunca vio el bug que dice atrapar no es un guard: es una
+   * función que devuelve `[]`. Este caso le pone delante las cuatro formas que
+   * importan —la llamada por ruta relativa (la que rompió de verdad), **la
+   * llamada por alias** (la que el chequeo no veía hasta esta ronda), el
+   * componente que solo se renderiza y el import de tipo— y verifica que marque
+   * exactamente las dos primeras.
+   */
+  it('marca la llamada, por ruta relativa Y por alias, y no el componente renderizado', () => {
+    const raiz = mkdtempSync(path.join(tmpdir(), 'frontera-'));
+    try {
+      mkdirSync(path.join(raiz, 'app', 'panel'), { recursive: true });
+      mkdirSync(path.join(raiz, 'app', 'otra'), { recursive: true });
+
+      escribir(
+        path.join(raiz, 'app', 'panel', 'ui.tsx'),
+        `'use client';\n` +
+          `export function ayuda(): number { return 1; }\n` +
+          `export function Panel(): null { return null; }\n` +
+          `export interface Vista { id: string }\n`,
+      );
+
+      // El caso que rompió de verdad: ruta relativa, y llama.
+      escribir(
+        path.join(raiz, 'app', 'panel', 'page.tsx'),
+        `import { ayuda, Panel, type Vista } from './ui';\n` +
+          `export default function P(v: Vista) { return ayuda() + (Panel ? 0 : 1) + v.id.length; }\n`,
+      );
+
+      // El que el chequeo no veía: el MISMO error cruzando directorios por alias.
+      escribir(
+        path.join(raiz, 'app', 'otra', 'page.tsx'),
+        `import { ayuda } from '${ALIAS_SRC}app/panel/ui';\n` +
+          `export default function O() { return ayuda(); }\n`,
+      );
+
+      // Renderizar un componente de un `'use client'` es para lo que existe la
+      // directiva: no se marca.
+      escribir(
+        path.join(raiz, 'app', 'otra', 'solo-render.tsx'),
+        `import { Panel } from '${ALIAS_SRC}app/panel/ui';\n` +
+          `export default function R() { return <Panel />; }\n`,
+      );
+
+      // Un import de tipo se borra al compilar: tampoco se marca.
+      escribir(
+        path.join(raiz, 'app', 'otra', 'solo-tipo.ts'),
+        `import type { Vista } from '${ALIAS_SRC}app/panel/ui';\n` +
+          `export function largo(v: Vista): number { return v.id.length; }\n`,
+      );
+
+      expect(ofensoresDeFrontera(raiz)).toEqual([
+        `app/otra/page.tsx llama a ayuda(), que exporta app/panel/ui.tsx y es 'use client'`,
+        `app/panel/page.tsx llama a ayuda(), que exporta app/panel/ui.tsx y es 'use client'`,
+      ]);
+    } finally {
+      rmSync(raiz, { recursive: true, force: true });
+    }
   });
 });

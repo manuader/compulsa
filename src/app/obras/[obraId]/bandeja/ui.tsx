@@ -58,6 +58,9 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { PanelVisor } from '@/components/viewer/panel-visor';
+import type { FuenteVista } from './plano';
+export type { FuenteVista } from './plano';
+
 import type {
   BBox,
   EstadoHallazgo,
@@ -127,10 +130,6 @@ export interface LaminaCitada {
 }
 
 /** Dónde está lo que la consulta mira: lámina + recuadro, para el visor. */
-export interface FuenteVista {
-  laminaId: string;
-  bbox: BBox;
-}
 
 /**
  * Lo que el sistema propone, **ya formateado en es-AR** por el server: los
@@ -387,39 +386,6 @@ export function laminasDeConsulta(consulta: ConsultaVista): LaminaMirable[] {
   }
 
   return opciones;
-}
-
-/**
- * Dónde están dibujadas las entidades a las que les falta un dato de obra.
- *
- * Una consulta de dato de obra nace **sin fuentes** y con razón: el hecho no se
- * leyó en ninguna lámina, así que no hay bbox honesto que citar (P1 no se cumple
- * citando cualquier cosa). Pero eso dejaba la tarjeta sin nada para mirar —«la
- * altura de local de PB» sin un solo plano al lado— justo en la consulta que más
- * contexto necesita, porque afecta a cuatro elementos a la vez.
- *
- * La provenance que sí existe es la de **los afectados**: dónde está dibujado
- * cada tabique que está esperando la altura. Eso es lo que el panel resalta, en
- * el orden en que el hallazgo los enumera, y por eso se arma acá y no en la
- * base: no es una fuente del hallazgo, es la de las entidades que nombra.
- *
- * Puro: `tests/unit/bandeja-plano.test.ts` lo pinnea.
- */
-export function fuentesDeAfectadas(
-  entidadIds: readonly string[],
-  porEntidad: ReadonlyMap<string, readonly FuenteVista[]>,
-): FuenteVista[] {
-  const fuentes: FuenteVista[] = [];
-  const vistas = new Set<string>();
-  for (const id of entidadIds) {
-    for (const fuente of porEntidad.get(id) ?? []) {
-      const clave = `${fuente.laminaId}:${fuente.bbox.join(',')}`;
-      if (vistas.has(clave)) continue;
-      vistas.add(clave);
-      fuentes.push(fuente);
-    }
-  }
-  return fuentes;
 }
 
 /**
