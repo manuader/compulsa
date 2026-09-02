@@ -531,7 +531,7 @@ async function sincronizarHallazgos(
  * Clave de una deducción: `(entidad, campo)` — la misma que el UNIQUE de la
  * tabla, con la obra ya fijada por el `where`.
  */
-function claveDeDeduccion(fila: { entidadId: string; campo: string }): string {
+export function claveDeDeduccion(fila: { entidadId: string; campo: string }): string {
   return `${fila.entidadId}::${fila.campo}`;
 }
 
@@ -836,10 +836,14 @@ function comoNumero(valor: unknown): number | null {
  * `alturaM` que era deducido, ese id deja de existir para el motor y la marca se
  * perdía: el ítem salía «explícito» apoyado en un dato que no está escrito.
  *
- * No hay colisión posible: `aportes` solo trae los campos que a la base le
- * **faltaban**, y un campo ausente no puede tener marca previa.
+ * Va en las dos direcciones, y la segunda es la que faltaba: si el que aportó el
+ * valor lo tiene **escrito** —no figura en el mapa de orígenes—, la marca que la
+ * base tenía en ese campo se **borra**. Desde que la unificación resuelve por
+ * nivel de evidencia, un `largoM` que la base traía medido puede quedar
+ * reemplazado por la cota de la hermana, y dejar la marca vieja haría que el
+ * ítem se declarara `inferido` computando con un número escrito.
  */
-function mergearAportes(
+export function mergearAportes(
   camposDeducidos: CamposDeducidos,
   aportes: ReadonlyMap<string, ReadonlyMap<string, string>>,
 ): CamposDeducidos {
@@ -850,7 +854,10 @@ function mergearAportes(
   for (const [idUnificado, porCampo] of aportes) {
     for (const [campo, idOriginal] of porCampo) {
       const origen = camposDeducidos.get(idOriginal)?.get(campo);
-      if (origen === undefined) continue;
+      if (origen === undefined) {
+        merged.get(idUnificado)?.delete(campo);
+        continue;
+      }
       const suyos = merged.get(idUnificado) ?? new Map<string, Origen>();
       suyos.set(campo, origen);
       merged.set(idUnificado, suyos);
@@ -860,24 +867,58 @@ function mergearAportes(
 }
 
 /**
+ * Cómo se nombra cada nivel de evidencia en una consulta.
+ *
+ * Es la cadena del §5.2 dicha en castellano: la consulta tiene que poder decir
+ * con qué clase de dato se computó, en vez de afirmar que el ganador es «la
+ * lectura más confiable» —que es falso cuando lo que ganó salió de medir un
+ * rectángulo a 0,5 de confianza—.
+ */
+const NIVEL_DE_EVIDENCIA: Record<Origen, string> = {
+  explicito: 'escrito en la lámina',
+  supuesto: 'un supuesto del rubro',
+  deducido: 'deducido de otra lámina',
+  inferido: 'medido sobre el dibujo',
+};
+
+/** `lámina A-02` si la lámina tiene código; si no, nada que decir. */
+function refDeLamina(
+  entidad: EntidadPersistida | undefined,
+  codigos: ReadonlyMap<string, string | null>,
+): string {
+  if (entidad === undefined) return '';
+  const codigo = codigos.get(entidad.laminaId) ?? null;
+  return codigo === null ? '' : `lámina ${codigo}`;
+}
+
+/**
  * La consulta que avisa que dos láminas dicen cosas distintas del mismo elemento.
  *
  * `inconsistencia` y **no bloqueante**, igual que la contradicción de una
- * deducción: el cómputo no está mal —usa la lectura más confiable y cuenta el
- * elemento una sola vez— pero hay una diferencia real entre dos láminas que
- * alguien tiene que mirar. La clave es estable por elemento y campo, así que el
- * conciliador la abre una vez y, si el conflicto desaparece, la cierra sola.
+ * deducción: el cómputo no está mal —cuenta el elemento una sola vez— pero hay
+ * una diferencia real entre dos láminas que alguien tiene que mirar. La clave es
+ * estable por elemento y campo, así que el conciliador la abre una vez y, si el
+ * conflicto desaparece, la cierra sola.
+ *
+ * El texto **nombra la lámina y el nivel de evidencia con el que se computó**.
+ * Decía «la lectura más confiable», que era mentira en el caso justo: un `largoM`
+ * medido sobre el dibujo le ganaba a la cota escrita en la hermana y la consulta
+ * le declaraba al arquitecto que el ganador era el dato bueno. Hoy la
+ * unificación resuelve por nivel de evidencia y este hallazgo solo aparece entre
+ * lecturas del **mismo** nivel, así que decir cuál es alcanza y es cierto.
  */
 function hallazgoUnificacion(
   conflicto: ConflictoUnificacion,
   porId: ReadonlyMap<string, EntidadPersistida>,
+  codigos: ReadonlyMap<string, string | null>,
 ): HallazgoDetectado {
   const lecturas = conflicto.valores.map((valor, i) => {
     const entidad = porId.get(conflicto.entidadIds[i] ?? '');
-    const donde = entidad === undefined ? '' : ` (${entidad.nombre})`;
-    return `${comoTexto(conflicto.campo, valor)}${donde}`;
+    const donde = [entidad?.nombre, refDeLamina(entidad, codigos)].filter(Boolean).join(', ');
+    return `${comoTexto(conflicto.campo, valor)}${donde === '' ? '' : ` (${donde})`}`;
   });
   const gana = lecturas[0] ?? '';
+  const nivel = NIVEL_DE_EVIDENCIA[conflicto.origenes[0] ?? 'explicito'];
 
   return hallazgoInconsistencia({
     rubro: null, // es coherencia del expediente, no de un rubro
@@ -885,8 +926,8 @@ function hallazgoUnificacion(
     checklistItem: 'unificacion.conflicto',
     descripcion:
       `Dos láminas dicen cosas distintas sobre ${etiquetaCampo(conflicto.campo)} del mismo ` +
-      `elemento: ${enumerar(lecturas)}. Computo con ${gana}, que es la lectura más confiable, ` +
-      'y lo cuento una sola vez. Revisá cuál de las dos vale.',
+      `elemento: ${enumerar(lecturas)}. Computo con ${gana} —${nivel}— y lo cuento una sola ` +
+      'vez. Revisá cuál de las dos vale.',
     fuentes: unirFuentes(
       ...conflicto.entidadIds.map((id) => {
         const entidad = porId.get(id);
@@ -930,12 +971,63 @@ export function valorQueDocumenta(
   return fila.valorJson[MARCA_VALOR_DOCUMENTADO] ?? null;
 }
 
-/** El `valor_json` sin las marcas: el `{ [campo]: valor }` limpio. */
-function sinMarcas(valorJson: Deduccion['valorJson']): Deduccion['valorJson'] {
+/**
+ * El `valor_json` sin las marcas de contradicción: el `{ [campo]: valor }` que
+ * escribió quien creó la fila.
+ *
+ * **Lo tiene que usar todo el que compare un `valor_json` guardado contra uno
+ * recién armado** — hoy `aplicarCompletados` (`cruce.ts`) y `escribirMedicion`
+ * (`procesar.ts`). Sin esto, una fila que el recompute marcó como superada
+ * jamás compara igual contra el `{ [campo]: valor }` pelado, se hace un `UPDATE`
+ * que no cambia ningún dato, las marcas se pierden, y el recompute del mismo
+ * paso las vuelve a poner: dos auditorías fantasma por corrida, para siempre, y
+ * un aviso de «superada por la documentación» que desaparece y reaparece en la
+ * misma corrida.
+ *
+ * Solo saca **estas dos** marcas, que son las que el recompute administra. Las
+ * claves meta de otros —`_metodo`, que escribe la medición gráfica— son de su
+ * dueño y viajan tal cual: si cambian, el `UPDATE` corresponde.
+ */
+export function sinMarcas(valorJson: Deduccion['valorJson']): Deduccion['valorJson'] {
   const limpio = { ...valorJson };
   delete limpio[MARCA_CONTRADICHA];
   delete limpio[MARCA_VALOR_DOCUMENTADO];
   return limpio;
+}
+
+/**
+ * El `valor_json` que se va a escribir, **con las marcas que la fila ya tenía**.
+ *
+ * La otra mitad de `sinMarcas()`: comparar sin marcas evita el `UPDATE` que no
+ * hacía falta, y escribir con ellas evita que el `UPDATE` que sí hacía falta se
+ * las lleve puestas. Quien reescribe una deducción existente pasa por acá:
+ *
+ * ```ts
+ * const igual = … && igualJson(sinMarcas(previa.valorJson), valores.valorJson) && …;
+ * if (igual) continue;
+ * await db.update(deducciones)
+ *   .set({ ...valores, valorJson: conMarcasDe(previa, valores.valorJson) })
+ *   .where(eq(deducciones.id, previa.id));
+ * ```
+ *
+ * Que la marca quede momentáneamente vieja no es un problema:
+ * `sincronizarContradicciones` la reconcilia en las dos direcciones en el mismo
+ * recompute, y no escribe si ya está bien. Lo que no se puede es borrarla, que
+ * es lo que arma el ciclo.
+ */
+export function conMarcasDe(
+  previa: Pick<Deduccion, 'valorJson'> | null | undefined,
+  valorJson: Deduccion['valorJson'],
+): Deduccion['valorJson'] {
+  if (!previa) return valorJson;
+  const conMarcas = { ...valorJson };
+  if (previa.valorJson[MARCA_CONTRADICHA] !== undefined) {
+    conMarcas[MARCA_CONTRADICHA] = previa.valorJson[MARCA_CONTRADICHA];
+  }
+  if (previa.valorJson[MARCA_VALOR_DOCUMENTADO] !== undefined) {
+    conMarcas[MARCA_VALOR_DOCUMENTADO] = previa.valorJson[MARCA_VALOR_DOCUMENTADO];
+  }
+  return conMarcas;
 }
 
 /** Un valor de atributo, escrito para leer. */
@@ -951,6 +1043,12 @@ function comoTexto(campo: string, valor: number | string | boolean): string {
  * ya no se sostiene y alguien tiene que mirarla. La clave es estable por entidad
  * y campo, así que el conciliador la abre una sola vez y **no la reabre** si el
  * arquitecto la descarta (mismo patrón que el resto de la bandeja).
+ *
+ * La clave va por **id de entidad**, no por nombre: `hallazgos.clave` es única
+ * por obra, y dos entidades llamadas `T1` en dos láminas distintas —el caso
+ * normal antes de que el cruce las una— armaban la misma clave. La segunda
+ * contradicción la tiraba `deduplicarPorClave` y el arquitecto no la veía nunca.
+ * Es la misma decisión que ya tomaba `hallazgoUnificacion` con el `elemento_id`.
  */
 function hallazgoContradiccion(superada: DeduccionSuperada): HallazgoDetectado {
   const { campo, regla } = superada.deduccion;
@@ -960,7 +1058,7 @@ function hallazgoContradiccion(superada: DeduccionSuperada): HallazgoDetectado {
 
   return hallazgoInconsistencia({
     rubro: null, // es coherencia del expediente, no de un rubro
-    clave: `deduccion.contradicha.${nombre}.${campo}`,
+    clave: `deduccion.contradicha.${superada.entidad.id}.${campo}`,
     checklistItem: 'deduccion.contradicha',
     descripcion:
       `${etiquetaCampo(campo)} de ${nombre} se validó en ${deducido} por la regla ` +
@@ -1116,7 +1214,8 @@ async function corteDelIndice(
  * Qué precio le toca a cada uno lo decide `resolverPrecio` (puro, §5.6): precio
  * manual del ítem → lista del estudio → índice de la zona → `null`. Acá solo
  * está la mitad sucia: leer las dos tablas una vez por obra y escribir lo que
- * cambió.
+ * cambió. La **unidad del ítem** viaja con él: una fila de la lista en otra
+ * unidad no es el precio de este ítem, y la cascada la saltea.
  *
  * **También le pone precio a los ítems editados a mano.** La regla 2 del archivo
  * —lo humano es intocable— es sobre las cantidades, que son la afirmación del
@@ -1147,7 +1246,7 @@ async function sincronizarPrecios(
       item.precioJson !== null && item.precioJson.fuente === 'manual' ? item.precioJson : null;
 
     const precio = resolverPrecio(
-      { claveItem: item.claveItem, precioManual: manual },
+      { claveItem: item.claveItem, unidad: item.unidad, precioManual: manual },
       lista,
       indice.get(item.claveItem) ?? null,
     );
@@ -1217,6 +1316,69 @@ export async function borrarDeduccionesDeEntidades(
   }
 
   return afectadas.length;
+}
+
+/**
+ * Retira las deducciones **auto-validadas por el cruce** que el último cruce
+ * dejó de emitir. Devuelve cuántas retiró.
+ *
+ * El barrido que le faltaba a `sincronizarDeducciones`, y no puede vivir ahí:
+ * el sweep del recompute está acotado a `estado === 'propuesta'` justamente
+ * porque el recompute corre el motor del §11, que **nunca** emite
+ * `regla: 'cruce'` — barrer desde ahí borraría todas las filas del cruce en cada
+ * corrida. Quién sigue sosteniendo un completado del cruce lo sabe el cruce, y
+ * solo él.
+ *
+ * Sin este barrido, un campo que el cruce completó una vez se queda `validada`
+ * para siempre y el overlay lo sigue aplicando aunque el cruce siguiente —con
+ * la revisión buena de la lámina— ya no lo diga. No hay quién lo retire: no es
+ * `propuesta`, así que el recompute no lo toca, y no es una decisión de una
+ * persona, así que nadie lo va a mirar en la bandeja.
+ *
+ * Las condiciones son las tres que hacen a la fila "del sistema", y las tres
+ * hacen falta:
+ *
+ *  - `regla = 'cruce'` — las de `medicion_grafica` las administra `procesar.ts`,
+ *    y las del motor del §11, el recompute;
+ *  - `estado = 'validada'` — una `rechazada` es historia y una `propuesta` ya
+ *    tiene su propio barrido;
+ *  - `validado_por = null` — si la validó una persona es suya, y el cruce no la
+ *    toca (mismo criterio que `esDecidida()` en `cruce.ts`).
+ *
+ * **Solo la puede llamar un cruce que salió bien**, igual que
+ * `cerrarConflictosResueltos`: si el provider se cayó, que no haya emitido nada
+ * no significa que los datos dejaron de valer, y un timeout barrería la obra
+ * entera.
+ *
+ * `emitidas` son las claves `claveDeDeduccion({entidadId, campo})` que **este**
+ * cruce volvió a emitir, incluidas las que omitió por estar debajo del umbral:
+ * omitir no es desmentir.
+ */
+export async function retirarDeduccionesDeCruce(
+  db: Db,
+  obraId: string,
+  emitidas: ReadonlySet<string>,
+): Promise<number> {
+  const existentes = await db
+    .select()
+    .from(deducciones)
+    .where(and(eq(deducciones.obraId, obraId), eq(deducciones.regla, 'cruce')));
+
+  let retiradas = 0;
+  for (const fila of existentes) {
+    if (fila.estado !== 'validada' || fila.validadoPor !== null) continue;
+    if (emitidas.has(claveDeDeduccion(fila))) continue;
+
+    await db.delete(deducciones).where(eq(deducciones.id, fila.id));
+    retiradas += 1;
+    await auditar(obraId, 'deduccion_retirada', `deducciones:${fila.entidadId}.${fila.campo}`, {
+      regla: fila.regla,
+      valor: fila.valorJson,
+      confianza: fila.confianza,
+      motivo: 'El cruce del expediente ya no relaciona este dato.',
+    });
+  }
+  return retiradas;
 }
 
 // ---------------------------------------------------------------------------
@@ -1323,7 +1485,15 @@ export async function recomputarObra(
   // después del overlay —las deducciones siguen apuntando a las filas reales— y
   // antes de computar. `deducir()` corre sobre las entidades **sin** unificar a
   // propósito: sus reglas son las que cruzan una lámina con la otra.
-  const { entidades: unificadas, conflictos, aportes } = unificarPorElemento(persistidas);
+  //
+  // El mapa de orígenes va **adentro** de la unificación: el overlay ya le
+  // llenó campos a la base, y sin saber con qué evidencia entró cada uno, un
+  // `largoM` medido sobre el dibujo le ganaba a la cota escrita en la lámina
+  // hermana solo por estar del lado de la base — al revés de la cadena del §5.2.
+  const { entidades: unificadas, conflictos, aportes } = unificarPorElemento(
+    persistidas,
+    camposDeducidos,
+  );
   const camposUnificados = mergearAportes(camposDeducidos, aportes);
 
   // Tres cosas que el motor no adivina y el pipeline sí sabe:
@@ -1348,7 +1518,10 @@ export async function recomputarObra(
   // vale para lo que quedó en pugna al unificar.
   const superadas = contradichas.map(hallazgoContradiccion);
   const porId = new Map(persistidas.map((entidad) => [entidad.id, entidad]));
-  const enPugna = conflictos.map((conflicto) => hallazgoUnificacion(conflicto, porId));
+  const codigosDeLamina = new Map(planos.map((plano) => [plano.id, plano.codigo]));
+  const enPugna = conflictos.map((conflicto) =>
+    hallazgoUnificacion(conflicto, porId, codigosDeLamina),
+  );
 
   const resumen = resumenVacio();
   await sincronizarItems(db, obraId, items, resumen);

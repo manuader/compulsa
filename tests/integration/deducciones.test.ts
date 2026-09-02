@@ -195,6 +195,20 @@ function itemPorClave(clave: string): Promise<ComputoItem | undefined> {
     .then((filas) => filas[0]);
 }
 
+/**
+ * La consulta de «deducción superada», que se llama por **id de entidad**: dos
+ * `T1` en dos láminas distintas son dos contradicciones distintas, y una clave
+ * por nombre las colapsaba en una sola.
+ */
+async function contradiccionDe(
+  codigoLamina: string,
+  nombre: string,
+  campo: string,
+): Promise<Hallazgo | undefined> {
+  const entidad = await entidadEn(codigoLamina, nombre);
+  return hallazgoPorClave(`deduccion.contradicha.${entidad.id}.${campo}`);
+}
+
 function hallazgoPorClave(clave: string): Promise<Hallazgo | undefined> {
   return db
     .select()
@@ -484,7 +498,7 @@ describe('la deducción aplicada', () => {
     expect(placas?.origen).toBe('deducido');
 
     // 2) Pero no en silencio: queda una consulta no bloqueante con los dos valores.
-    const consulta = await hallazgoPorClave('deduccion.contradicha.T1.alturaM');
+    const consulta = await contradiccionDe('A-01', 'T1', 'alturaM');
     expect(consulta?.estado).toBe('abierto');
     expect(consulta?.tipo).toBe('inconsistencia');
     expect(consulta?.bloqueante).toBe(false);
@@ -524,19 +538,19 @@ describe('la deducción aplicada', () => {
     expect((await todaLaAuditoria()).filter((fila) => !auditoriaAntes.has(fila.id))).toEqual([]);
 
     // Descartada, no vuelve: es una consulta como cualquier otra.
-    const consulta = await hallazgoPorClave('deduccion.contradicha.T1.alturaM');
+    const consulta = await contradiccionDe('A-01', 'T1', 'alturaM');
     expect(await descartarHallazgo({ obraId, hallazgoId: consulta!.id }, titular)).toEqual({
       ok: true,
     });
     await recomputarObra(obraId);
-    expect((await hallazgoPorClave('deduccion.contradicha.T1.alturaM'))?.estado).toBe('descartado');
+    expect((await contradiccionDe('A-01', 'T1', 'alturaM'))?.estado).toBe('descartado');
   });
 
   it('si el reanálisis trae el MISMO valor no hay contradicción ni marca', async () => {
     // La planta ahora acota 2,60 m, que es exactamente lo que se había deducido.
     await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.6) });
 
-    expect(await hallazgoPorClave('deduccion.contradicha.T1.alturaM')).toBeUndefined();
+    expect(await contradiccionDe('A-01', 'T1', 'alturaM')).toBeUndefined();
     expect(await auditoriaDe('deduccion_contradicha')).toHaveLength(0);
 
     const sinMarca = await deduccionDe('A-01', 'T1', 'alturaM');
@@ -554,7 +568,7 @@ describe('la deducción aplicada', () => {
 
     const limpia = await deduccionDe('A-01', 'T1', 'alturaM');
     expect(limpia.valorJson).toEqual({ alturaM: 2.6 });
-    expect((await hallazgoPorClave('deduccion.contradicha.T1.alturaM'))?.estado).toBe('descartado');
+    expect((await contradiccionDe('A-01', 'T1', 'alturaM'))?.estado).toBe('descartado');
     expect(await auditoriaDe('deduccion_contradiccion_resuelta')).toHaveLength(1);
   });
 

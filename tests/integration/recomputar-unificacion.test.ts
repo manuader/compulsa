@@ -20,6 +20,7 @@ import {
   auditoria,
   computoItems,
   datosObra,
+  deducciones,
   documentos,
   entidades,
   estudios,
@@ -245,6 +246,12 @@ describe('recompute · cuando las dos láminas no coinciden', () => {
     expect(consulta.rubro).toBeNull();
     expect(consulta.descripcion).toContain('2,60 m');
     expect(consulta.descripcion).toContain('2,40 m');
+    // Dice QUÉ ganó y con qué evidencia, no «la lectura más confiable»: las dos
+    // están escritas, y lo que desempata es de qué lámina salió.
+    expect(consulta.descripcion).toContain('lámina A-01');
+    expect(consulta.descripcion).toContain('lámina A-02');
+    expect(consulta.descripcion).toContain('escrito en la lámina');
+    expect(consulta.descripcion).not.toContain('la lectura más confiable');
     expect(consulta.laminasJson.map((fuente) => fuente.laminaId).sort()).toEqual(
       [laminaCorte, laminaPlanta].sort(),
     );
@@ -293,5 +300,76 @@ describe('recompute · la marca de origen sobrevive a la unificación', () => {
     expect(placas?.cantNeta).toBe(26);
     expect(placas?.origen).toBe('deducido');
     expect(idPlanta).not.toBe(idCorte);
+  });
+});
+
+describe('recompute · lo escrito le gana a lo medido, aunque lo medido esté en la base', () => {
+  /**
+   * El caso que invertía la cadena del §5.2.
+   *
+   * La planta es la base (0,9 contra 0,8) y su `largoM` **no está escrito**: se
+   * lo puso la medición gráfica, la evidencia más débil que el sistema produce
+   * (confianza 0,5 fija). El corte lo tiene acotado. Antes ganaba la planta por
+   * ser la base, el ítem salía `inferido` y la consulta le decía al arquitecto
+   * que 6,12 era «la lectura más confiable».
+   */
+  async function largoMedidoContraLargoEscrito(): Promise<void> {
+    await db
+      .update(entidades)
+      .set({ atributosJson: { tipo: 'durlock', alturaM: 2.6 } })
+      .where(eq(entidades.id, idPlanta));
+    await db
+      .update(entidades)
+      .set({ atributosJson: { largoM: 6, alturaM: 2.6 } })
+      .where(eq(entidades.id, idCorte));
+    await db.insert(deducciones).values({
+      obraId,
+      entidadId: idPlanta,
+      campo: 'largoM',
+      regla: 'medicion_grafica',
+      fuentesJson: [{ laminaId: laminaPlanta, bbox: [0.1, 0.5, 0.4, 0.02] }],
+      valorJson: { largoM: 6.12 },
+      confianza: 0.5,
+      estado: 'validada',
+      validadoPor: null,
+    });
+  }
+
+  it('computa con los 6,00 m acotados y no con los 6,12 m medidos', async () => {
+    await largoMedidoContraLargoEscrito();
+
+    await recomputarObra(obraId, { db });
+
+    // 6,00 × 2,60 × 2 caras = 31,20 m². Con el largo medido darían 31,82.
+    const placas = await itemDe('seco.placas');
+    expect(placas?.cantNeta).toBe(31.2);
+  });
+
+  it('el ítem sale `explicito`: el número con el que computa está escrito', async () => {
+    await largoMedidoContraLargoEscrito();
+
+    await recomputarObra(obraId, { db });
+
+    expect((await itemDe('seco.placas'))?.origen).toBe('explicito');
+  });
+
+  it('no abre consulta: no es una contradicción, es la cadena de evidencia', async () => {
+    await largoMedidoContraLargoEscrito();
+
+    await recomputarObra(obraId, { db });
+
+    expect(await hallazgosDeUnificacion()).toEqual([]);
+  });
+
+  it('sigue siendo idempotente', async () => {
+    await largoMedidoContraLargoEscrito();
+    await recomputarObra(obraId, { db });
+    const antes = (await db.select().from(auditoria).where(eq(auditoria.obraId, obraId))).length;
+
+    await recomputarObra(obraId, { db });
+
+    expect((await db.select().from(auditoria).where(eq(auditoria.obraId, obraId))).length).toBe(
+      antes,
+    );
   });
 });

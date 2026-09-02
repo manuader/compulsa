@@ -24,6 +24,16 @@
  *     del rubro por una diferencia entre dos lecturas del sistema sería trasladar
  *     al arquitecto un problema nuestro.
  *
+ *  4. **Las dos pasadas tienen que computar con el MISMO conocimiento de la
+ *     obra.** Lo único que puede diferir es lo que se leyó de las láminas: las
+ *     deducciones validadas, los datos de obra y la **unificación por elemento**
+ *     van igual que en `recomputarObra`. Sin la unificación, cada elemento que
+ *     el cruce agrupó se computaba dos veces en la segunda pasada y salía como
+ *     «el cómputo dice X y la segunda lectura dice ~2X» — una diferencia del
+ *     harness, no de la documentación, y encima pegajosa: `verificacion.*` es
+ *     un prefijo protegido, así que esas consultas se quedaban en la bandeja
+ *     hasta la verificación siguiente.
+ *
  * Las claves `verificacion.<claveItem>` están fuera del alcance del recompute
  * (`esClaveDelMotor`): las abre y las cierra esta función, corrida de nuevo.
  */
@@ -52,6 +62,7 @@ import {
   type LaminaDeComputo,
 } from '@/lib/computo/engine';
 import { ETIQUETA_UNIDAD, formatearNumero, redondear2 } from '@/lib/computo/unidades';
+import { unificarPorElemento } from '@/lib/computo/unificar';
 import { hallazgoInconsistencia } from '@/lib/hallazgos/taxonomia';
 import { claveVerificacion, PREFIJO_VERIFICACION } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
@@ -60,6 +71,7 @@ import {
   ACTOR_PIPELINE,
   aplicarDeduccionesValidadas,
   datosDeObra,
+  mergearAportes,
   ObraInexistenteError,
 } from '@/lib/pipeline/recomputar';
 import { requireRolCore, type UsuarioConRol } from '@/lib/plataforma/roles';
@@ -185,6 +197,12 @@ async function segundaLectura(
     .where(and(eq(laminas.obraId, obra.id), eq(laminas.estadoAnalisis, 'analizada')))
     .orderBy(laminas.numeroPagina);
 
+  // El `elemento_id` viaja con la entidad de la segunda pasada: es lo que hace
+  // que el mismo tabique dicho en la planta y en el corte se cuente UNA vez, en
+  // las dos pasadas por igual. La segunda lectura no persiste nada, así que se
+  // traduce por la misma identidad `(lámina, tipo, nombre)` que el id sintético.
+  const elementos = await elementosPorSintetico(db, obra.id);
+
   const entidades: EntidadPersistida[] = [];
 
   for (const lamina of filas) {
@@ -216,10 +234,13 @@ async function segundaLectura(
     for (const detectada of detectadas) {
       // Mismo filtro que el pipeline: sin bbox no hay entidad (P1).
       if (!tieneBBoxUtil(detectada.bbox)) continue;
+      const id = idSintetico(lamina.id, detectada.tipo, detectada.nombre);
+      const elementoId = elementos.get(id);
       entidades.push({
         ...detectada,
-        id: idSintetico(lamina.id, detectada.tipo, detectada.nombre),
+        id,
         laminaId: lamina.id,
+        ...(elementoId === undefined ? {} : { elementoId }),
       });
     }
   }
@@ -493,6 +514,41 @@ async function sincronizarConsultas(
  * entidad que la segunda lectura no volvió a ver se cae acá, y está bien: eso
  * **sí** es una diferencia entre las dos lecturas y tiene que aparecer.
  */
+/**
+ * `idSintetico → elemento_id`, para las entidades que el cruce ya agrupó.
+ *
+ * Hermana de `conIdSintetico()` y por el mismo motivo: la segunda pasada no
+ * persiste nada, y sin traducir la identidad sus entidades no llevarían el
+ * `elemento_id`. Sin él, `unificarPorElemento` no agrupa nada en la segunda
+ * pasada y **todo** elemento unificado se cuenta dos veces contra un cómputo
+ * que lo cuenta una: una consulta «el cómputo dice X y la segunda lectura dice
+ * ~2X» por cada uno, y ninguna es real.
+ *
+ * Una entidad sin `elemento_id` no entra al mapa, que es lo mismo que decir que
+ * se computa sola — el comportamiento de toda obra sin cruce corrido.
+ */
+async function elementosPorSintetico(
+  db: Db,
+  obraId: string,
+): Promise<Map<string, string>> {
+  const filas = await db
+    .select({
+      laminaId: entidades.laminaId,
+      tipo: entidades.tipo,
+      nombre: entidades.nombre,
+      elementoId: entidades.elementoId,
+    })
+    .from(entidades)
+    .where(eq(entidades.obraId, obraId));
+
+  const porSintetico = new Map<string, string>();
+  for (const fila of filas) {
+    if (fila.elementoId === null) continue;
+    porSintetico.set(idSintetico(fila.laminaId, fila.tipo, fila.nombre), fila.elementoId);
+  }
+  return porSintetico;
+}
+
 async function conIdSintetico(
   db: Db,
   obraId: string,
@@ -574,14 +630,26 @@ export async function verificarComputo(
   );
   const datos = await datosDeObra(db, obra.id);
 
+  // Y el mismo elemento dicho en dos láminas es UNO, también acá (§5.3). Va
+  // después del overlay y antes de computar, exactamente como en
+  // `recomputarObra`: el orden importa porque el overlay le llena campos a la
+  // base y la unificación resuelve por nivel de evidencia. Los conflictos se
+  // descartan a propósito — las claves `unificacion.*` las administra el
+  // recompute, y abrirlas desde acá las duplicaría.
+  const { entidades: unificadas, aportes } = unificarPorElemento(
+    conDeducciones,
+    camposDeducidos,
+  );
+  const camposUnificados = mergearAportes(camposDeducidos, aportes);
+
   // Sin persistir nada: la segunda pasada es una hipótesis, no el estado de la obra.
   // Las láminas van igual que en el recompute: si la segunda pasada contara las
   // carpinterías con otra regla, la diferencia sería del harness, no de la obra.
   const { items } = computarObra(
-    conDeducciones,
+    unificadas,
     obra.tipo,
     undefined,
-    camposDeducidos,
+    camposUnificados,
     laminasReleidas,
     datos,
   );

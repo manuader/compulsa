@@ -233,6 +233,11 @@ export async function listarPrecios(db: Db, estudioId: string): Promise<PrecioRe
  *
  * El recompute la lee **una vez por obra** y la consulta una vez por ítem: por
  * eso es un `Map` y no un array.
+ *
+ * Va con la **unidad**: el subtotal del ítem multiplica el unitario por su
+ * `cantCompra`, y sin la unidad de la fila la cascada no tenía cómo darse cuenta
+ * de que estaba costeando m² con un precio por unidad. Estaba guardada,
+ * importada y en pantalla, y se perdía justo en el paso que la necesita.
  */
 export async function listaDelEstudio(
   db: Db,
@@ -242,7 +247,7 @@ export async function listaDelEstudio(
   return new Map(
     filas.map((fila) => [
       fila.claveItem,
-      { precio: fila.precio, moneda: fila.moneda, fecha: fila.fecha },
+      { precio: fila.precio, moneda: fila.moneda, unidad: fila.unidad, fecha: fila.fecha },
     ]),
   );
 }
