@@ -971,12 +971,63 @@ export function valorQueDocumenta(
   return fila.valorJson[MARCA_VALOR_DOCUMENTADO] ?? null;
 }
 
-/** El `valor_json` sin las marcas: el `{ [campo]: valor }` limpio. */
-function sinMarcas(valorJson: Deduccion['valorJson']): Deduccion['valorJson'] {
+/**
+ * El `valor_json` sin las marcas de contradicción: el `{ [campo]: valor }` que
+ * escribió quien creó la fila.
+ *
+ * **Lo tiene que usar todo el que compare un `valor_json` guardado contra uno
+ * recién armado** — hoy `aplicarCompletados` (`cruce.ts`) y `escribirMedicion`
+ * (`procesar.ts`). Sin esto, una fila que el recompute marcó como superada
+ * jamás compara igual contra el `{ [campo]: valor }` pelado, se hace un `UPDATE`
+ * que no cambia ningún dato, las marcas se pierden, y el recompute del mismo
+ * paso las vuelve a poner: dos auditorías fantasma por corrida, para siempre, y
+ * un aviso de «superada por la documentación» que desaparece y reaparece en la
+ * misma corrida.
+ *
+ * Solo saca **estas dos** marcas, que son las que el recompute administra. Las
+ * claves meta de otros —`_metodo`, que escribe la medición gráfica— son de su
+ * dueño y viajan tal cual: si cambian, el `UPDATE` corresponde.
+ */
+export function sinMarcas(valorJson: Deduccion['valorJson']): Deduccion['valorJson'] {
   const limpio = { ...valorJson };
   delete limpio[MARCA_CONTRADICHA];
   delete limpio[MARCA_VALOR_DOCUMENTADO];
   return limpio;
+}
+
+/**
+ * El `valor_json` que se va a escribir, **con las marcas que la fila ya tenía**.
+ *
+ * La otra mitad de `sinMarcas()`: comparar sin marcas evita el `UPDATE` que no
+ * hacía falta, y escribir con ellas evita que el `UPDATE` que sí hacía falta se
+ * las lleve puestas. Quien reescribe una deducción existente pasa por acá:
+ *
+ * ```ts
+ * const igual = … && igualJson(sinMarcas(previa.valorJson), valores.valorJson) && …;
+ * if (igual) continue;
+ * await db.update(deducciones)
+ *   .set({ ...valores, valorJson: conMarcasDe(previa, valores.valorJson) })
+ *   .where(eq(deducciones.id, previa.id));
+ * ```
+ *
+ * Que la marca quede momentáneamente vieja no es un problema:
+ * `sincronizarContradicciones` la reconcilia en las dos direcciones en el mismo
+ * recompute, y no escribe si ya está bien. Lo que no se puede es borrarla, que
+ * es lo que arma el ciclo.
+ */
+export function conMarcasDe(
+  previa: Pick<Deduccion, 'valorJson'> | null | undefined,
+  valorJson: Deduccion['valorJson'],
+): Deduccion['valorJson'] {
+  if (!previa) return valorJson;
+  const conMarcas = { ...valorJson };
+  if (previa.valorJson[MARCA_CONTRADICHA] !== undefined) {
+    conMarcas[MARCA_CONTRADICHA] = previa.valorJson[MARCA_CONTRADICHA];
+  }
+  if (previa.valorJson[MARCA_VALOR_DOCUMENTADO] !== undefined) {
+    conMarcas[MARCA_VALOR_DOCUMENTADO] = previa.valorJson[MARCA_VALOR_DOCUMENTADO];
+  }
+  return conMarcas;
 }
 
 /** Un valor de atributo, escrito para leer. */
