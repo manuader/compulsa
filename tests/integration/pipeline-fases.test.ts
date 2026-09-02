@@ -12,8 +12,12 @@
  *    escala y no acotados: sus medidas solo pueden salir de **medir el
  *    dibujo**, y sus ítems tienen que salir `inferido`;
  *  - **T2** queda sin altura después del cruce, así que la consulta agrupada
- *    `dato_obra.altura_local.PB` sigue abierta y la **búsqueda dirigida** tiene
- *    adónde ir: al corte, que es donde está acotada.
+ *    `dato_obra.altura_local.general` sigue abierta y la **búsqueda dirigida**
+ *    tiene adónde ir: al corte, que es donde está acotada. La clave es
+ *    `general` y no `PB` a propósito: los tabiques de la planta **no** declaran
+ *    `nivel` —que es lo más común en una planta real, y lo que el prompt
+ *    produce cuando la lámina no lo dice—, así que la cadena de respaldo
+ *    pregunta por el hecho que vale para toda la obra.
  *
  * Los providers son SIEMPRE los mocks (`NODE_ENV=test`), con los fixtures de
  * `tests/fixtures/analysis/` — el del cruce es el único cuya clave es la obra
@@ -48,28 +52,34 @@ import {
   ACCION_IDENTIDAD,
   aplicarCruce,
   claveConflicto,
+  descripcionConflicto,
   expedienteDelCruce,
   RESPUESTA_CRUCE_RESUELTO,
 } from '@/lib/pipeline/cruce';
 import {
   ACCION_CRUCE_FALLIDO,
+  ACCION_CRUCE_REINTENTADO,
   ACCION_FASE,
+  AnalisisEnCursoError,
   CONFIANZA_MEDICION,
   MARCA_METODO,
+  marcarAnalisisFallido,
+  ObraInexistenteError,
   procesarDocumento,
+  reintentarCruce,
   subirDocumento,
 } from '@/lib/pipeline/procesar';
 import { recomputarObra } from '@/lib/pipeline/recomputar';
 import type { StorageAdapter } from '@/lib/storage/index';
 import { crearStorageLocal } from '@/lib/storage/local';
-import type { FaseAnalisis } from '@/types/domain';
+import { TTL_FASE_ANALISIS_MS, type FaseAnalisis } from '@/types/domain';
 
 import { createTestDb } from '../helpers/test-db';
 
 const PDFS = new URL('../fixtures/pdfs/', import.meta.url);
 
-/** La consulta agrupada por el dato de obra que le falta a los tabiques de PB. */
-const CLAVE_ALTURA = 'dato_obra.altura_local.PB';
+/** La consulta agrupada por el dato de obra que les falta a los tabiques. */
+const CLAVE_ALTURA = 'dato_obra.altura_local.general';
 
 let db: Db;
 let raizStorage: string;
@@ -178,7 +188,7 @@ describe('las cinco fases', () => {
 
     const fases = (await auditoriaDe(obraId, ACCION_FASE)).map((fila) => fila.diffJson?.fase);
     expect(fases).toEqual(['inventario', 'extraccion', 'cruce', 'relectura', 'listo']);
-    expect(await faseDe(obraId)).toEqual({ fase: 'listo' });
+    expect(await faseDe(obraId)).toMatchObject({ fase: 'listo' });
   });
 
   it('la fase de inventario deja el índice completo antes de extraer', async () => {
@@ -256,7 +266,7 @@ describe('el cruce del expediente', () => {
     const consulta = await hallazgoPorClave(obraId, CLAVE_ALTURA);
     expect(consulta?.estado).toBe('abierto');
     expect(consulta?.bloqueante).toBe(false);
-    expect(consulta?.targetDato?.clave).toBe('altura_local.PB');
+    expect(consulta?.targetDato?.clave).toBe('altura_local.general');
     expect(consulta?.descripcion).toContain('T2');
     expect(consulta?.descripcion).not.toContain('T1');
   });
@@ -290,7 +300,7 @@ describe('el cruce del expediente', () => {
     const otra = await crearObra('Obra Sin Cruce');
     await subirYProcesar(otra);
 
-    expect(await faseDe(otra)).toEqual({ fase: 'listo' });
+    expect(await faseDe(otra)).toMatchObject({ fase: 'listo' });
     expect((await deduccionesDe(otra)).map((fila) => fila.regla)).toEqual([
       'medicion_grafica',
       'medicion_grafica',
@@ -371,7 +381,7 @@ describe('la relectura dirigida', () => {
     // Y **no** se escribió el dato: P4 sigue en pie, la propuesta espera el
     // click del arquitecto.
     expect(
-      await db.select().from(datosObra).where(eq(datosObra.clave, 'altura_local.PB')),
+      await db.select().from(datosObra).where(eq(datosObra.clave, 'altura_local.general')),
     ).toEqual([]);
   });
 });
@@ -423,13 +433,19 @@ describe('una fase que se cae', () => {
     const documento = await subirDocumento(db, storage, obraId, usuarioId, archivo);
     await procesarDocumento(documento.id, { db, storage, cruce: revienta });
 
-    // La fase queda contada, con el detalle del error adentro.
+    // La fase queda contada, y el detalle está escrito para el arquitecto: qué
+    // quedó sin hacer y qué puede hacer él. Ni el nombre interno de la fase ni
+    // el `error.message` del provider.
     const fase = await faseDe(obraId);
     expect(fase?.fase).toBe('error');
-    expect(fase?.detalle).toContain('el cruce del expediente no corrió');
-    expect(fase?.detalle).toContain('el modelo no contestó a tiempo');
+    expect(fase?.detalle).toBe(
+      'el expediente no se cruzó: las láminas están analizadas y computadas, pero lo que una ' +
+        'lámina dice y a otra le falta quedó sin resolver. Reintentá el cruce del expediente',
+    );
+    expect(fase?.detalle).not.toContain('el modelo no contestó a tiempo');
 
-    // Y el fallo tiene su propia fila de auditoría, no solo el estado.
+    // Y el fallo tiene su propia fila de auditoría, que es donde SÍ va el
+    // detalle técnico: sacarlo de la pantalla no es perderlo.
     const [fallo] = await auditoriaDe(obraId, ACCION_CRUCE_FALLIDO);
     expect(fallo.diffJson).toMatchObject({ errorDetalle: 'el modelo no contestó a tiempo' });
 
@@ -511,6 +527,224 @@ function cruceQueDice(respuesta: Partial<RespuestaCruceCruda>): CruceProvider {
     },
   };
 }
+
+describe('la fase con reloj y el reintento del cruce', () => {
+  /**
+   * `procesarDocumento` corre ADENTRO del POST del upload, con
+   * `maxDuration = 300`: un expediente grande sobre el provider real se pasa de
+   * ahí y el proceso muere en el medio de una fase. Sin `desde`, la columna
+   * queda diciendo «Analizando las láminas · 12 de 25» para siempre y la
+   * pantalla pide un refresh cada cuatro segundos, también para siempre.
+   */
+  it('cada marca de fase deja su hora, también la final', async () => {
+    const antes = Date.now();
+    await subirYProcesar(obraId);
+
+    const fase = await faseDe(obraId);
+    expect(fase?.fase).toBe('listo');
+    expect(Date.parse(fase?.desde ?? '')).toBeGreaterThanOrEqual(antes - 1000);
+
+    // Y la línea de tiempo de la corrida también, que es donde se ve cuánto
+    // tardó cada parte.
+    const marcas = await auditoriaDe(obraId, ACCION_FASE);
+    expect(marcas.length).toBeGreaterThan(0);
+    for (const marca of marcas) {
+      expect(typeof (marca.diffJson as { desde?: unknown }).desde).toBe('string');
+    }
+  });
+
+  it('marcarAnalisisFallido deja el error escrito, que es lo que el upload no hacía', async () => {
+    await marcarAnalisisFallido(obraId, 'el documento se guardó pero no se pudo analizar', { db });
+
+    const fase = await faseDe(obraId);
+    expect(fase?.fase).toBe('error');
+    expect(fase?.detalle).toBe('el documento se guardó pero no se pudo analizar');
+    expect(typeof fase?.desde).toBe('string');
+  });
+
+  /**
+   * El cruce es la fase cara y la única que sale a la red con el expediente
+   * entero, así que es la más probable de caerse — y era la única sin reintento:
+   * el único llamador de `cruzarObra` era `procesarDocumento`, o sea que
+   * reintentar exigía volver a subir el PDF.
+   */
+  it('reintenta el cruce de una obra que quedó en error, sin volver a subir nada', async () => {
+    const revienta: CruceProvider = {
+      nombre: 'cruce-que-revienta',
+      async cruzar() {
+        throw new Error('el modelo no contestó a tiempo');
+      },
+    };
+
+    const bytes = await readFile(new URL('obra-fases.pdf', PDFS));
+    const archivo = new File([new Uint8Array(bytes)], 'obra-fases.pdf', {
+      type: 'application/pdf',
+    });
+    const documento = await subirDocumento(db, storage, obraId, usuarioId, archivo);
+    await procesarDocumento(documento.id, { db, storage, cruce: revienta });
+
+    expect((await faseDe(obraId))?.fase).toBe('error');
+    expect(await db.select().from(datosObra).where(eq(datosObra.obraId, obraId))).toEqual([]);
+
+    const { fase, relecturas } = await reintentarCruce(obraId, { db, storage });
+
+    expect(fase.fase).toBe('listo');
+    expect(relecturas).toBe(1);
+    expect((await faseDe(obraId))?.fase).toBe('listo');
+    // El cruce corrió de verdad: escribió el dato de obra del fixture y
+    // completó la altura de T1.
+    const datos = await db.select().from(datosObra).where(eq(datosObra.obraId, obraId));
+    expect(datos.map((dato) => dato.clave)).toEqual(['nivel.PB']);
+    const delCruce = (await deduccionesDe(obraId)).filter((fila) => fila.regla === 'cruce');
+    expect(delCruce.map((fila) => fila.campo)).toEqual(['alturaM']);
+
+    const [reintento] = await auditoriaDe(obraId, ACCION_CRUCE_REINTENTADO);
+    expect(reintento.diffJson).toMatchObject({ resultado: 'listo', relecturas: 1 });
+  });
+
+  it('reintentar sobre una obra quieta no escribe ni audita nada', async () => {
+    await subirYProcesar(obraId);
+    const previas = new Set((await db.select().from(auditoria)).map((fila) => fila.id));
+
+    await reintentarCruce(obraId, { db, storage });
+
+    const nuevas = (await db.select().from(auditoria)).filter((fila) => !previas.has(fila.id));
+    expect(previas.size).toBeGreaterThan(0);
+    expect(
+      nuevas
+        .filter((fila) => ESCRITURAS_DE_DATOS.has(fila.accion))
+        .map((fila) => `${fila.accion} ${fila.targetRef}`),
+    ).toEqual([]);
+  });
+
+  /**
+   * Dos cruces encimados sobre la misma obra corren dos recomputes que leen la
+   * misma foto de `computo_items`: los dos insertan la clave que no vieron y la
+   * planilla termina con ítems duplicados en silencio. Es el mismo motivo por
+   * el que la extracción en paralelo difiere su recompute.
+   */
+  it('no arranca encima de un análisis que todavía está corriendo', async () => {
+    await subirYProcesar(obraId);
+    await db
+      .update(obras)
+      .set({ analisisJson: { fase: 'extraccion', total: 25, completadas: 12, desde: new Date().toISOString() } })
+      .where(eq(obras.id, obraId));
+
+    await expect(reintentarCruce(obraId, { db, storage })).rejects.toBeInstanceOf(
+      AnalisisEnCursoError,
+    );
+  });
+
+  /**
+   * La otra mitad del reloj: una fase que dice que trabaja y hace rato que no
+   * se mueve no bloquea nada. Sin esto, un proceso muerto dejaba la obra sin
+   * reintento posible para siempre.
+   */
+  it('una fase vencida no bloquea el reintento', async () => {
+    await subirYProcesar(obraId);
+    const rancia = new Date(Date.now() - TTL_FASE_ANALISIS_MS - 1000).toISOString();
+    await db
+      .update(obras)
+      .set({ analisisJson: { fase: 'extraccion', total: 25, completadas: 12, desde: rancia } })
+      .where(eq(obras.id, obraId));
+
+    const { fase } = await reintentarCruce(obraId, { db, storage });
+    expect(fase.fase).toBe('listo');
+  });
+
+  it('una obra que no existe no es un 500', async () => {
+    await expect(
+      reintentarCruce('00000000-0000-4000-8000-000000000000', { db, storage }),
+    ).rejects.toBeInstanceOf(ObraInexistenteError);
+  });
+});
+
+describe('el texto que lee el arquitecto', () => {
+  beforeEach(async () => {
+    await subirYProcesar(obraId);
+  });
+
+  /**
+   * Una lámina sin código de rótulo se nombra por su página, como en toda la app
+   * (`etiquetaDeLamina`, bandeja). Antes caía al uuid, y el uuid terminaba
+   * impreso adentro de la consulta: "…8f3a1c2e-… dice «2,60 m»…".
+   */
+  it('una lámina sin código se cita por su página, nunca por su uuid', async () => {
+    const planos = await laminasDe(obraId);
+    const corte = planos[1] as Lamina;
+    await db.update(laminas).set({ codigo: null }).where(eq(laminas.id, corte.id));
+
+    const { ctx, refs } = await expedienteDelCruce(db, obraId);
+    expect(refs.get(corte.id)).toBe('Página 2');
+    // Y no entra al índice por código: el modelo no podría citarla, así que
+    // resolver algo contra ella sería adivinar.
+    expect([...ctx.laminasPorCodigo.values()]).not.toContain(corte.id);
+  });
+
+  /**
+   * `descripcion` y `causaPosible` los escribe el modelo y se empalman en el
+   * medio de una frase nuestra. Sin normalizar se leían "la altura no coincide
+   * A-01 dice «2,60 m»" y "Puede ser Revisión vieja contra nueva..".
+   */
+  it('empalma lo que escribió el modelo sin puntos dobles ni minúsculas colgadas', () => {
+    const refs = new Map([
+      ['lam-a', 'A-01'],
+      ['lam-b', 'Página 2'],
+    ]);
+
+    expect(
+      descripcionConflicto(
+        {
+          descripcion: 'la altura de local no coincide entre láminas',
+          datoA: '2,60 m',
+          laminaIdA: 'lam-a',
+          datoB: '2,80 m',
+          laminaIdB: 'lam-b',
+          causaPosible: 'Revisión vieja contra nueva.',
+        },
+        refs,
+      ),
+    ).toBe(
+      'La altura de local no coincide entre láminas. A-01 dice «2,60 m» y Página 2 dice «2,80 m». ' +
+        'Puede ser revisión vieja contra nueva.',
+    );
+  });
+
+  it('no le baja la mayúscula a una sigla ni al código de una lámina', () => {
+    const refs = new Map([['lam-a', 'A-01'], ['lam-b', 'DET00']]);
+    const base = {
+      descripcion: 'El vidrio de FP01 no coincide.',
+      datoA: 'DVH 4/9/4',
+      laminaIdA: 'lam-a',
+      datoB: 'simple 4 mm',
+      laminaIdB: 'lam-b',
+    };
+
+    expect(descripcionConflicto({ ...base, causaPosible: 'DVH contra vidrio simple' }, refs)).toContain(
+      'Puede ser DVH contra vidrio simple.',
+    );
+    expect(descripcionConflicto({ ...base, causaPosible: 'PL01 quedó desactualizada' }, refs)).toContain(
+      'Puede ser PL01 quedó desactualizada.',
+    );
+  });
+
+  it('una causa vacía no deja la frase colgada de un «Puede ser»', () => {
+    const refs = new Map([['lam-a', 'A-01'], ['lam-b', 'A-02']]);
+    expect(
+      descripcionConflicto(
+        {
+          descripcion: 'La altura no coincide.',
+          datoA: '2,60 m',
+          laminaIdA: 'lam-a',
+          datoB: '2,80 m',
+          laminaIdB: 'lam-b',
+          causaPosible: '   ',
+        },
+        refs,
+      ),
+    ).toBe('La altura no coincide. A-01 dice «2,60 m» y A-02 dice «2,80 m».');
+  });
+});
 
 describe('aplicarCruce', () => {
   beforeEach(async () => {

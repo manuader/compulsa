@@ -35,6 +35,11 @@ const CTX: ContextoCruce = {
     // La misma carpintería, escrita distinto y en otra lámina.
     { id: 'e-fp01-planilla', laminaId: 'lam-planilla', nombre: 'fp 01', tipo: 'abertura' },
     { id: 'e-tabique', laminaId: 'lam-planta', nombre: 'Tabique 1', tipo: 'tabique' },
+    // Dos tabiques distintos de la MISMA lámina: son dos cosas dibujadas dos
+    // veces, no una cosa vista dos veces (§15).
+    { id: 'e-tabique-2', laminaId: 'lam-planta', nombre: 'Tabique 2', tipo: 'tabique' },
+    // Mismo tag que la carpintería de la planta, otra lámina, otro tipo.
+    { id: 'e-tabique-corte', laminaId: 'lam-corte', nombre: 'FP01', tipo: 'tabique' },
     { id: 'e-cocina', laminaId: 'lam-planta', nombre: 'Cocina', tipo: 'ambiente' },
     // Dos entidades con el MISMO nombre normalizado en la MISMA lámina: el
     // match es ambiguo y no hay forma honesta de elegir una.
@@ -263,13 +268,67 @@ describe('sanearCruce — datosObra', () => {
   it('un valor que no es número queda como texto', () => {
     const { datosObra } = sanearCruce(
       crudo({
-        datosObra: [unDatoObra({ clave: 'solado.general', valor: ' porcelanato ', unidad: null })],
+        datosObra: [
+          unDatoObra({
+            clave: 'altura_revestimiento.Baño',
+            valor: ' hasta el cielorraso ',
+            unidad: null,
+          }),
+        ],
       }),
       CTX,
     );
 
-    expect(datosObra[0].valor).toBe('porcelanato');
+    expect(datosObra[0].valor).toBe('hasta el cielorraso');
     expect(datosObra[0].unidad).toBeUndefined();
+  });
+
+  /**
+   * RF-506 del lado de `datosObra`, que hasta acá no tenía ninguno: el saneo
+   * validaba que la clave no fuera vacía y nada más.
+   *
+   * No es teórico aunque hoy ninguna plantilla lea otra familia:
+   * `memoria/render.ts` imprime TODAS las filas de `datos_obra` en el `.md` que
+   * baja el arquitecto —como hechos establecidos, con su confianza y su lámina
+   * citada— y `memoria/compacta.ts` se las devuelve al cruce de la corrida
+   * siguiente. Una clave inventada se publica y después se refuerza sola.
+   */
+  it('descarta una clave que no es de una familia conocida', () => {
+    const { datosObra, descartados } = sanearCruce(
+      crudo({
+        datosObra: [
+          unDatoObra({ clave: 'resistencia_hormigon.PB', valor: '21' }),
+          unDatoObra({ clave: 'solado.general', valor: 'porcelanato' }),
+          // Sin sufijo no la encuentra ninguna plantilla: la cadena de respaldo
+          // busca `altura_local.PB` y `altura_local.general`, nunca la pelada.
+          unDatoObra({ clave: 'altura_local' }),
+        ],
+      }),
+      CTX,
+    );
+
+    expect(datosObra).toEqual([]);
+    expect(descartados.datosObra).toBe(3);
+  });
+
+  it('las tres familias que las plantillas leen sí entran', () => {
+    const { datosObra, descartados } = sanearCruce(
+      crudo({
+        datosObra: [
+          unDatoObra({ clave: 'altura_local.general' }),
+          unDatoObra({ clave: 'altura_revestimiento.Cocina', valor: '2,10' }),
+          unDatoObra({ clave: 'nivel.PB', valor: '0,00' }),
+        ],
+      }),
+      CTX,
+    );
+
+    expect(datosObra.map((dato) => dato.clave)).toEqual([
+      'altura_local.general',
+      'altura_revestimiento.Cocina',
+      'nivel.PB',
+    ]);
+    expect(descartados.datosObra).toBe(0);
   });
 
   it('un cero es un dato de obra válido (un nivel puede ser 0,00)', () => {
@@ -368,6 +427,75 @@ describe('sanearCruce — identidades', () => {
     );
 
     expect(identidades).toEqual([]);
+    expect(descartados.identidades).toBe(1);
+  });
+
+  /**
+   * El descarte que evita que el cruce le coma la mitad a un rubro en silencio.
+   *
+   * `unificarPorElemento()` funde el grupo en un elemento solo, así que dos
+   * entidades DISTINTAS de la misma lámina metidas en un grupo dejan una sola
+   * fila computando: en la corrida que lo encontró, `seco.placas` pasó de
+   * 31,2 m² a 15,6 m² con `conflictos: []` y `hallazgos: []`. El §15 pregunta
+   * si la FP01 de la planta es la misma que la de la planilla — un par de la
+   * misma lámina es un error del modelo por construcción.
+   */
+  it('dos entidades distintas de la misma lámina no son una identidad', () => {
+    const { identidades, descartados } = sanearCruce(
+      crudo({
+        identidades: [
+          [
+            { laminaCodigo: 'PL01', entidadNombre: 'Tabique 1' },
+            { laminaCodigo: 'PL01', entidadNombre: 'Tabique 2' },
+          ],
+        ],
+      }),
+      CTX,
+    );
+
+    expect(identidades).toEqual([]);
+    expect(descartados.identidades).toBe(1);
+  });
+
+  it('un tabique y una abertura no son el mismo elemento físico, aunque compartan el tag', () => {
+    const { identidades, descartados } = sanearCruce(
+      crudo({
+        identidades: [
+          [
+            { laminaCodigo: 'PL01', entidadNombre: 'FP01' },
+            { laminaCodigo: 'CO01', entidadNombre: 'FP01' },
+          ],
+        ],
+      }),
+      CTX,
+    );
+
+    expect(identidades).toEqual([]);
+    expect(descartados.identidades).toBe(1);
+  });
+
+  /**
+   * Un grupo malo no se lleva puesto al de al lado: se descarta el grupo, se
+   * cuenta uno, y el resto del cruce entra igual.
+   */
+  it('el grupo bueno entra y el malo se cuenta aparte', () => {
+    const { identidades, descartados } = sanearCruce(
+      crudo({
+        identidades: [
+          [
+            { laminaCodigo: 'PL01', entidadNombre: 'Tabique 1' },
+            { laminaCodigo: 'PL01', entidadNombre: 'Tabique 2' },
+          ],
+          [
+            { laminaCodigo: 'PL01', entidadNombre: 'FP01' },
+            { laminaCodigo: 'DET00', entidadNombre: 'fp01' },
+          ],
+        ],
+      }),
+      CTX,
+    );
+
+    expect(identidades).toEqual([['e-fp01', 'e-fp01-planilla']]);
     expect(descartados.identidades).toBe(1);
   });
 });

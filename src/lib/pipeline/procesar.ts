@@ -23,7 +23,13 @@
  *  5. **listo** — recompute final, «qué cambió» y resumen ejecutivo.
  *
  * `obras.analisis_json` lleva la fase en curso (`FaseAnalisis`) para que el
- * expediente pueda decir "analizando 12/25" en vez de un spinner eterno.
+ * expediente pueda decir "analizando 12/25" en vez de un spinner eterno, **con
+ * su `desde`**: todo esto corre adentro del POST del upload (`maxDuration =
+ * 300`), así que una corrida grande se pasa del límite y muere en el medio de
+ * una fase. Sin la hora, esa fase se lee como viva para siempre; con ella,
+ * `faseVencida()` la lee como abandonada y la pantalla ofrece reintentar. El
+ * reintento es `reintentarCruce()`, que rehace las tres fases de obra —cruce,
+ * relectura y cómputo final— sin volver a subir el PDF.
  *
  * **Todas las fases son tolerantes.** Una que falla queda anotada, la corrida
  * sigue con las que puede y el estado final es `{fase: 'error', detalle}` — lo
@@ -112,7 +118,7 @@ import {
 import { leerResumen, persistirResumen } from '@/lib/pipeline/resumen';
 import { leerConfig } from '@/lib/plataforma/config-estudio';
 import { getStorage, type StorageAdapter } from '@/lib/storage/index';
-import { DISCIPLINAS, TIPOS_LAMINA } from '@/types/domain';
+import { DISCIPLINAS, faseVencida, TIPOS_LAMINA } from '@/types/domain';
 import type {
   BBox,
   EntidadDetectada,
@@ -201,6 +207,12 @@ export const ACCION_CRUCE_FALLIDO = 'cruce_fallido';
 /** Acción con la que queda registrada cada fase del análisis al arrancar. */
 export const ACCION_FASE = 'analisis_fase';
 
+/**
+ * El reintento del cruce, pedido a mano desde el expediente. Se distingue de
+ * `analisis_fase` porque lo dispara una persona, no la subida de un documento.
+ */
+export const ACCION_CRUCE_REINTENTADO = 'cruce_reintentado';
+
 /** Acción con la que queda registrado el rótulo que leyó la fase de inventario. */
 export const ACCION_INVENTARIADA = 'lamina_inventariada';
 
@@ -264,6 +276,21 @@ export class LaminaInexistenteError extends Error {
   constructor(readonly laminaId: string) {
     super(`No existe la lámina ${laminaId}.`);
     this.name = 'LaminaInexistenteError';
+  }
+}
+
+export class ObraInexistenteError extends Error {
+  constructor(readonly obraId: string) {
+    super(`No existe la obra ${obraId}.`);
+    this.name = 'ObraInexistenteError';
+  }
+}
+
+/** Ya hay un análisis corriendo sobre esta obra y todavía no venció. */
+export class AnalisisEnCursoError extends Error {
+  constructor(readonly fase: FaseAnalisis) {
+    super('El análisis de esta obra ya está corriendo. Esperá a que termine.');
+    this.name = 'AnalisisEnCursoError';
   }
 }
 
@@ -716,9 +743,83 @@ export async function procesarDocumento(
 
   // El estado final dice la verdad: si una fase se cayó, la obra terminó con lo
   // que se pudo y la pantalla lo cuenta, en vez de un "listo" que tapa el hueco.
+  //
+  // **`fallos` lo lee el arquitecto**, así que cada entrada dice qué quedó sin
+  // hacer y qué puede hacer él — no el nombre interno de la fase ni el
+  // `error.message` del provider. El detalle técnico va a la fila de auditoría
+  // de cada fase (`errorDetalle`), que es donde se lo busca cuando hay que
+  // arreglarlo: "el inventario de rótulos no corrió (fetch failed)" no le sirve
+  // a nadie del otro lado de la pantalla.
   await marcarFase(
     fallos.length === 0 ? { fase: 'listo' } : { fase: 'error', detalle: fallos.join(' · ') },
   );
+}
+
+/**
+ * Vuelve a correr las tres últimas fases sobre una obra ya analizada: cruce,
+ * relectura y cómputo final. Es el reintento del expediente.
+ *
+ * **Por qué existe:** el cruce es la fase cara, la única que manda el
+ * expediente entero a la red y la más probable de caerse — y no había forma de
+ * reintentarla. `cruzarTolerante` la atrapa y deja la obra con sus huecos, pero
+ * después de eso ni la pantalla ni ninguna ruta la volvían a llamar: el único
+ * llamador era `procesarDocumento`, o sea que reintentar el cruce exigía volver
+ * a subir el PDF. El botón de reprocesar de una lámina solo re-extrae esa
+ * lámina.
+ *
+ * **Qué NO rehace:** el inventario, la extracción y la medición gráfica, que
+ * son por lámina y ya tienen su propio botón (`procesarLamina`). Acá se rehace
+ * lo que es de la obra entera, que es exactamente lo que no tenía reintento.
+ *
+ * Idempotente por las mismas razones que la corrida original: `aplicarCruce` es
+ * upsert con comparación previa, `recomputarObra` es idempotente y la búsqueda
+ * dirigida no vuelve a pagar lo que ya buscó. Correrlo dos veces sobre una obra
+ * quieta no escribe ni audita nada nuevo.
+ *
+ * Lanza `AnalisisEnCursoError` si ya hay una corrida viva encima (la fase está
+ * en curso y no venció): dos cruces simultáneos sobre la misma obra se pisan el
+ * recompute, que es el bug que `recomputar: 'diferido'` existe para evitar.
+ */
+export async function reintentarCruce(
+  obraId: string,
+  deps: DepsPipeline = {},
+): Promise<{ fase: FaseAnalisis; relecturas: number }> {
+  const entorno = await resolver(deps);
+  const { db } = entorno;
+
+  const [obra] = await db.select().from(obras).where(eq(obras.id, obraId));
+  if (!obra) throw new ObraInexistenteError(obraId);
+
+  const enCurso = obra.analisisJson;
+  if (enCurso && enCurso.fase !== 'listo' && enCurso.fase !== 'error' && !faseVencida(enCurso)) {
+    throw new AnalisisEnCursoError(enCurso);
+  }
+
+  const marcarFase = seguidorDeFases(db, obra.id);
+  const fallos: string[] = [];
+
+  await marcarFase({ fase: 'cruce' });
+  await recomputarObraTolerante(entorno, obra.id, fallos);
+  const relecturas = await cruzarTolerante(entorno, obra, fallos);
+
+  await marcarFase({ fase: 'relectura', total: relecturas.length });
+  await buscarTolerante(entorno, obra.id, relecturas);
+
+  await recomputarObraTolerante(entorno, obra.id, fallos);
+  await resumirTolerante(db, obra.id);
+
+  const fase: FaseAnalisis =
+    fallos.length === 0 ? { fase: 'listo' } : { fase: 'error', detalle: fallos.join(' · ') };
+  await marcarFase(fase);
+
+  await auditarAgente(obra.id, ACCION_CRUCE_REINTENTADO, `obras:${obra.id}`, {
+    relecturas: relecturas.length,
+    fases: ['cruce', 'relectura', 'computo'],
+    resultado: fase.fase,
+    ...(fase.detalle === undefined ? {} : { detalle: fase.detalle }),
+  });
+
+  return { fase, relecturas: relecturas.length };
 }
 
 /**
@@ -733,11 +834,44 @@ export async function procesarDocumento(
 function seguidorDeFases(db: Db, obraId: string): (estado: FaseAnalisis) => Promise<void> {
   let anterior: FaseAnalisis['fase'] | null = null;
   return async (estado: FaseAnalisis): Promise<void> => {
-    await db.update(obras).set({ analisisJson: estado }).where(eq(obras.id, obraId));
+    // `desde` en CADA marca, no solo al cambiar de fase: el contador de la
+    // extracción («12 de 25») es lo que prueba que la corrida sigue viva, y una
+    // fase que arrancó hace nueve minutos y avanzó hace diez segundos no está
+    // colgada. Ver `faseVencida()`.
+    const conReloj: FaseAnalisis = { ...estado, desde: new Date().toISOString() };
+    await db.update(obras).set({ analisisJson: conReloj }).where(eq(obras.id, obraId));
     if (estado.fase === anterior) return;
     anterior = estado.fase;
-    await auditarAgente(obraId, ACCION_FASE, `obras:${obraId}`, { ...estado });
+    await auditarAgente(obraId, ACCION_FASE, `obras:${obraId}`, { ...conReloj });
   };
+}
+
+/**
+ * Deja el análisis de la obra en `error`, sin pasar por el seguidor de fases.
+ *
+ * Existe para el único camino que el seguidor no cubre: `procesarDocumento`
+ * levantó una excepción **antes** de llegar a su marca final —el PDF no se pudo
+ * separar, el storage falló, el proceso se cortó—. Sin esto, el route handler
+ * del upload solo hacía `console.error` y `analisis_json` quedaba clavado en la
+ * fase que estuviera en curso: la pantalla mostraba «Analizando las láminas ·
+ * 12 de 25» para siempre y pedía un refresh cada cuatro segundos, para siempre.
+ *
+ * No lanza: es el manejador de un error, y romper adentro del `catch` de otro
+ * error taparía el primero.
+ */
+export async function marcarAnalisisFallido(
+  obraId: string,
+  detalle: string,
+  deps: { db?: Db } = {},
+): Promise<void> {
+  try {
+    const db = deps.db ?? (await getDb());
+    const estado: FaseAnalisis = { fase: 'error', detalle, desde: new Date().toISOString() };
+    await db.update(obras).set({ analisisJson: estado }).where(eq(obras.id, obraId));
+    await auditarAgente(obraId, ACCION_FASE, `obras:${obraId}`, { ...estado });
+  } catch (error) {
+    console.error('[pipeline] no pude marcar el análisis como fallido:', error);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,7 +1283,10 @@ async function recomputarObraTolerante(
     await entorno.recomputar(obraId, { db: entorno.db, resumen: false });
   } catch (error) {
     const errorDetalle = detalleDeError(error);
-    fallos.push(`el cómputo no se pudo recalcular (${errorDetalle})`);
+    fallos.push(
+      'el cómputo de la obra quedó sin recalcular: las láminas están analizadas, ' +
+        'pero la planilla puede no estar al día. Reintentá el cruce del expediente y se recalcula',
+    );
     await auditarAgente(obraId, 'recomputo_fallido', `obras:${obraId}`, {
       errorDetalle,
       motivo: 'Las láminas quedaron analizadas; el cómputo de la obra quedó sin recalcular.',
@@ -1176,7 +1313,10 @@ async function anotarFallosDelLote(
     if (resultado.ok) continue;
     const pagina = paginas[indice] as PaginaDelDocumento;
     const errorDetalle = detalleDeError(resultado.error);
-    fallos.push(`la lámina ${pagina.numeroPagina} no se pudo analizar (${errorDetalle})`);
+    fallos.push(
+      `la lámina de la página ${pagina.numeroPagina} quedó sin analizar: lo que dibuja no entró ` +
+        'al cómputo. Reprocesala desde el expediente',
+    );
     await auditarAgente(obraId, ACCION_EXTRACCION_FALLIDA, `laminas:${pagina.laminaId}`, {
       errorDetalle,
       numeroPagina: pagina.numeroPagina,
@@ -1205,7 +1345,10 @@ async function inventariarTolerante(
     await inventariarDocumento(entorno, obra, documento, paginas, marcarFase);
   } catch (error) {
     const errorDetalle = detalleDeError(error);
-    fallos.push(`el inventario de rótulos no corrió (${errorDetalle})`);
+    fallos.push(
+      'el índice del expediente quedó sin armar: cada lámina se analizó leyendo su propio rótulo, ' +
+        'sin saber qué otras láminas hay. Lo que se computó vale igual',
+    );
     await auditarAgente(obra.id, ACCION_INVENTARIO_FALLIDO, `obras:${obra.id}`, {
       errorDetalle,
       motivo: 'El índice del expediente quedó sin armar; la extracción lee el rótulo igual.',
@@ -1224,7 +1367,10 @@ async function medirTolerante(
     await medirDibujo(entorno, obraId, paginas);
   } catch (error) {
     const errorDetalle = detalleDeError(error);
-    fallos.push(`la medición gráfica no corrió (${errorDetalle})`);
+    fallos.push(
+      'lo que el plano dibuja sin acotar quedó sin medir: puede faltar alguna cantidad en la ' +
+        'planilla. Reprocesá esas láminas desde el expediente',
+    );
     await auditarAgente(obraId, 'medicion_fallida', `obras:${obraId}`, {
       errorDetalle,
       motivo: 'Las láminas quedaron analizadas; lo que no tiene cota quedó sin medir.',
@@ -1250,7 +1396,10 @@ async function cruzarTolerante(
     return await cruzarObra(entorno, obra);
   } catch (error) {
     const errorDetalle = detalleDeError(error);
-    fallos.push(`el cruce del expediente no corrió (${errorDetalle})`);
+    fallos.push(
+      'el expediente no se cruzó: las láminas están analizadas y computadas, pero lo que una ' +
+        'lámina dice y a otra le falta quedó sin resolver. Reintentá el cruce del expediente',
+    );
     await auditarAgente(obra.id, ACCION_CRUCE_FALLIDO, `obras:${obra.id}`, {
       errorDetalle,
       motivo: 'Las láminas quedaron analizadas y computadas; el expediente no se cruzó.',

@@ -246,8 +246,46 @@ export interface TargetDato { clave: string; unidad?: Unidad; entidades: string[
  */
 export interface PrecioEstimado { unitario: number; moneda: string; fuente: 'manual' | 'lista' | 'indice'; fechaPrecio: string }
 
-/** Fase del análisis en curso, para la UI del expediente (`obras.analisis_json`). */
-export interface FaseAnalisis { fase: 'inventario' | 'extraccion' | 'cruce' | 'relectura' | 'listo' | 'error'; total?: number; completadas?: number; detalle?: string }
+/**
+ * Fase del análisis en curso, para la UI del expediente (`obras.analisis_json`).
+ *
+ * `desde` es el ISO del momento en que la fase se marcó, y existe porque el
+ * único escritor de esta columna es `procesarDocumento`, que corre **adentro
+ * del POST del upload** con `maxDuration = 300`. Un expediente de veinticinco
+ * láminas sobre el provider real se pasa de esos cinco minutos y el proceso
+ * muere en el medio de una fase: sin timestamp, `analisis_json` queda diciendo
+ * «Analizando las láminas · 12 de 25» para siempre y la pantalla pide un
+ * refresh cada cuatro segundos, también para siempre. Es opcional porque las
+ * filas escritas antes de esta columna no lo tienen: sin `desde`, una fase se
+ * lee como en curso, que es el comportamiento de siempre.
+ */
+export interface FaseAnalisis { fase: 'inventario' | 'extraccion' | 'cruce' | 'relectura' | 'listo' | 'error'; total?: number; completadas?: number; detalle?: string; desde?: string }
+
+/**
+ * Cuánto puede quedarse quieta una fase antes de que se lea como abandonada.
+ *
+ * Diez minutos: el doble del `maxDuration` del upload, que es el techo real de
+ * una corrida. Una fase más vieja que eso no está trabajando —el proceso que la
+ * escribió ya no existe—, así que la pantalla tiene que ofrecer reintentar en
+ * vez de seguir esperando.
+ */
+export const TTL_FASE_ANALISIS_MS = 10 * 60 * 1000;
+
+/**
+ * `true` si la fase quedó colgada: dice que está trabajando y hace rato que no
+ * se mueve.
+ *
+ * Lo usa la pantalla del expediente para no dejar un progreso eterno, y es lo
+ * único que separa «esto está tardando» de «esto se murió y nadie lo sabe».
+ * Una fase terminada (`listo` / `error`) nunca vence: ya llegó a donde iba.
+ */
+export function faseVencida(fase: FaseAnalisis | null, ahora: number = Date.now()): boolean {
+  if (fase === null || fase.fase === 'listo' || fase.fase === 'error') return false;
+  if (fase.desde === undefined) return false;
+  const desde = Date.parse(fase.desde);
+  if (!Number.isFinite(desde)) return false;
+  return ahora - desde > TTL_FASE_ANALISIS_MS;
+}
 
 // ---------------------------------------------------------------------------
 // Contratos de F1–F4 (compulsa, conciliación, negociación, deducción).

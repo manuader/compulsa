@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { enCurso, textoDeFase } from '@/app/obras/[obraId]/expediente/progreso-ui';
+import { faseVencida, TTL_FASE_ANALISIS_MS } from '@/types/domain';
 
 describe('textoDeFase', () => {
   it('el inventario dice cuántas láminas lleva', () => {
@@ -79,5 +80,48 @@ describe('enCurso', () => {
 
   it('una obra que nunca se analizó tampoco lo enciende', () => {
     expect(enCurso(null)).toBe(false);
+  });
+});
+
+/**
+ * El otro lado del polling: `enCurso` dice si la fase **se declara** en curso;
+ * `faseVencida` dice si esa declaración todavía se puede creer.
+ *
+ * `procesarDocumento` corre adentro del POST del upload (`maxDuration = 300`),
+ * así que un expediente grande sobre el provider real se pasa del límite y el
+ * proceso muere en el medio de una fase. Nadie escribe el `error`: la columna
+ * queda diciendo «Analizando las láminas · 12 de 25» y la pantalla pide un
+ * refresh cada cuatro segundos, para siempre.
+ */
+describe('faseVencida', () => {
+  const AHORA = Date.parse('2026-09-02T12:00:00.000Z');
+  const haceMinutos = (minutos: number) => new Date(AHORA - minutos * 60_000).toISOString();
+
+  it('una fase que arrancó recién no venció', () => {
+    expect(faseVencida({ fase: 'extraccion', desde: haceMinutos(2) }, AHORA)).toBe(false);
+  });
+
+  it('una fase más vieja que el TTL sí: el proceso que la escribió ya no existe', () => {
+    expect(faseVencida({ fase: 'extraccion', desde: haceMinutos(11) }, AHORA)).toBe(true);
+    expect(TTL_FASE_ANALISIS_MS).toBe(10 * 60 * 1000);
+  });
+
+  it('justo en el límite todavía no venció', () => {
+    const enElBorde = new Date(AHORA - TTL_FASE_ANALISIS_MS).toISOString();
+    expect(faseVencida({ fase: 'cruce', desde: enElBorde }, AHORA)).toBe(false);
+  });
+
+  it('una fase terminada no vence nunca: ya llegó a donde iba', () => {
+    expect(faseVencida({ fase: 'listo', desde: haceMinutos(600) }, AHORA)).toBe(false);
+    expect(faseVencida({ fase: 'error', detalle: 'x', desde: haceMinutos(600) }, AHORA)).toBe(false);
+  });
+
+  it('sin `desde` se lee como en curso: es una fila vieja, no una colgada', () => {
+    expect(faseVencida({ fase: 'extraccion', total: 25, completadas: 12 }, AHORA)).toBe(false);
+    expect(faseVencida({ fase: 'cruce', desde: 'no es una fecha' }, AHORA)).toBe(false);
+  });
+
+  it('una obra que nunca se analizó no tiene fase que vencer', () => {
+    expect(faseVencida(null, AHORA)).toBe(false);
   });
 });
