@@ -44,6 +44,7 @@
  * del reporte le pasan las filas ya leídas.
  */
 import { redondear2 } from '@/lib/computo/unidades';
+import { formatearImporte, formatearMonto } from '@/lib/format/dinero';
 import { precioUnitarioDe } from '@/lib/compulsa/conciliacion';
 import {
   clasificarContraIndice,
@@ -207,34 +208,11 @@ export interface Comparativa {
 // ---------------------------------------------------------------------------
 
 /**
- * Monto en es-AR: miles con punto, decimales con coma, sin ceros de relleno.
- *
- * Es la misma regla que usa el texto de negociación (`negociacion/motor.ts`),
- * donde vive como función privada del módulo. Acá se exporta porque la usan la
- * comparativa, la orden de compra y el reporte; unificarlas significa exportarla
- * desde el motor, que es archivo de otra tarea.
+ * El formateador de plata vive en `@/lib/format/dinero` desde que el cómputo
+ * también muestra precios: el cómputo no puede importar de la compulsa. Se
+ * reexporta acá para no mover a los que ya lo importaban de este archivo.
  */
-export function formatearImporte(n: number): string {
-  const valor = redondear2(n);
-  const texto = Number.isInteger(valor) ? String(valor) : valor.toFixed(2).replace('.', ',');
-  const [entera, decimal] = texto.split(',');
-  const conMiles = entera.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  return decimal === undefined ? conMiles : `${conMiles},${decimal}`;
-}
-
-/**
- * El importe con su símbolo adelante: `-$ 79.840`, no `$ -79.840`.
- *
- * El único monto del producto que puede ser negativo es el ahorro (RF-1104):
- * adjudicar por encima de la mediana da negativo y el tablero lo muestra tal
- * cual en vez de esconderlo en un cero. Pegar el símbolo y el número sin más
- * dejaba el menos en el medio, que en es-AR no se escribe así.
- */
-export function formatearMonto(moneda: string, n: number): string {
-  const simbolo = moneda === 'ARS' ? '$' : moneda;
-  const signo = redondear2(n) < 0 ? '-' : '';
-  return `${signo}${simbolo} ${formatearImporte(Math.abs(n))}`;
-}
+export { formatearImporte, formatearMonto };
 
 const MS_POR_DIA = 24 * 60 * 60 * 1000;
 

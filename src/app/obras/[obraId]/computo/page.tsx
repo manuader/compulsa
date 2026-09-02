@@ -15,16 +15,29 @@ import { VerificacionComputo } from '@/app/obras/[obraId]/computo/verificacion-u
 import { escalaAsumidaDelItem, type LaminaDeFuente } from '@/components/planilla/escala-asumida';
 import { PlanillaRubro } from '@/components/planilla/planilla-rubro';
 import type { ItemPlanilla } from '@/components/planilla/planilla-rubro';
+import {
+  detalleDeOrigen,
+  precioDeFila,
+  precioEditable,
+  totalizar,
+} from '@/components/planilla/precio';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { getDb } from '@/db/client';
-import { computoItems, computoRubros, hallazgos, laminas } from '@/db/schema';
+import { computoItems, computoRubros, hallazgos, laminas, type ComputoItem } from '@/db/schema';
 import { requireObra, requireUser } from '@/lib/auth/guards';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
 import { esClaveDeVerificacion } from '@/lib/pipeline/claves';
 import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
 import { esRolSuficiente } from '@/lib/plataforma/roles';
 import { PLANTILLAS } from '@/lib/rubros/index';
-import { ORIGENES, RUBROS, type EstadoRubro, type Origen, type RubroId } from '@/types/domain';
+import {
+  ORIGENES,
+  RUBROS,
+  type EstadoRubro,
+  type Fuente,
+  type Origen,
+  type RubroId,
+} from '@/types/domain';
 
 const ETIQUETA_ORIGEN: Record<Origen, string> = {
   explicito: 'Explícito',
@@ -181,25 +194,43 @@ export default async function ComputoPage({
   const delRubro = filas.filter((fila) => fila.rubro === rubro);
   const anuladosDelRubro = delRubro.filter((fila) => fila.estado === 'anulado').length;
 
+  /** Los códigos de las láminas que cita un ítem, sin repetir: van en el tooltip. */
+  const nombrarLaminas = (fuentes: readonly Fuente[]): string[] => [
+    ...new Set(fuentes.map((fuente) => escalaPorLamina.get(fuente.laminaId)?.etiqueta ?? '')),
+  ].filter((etiqueta) => etiqueta !== '');
+
   const items: ItemPlanilla[] = delRubro
     .filter((fila) => (verAnulados ? true : fila.estado === 'activo'))
     .filter((fila) => (origen === null ? true : fila.origen === origen))
-    .map((fila) => ({
-      id: fila.id,
-      claveItem: fila.claveItem,
-      descripcion: fila.descripcion,
-      unidad: fila.unidad,
-      cantNeta: fila.cantNeta,
-      desperdicioPct: fila.desperdicioPct,
-      cantCompra: fila.cantCompra,
-      presentacion: fila.presentacion,
-      origen: fila.origen,
-      confianza: fila.confianza,
-      anulado: fila.estado === 'anulado',
-      editado: fila.editadoPor !== null,
-      laminaId: fila.fuentesJson[0]?.laminaId ?? null,
-      escalaAsumida: escalaAsumidaDelItem(fila.fuentesJson, escalaPorLamina),
-    }));
+    .map((fila) => {
+      const precio = fila.precioJson;
+      return {
+        id: fila.id,
+        claveItem: fila.claveItem,
+        descripcion: fila.descripcion,
+        unidad: fila.unidad,
+        cantNeta: fila.cantNeta,
+        desperdicioPct: fila.desperdicioPct,
+        cantCompra: fila.cantCompra,
+        presentacion: fila.presentacion,
+        origen: fila.origen,
+        confianza: fila.confianza,
+        anulado: fila.estado === 'anulado',
+        editado: fila.editadoPor !== null,
+        laminaId: fila.fuentesJson[0]?.laminaId ?? null,
+        escalaAsumida: escalaAsumidaDelItem(fila.fuentesJson, escalaPorLamina),
+        precio: precioDeFila(fila),
+        precioEditable: precio === null ? '' : precioEditable(precio.unitario),
+        origenDetalle: detalleDeOrigen(fila.origen, nombrarLaminas(fila.fuentesJson)),
+      };
+    });
+
+  // Los totales van sobre los ítems ACTIVOS, filtre lo que filtre la vista: el
+  // filtro de origen cambia qué se mira, no lo que sale la obra.
+  const activos = filas.filter((fila) => fila.estado === 'activo');
+  const activosDelRubro = activos.filter((fila) => fila.rubro === rubro);
+  const subtotalRubro = totalizar(activosDelRubro, obra.moneda);
+  const totalObra = totalizar(activos, obra.moneda);
 
   // El mismo gate que aplica `aprobarRubroAction`, checklist del estudio
   // incluido: si la pantalla dijera otra cosa que el server, el botón mentiría.
@@ -279,10 +310,30 @@ export default async function ComputoPage({
         estadoRubro={estadoPorRubro.get(rubro) ?? 'borrador'}
         desperdicioDefaultPct={PLANTILLAS[rubro].desperdicioDefaultPct}
         items={items}
+        subtotal={subtotalRubro}
         bloqueantes={gate.bloqueantes}
         puedeEditar={esRolSuficiente(usuario, 'colaborador')}
         puedeAprobar={esRolSuficiente(usuario, 'titular')}
       />
+
+      {/* El total de la obra es de la obra entera, no de la solapa: va abajo de
+          todo y dice con cuántos ítems no pudo contar. Un total estimado que no
+          declara sus huecos es un presupuesto, y esto no lo es. */}
+      <section className="rounded-lg border border-neutral-200 bg-white px-4 py-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-medium text-neutral-600">Total estimado de la obra</h2>
+          <p className="text-lg font-semibold text-neutral-900 tabular-nums">
+            {totalObra ? totalObra.monto : 'Sin precios todavía'}
+          </p>
+        </div>
+        <p className="mt-1 text-xs text-neutral-500">
+          {totalObra === null
+            ? 'Ningún ítem tiene precio: cargá la lista del estudio en Precios, o registrá cotizaciones para que el índice tenga muestras.'
+            : totalObra.sinPrecio === 0
+              ? 'Suma todos los ítems activos del cómputo, con el precio de la lista del estudio o del índice.'
+              : `Suma solo los ítems con precio: ${totalObra.sinPrecio === 1 ? 'queda 1 ítem sin precio' : `quedan ${totalObra.sinPrecio} ítems sin precio`} y no está contado acá.`}
+        </p>
+      </section>
     </div>
   );
 }

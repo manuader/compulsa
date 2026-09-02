@@ -23,11 +23,12 @@ import { getSession } from '@/lib/auth/session';
 import {
   generarPlanillaCarpinterias,
   nombreArchivoPlanilla,
+  origenDeCarpinteria,
   type FilaCarpinteria,
-  type OrigenDato,
 } from '@/lib/export/planilla-carpinterias';
 import { leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
 import { aplicarDeduccionesValidadas, comoEntidadPersistida } from '@/lib/pipeline/recomputar';
+import type { Origen } from '@/types/domain';
 
 /** exceljs es Node puro (zlib, streams): este handler no corre en el edge. */
 export const runtime = 'nodejs';
@@ -86,13 +87,17 @@ export async function GET(
     planos.map((fila) => [fila.id, fila.codigo ?? `Página ${fila.numeroPagina}`] as const),
   );
   const carpinterias: FilaCarpinteria[] = aberturas.map((abertura) => {
-    const deducidos = camposDeducidos.get(abertura.id) ?? new Set<string>();
+    const deducidos = camposDeducidos.get(abertura.id) ?? new Map<string, Origen>();
     const anchoM = leerMedida(abertura, 'anchoM');
     const altoM = leerMedida(abertura, 'altoM');
 
     const falta = MEDIDAS.some((campo) => leerMedida(abertura, campo) === null);
-    const deDeduccion = MEDIDAS.some((campo) => deducidos.has(campo));
-    const origen: OrigenDato = falta ? 'pendiente' : deDeduccion ? 'deducido' : 'explicito';
+    const origen = origenDeCarpinteria(
+      falta,
+      MEDIDAS.map((campo) => deducidos.get(campo)).filter(
+        (origen): origen is Origen => origen !== undefined,
+      ),
+    );
 
     // Las láminas: la de la entidad y, si la medida vino de una deducción, la
     // que la aportó (la deducción cita las dos, por eso alcanza con sus fuentes).

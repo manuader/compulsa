@@ -77,6 +77,9 @@ export async function GET(
         confianza: computoItems.confianza,
         estado: computoItems.estado,
         fuentesJson: computoItems.fuentesJson,
+        // El precio lo resolvió el recompute (§5.6): el export lo muestra con
+        // su fuente y su fecha, y nunca lo recalcula.
+        precioJson: computoItems.precioJson,
       })
       .from(computoItems)
       .where(

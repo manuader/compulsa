@@ -1,0 +1,250 @@
+/**
+ * Unificación por elemento: la misma cosa dicha en dos láminas es UNA cosa.
+ *
+ * Un tabique dibujado en la planta y cortado en el corte son dos filas de
+ * `entidades` —cada lámina se analiza sola— y **un solo tabique de la obra**. El
+ * cruce (§5.3) es el que las reconoce y les escribe el mismo
+ * `entidades.elemento_id`; este módulo es el que hace que el cómputo lo use.
+ *
+ * Sin esto, en cuanto lo deducido entra solo al cómputo (§5.4) el mismo muro se
+ * computa dos veces: la planta le presta el largo al corte, el corte le presta
+ * la altura a la planta, y las dos quedan computables. Son 52 m² de placa donde
+ * hay 26.
+ *
+ * ## Qué hace, exactamente
+ *
+ * Agrupa por `elemento_id` y devuelve **una** entidad por grupo:
+ *
+ *  - **la base es la de mayor confianza** (empate ⇒ la de id menor: el orden en
+ *    que Postgres devuelve las filas no es estable —un `UPDATE` mueve una fila
+ *    al final del heap— y el cómputo no puede depender de eso);
+ *  - los campos que a la base le faltan los completan las hermanas, en orden
+ *    (*fill gaps*): es exactamente lo que hacía la deducción `continuidad`, pero
+ *    sin fila que validar;
+ *  - las **fuentes de todas** viajan en la entidad unificada (`fuentesUnificadas`),
+ *    así el ítem cita las dos láminas. P1 no se negocia porque dos filas se
+ *    hayan vuelto una;
+ *  - la **confianza es la peor del grupo**, no la de la base: el ítem descansa
+ *    sobre las dos lecturas fusionadas, y con la máxima se colaría por el gate
+ *    del §11.b un dato leído al 0,5. Que sea la peor del grupo entero —y no solo
+ *    de las que aportaron un campo— además la hace independiente de cuál entidad
+ *    quedó de base, que es una elección arbitraria cuando las confianzas empatan;
+ *  - el `estadoReforma` es el de la base. Una hermana que dice otra cosa no
+ *    cambia el alcance de la obra por un `fill gap`.
+ *
+ * ## Lo que NO hace: elegir entre dos números
+ *
+ * Si dos hermanas declaran el mismo campo con valores distintos (más de un 1 %
+ * de diferencia), no se elige el mejor: se conserva el de la base **y se emite
+ * un `ConflictoUnificacion`**, que el recompute convierte en una consulta no
+ * bloqueante. Elegir en silencio sería exactamente el "deducir es inventar" que
+ * el PRD prohíbe: la planta dice 2,60 y el corte 2,40, y quién tiene razón lo
+ * sabe el arquitecto.
+ *
+ * Módulo **hoja**: puro, sin I/O y sin imports del motor (solo el tipo de la
+ * entidad, que se borra al compilar). El engine no lo conoce; lo aplican
+ * `recomputarObra` y `persistirResumen` antes de computar.
+ */
+import type { EntidadPersistida } from '@/lib/computo/engine';
+import type { Fuente } from '@/types/domain';
+
+/** Un valor de atributo que se puede poner en pugna (los `null` no se comparan). */
+export type ValorAtributo = number | string | boolean;
+
+/**
+ * Dos lecturas del mismo campo del mismo elemento que no coinciden.
+ *
+ * `valores` y `entidadIds` van alineados: el índice 0 es siempre el de la base
+ * (el valor con el que se computa).
+ */
+export interface ConflictoUnificacion {
+  elementoId: string;
+  campo: string;
+  valores: ValorAtributo[];
+  entidadIds: string[];
+}
+
+export interface ResultadoUnificacion {
+  /** Una entidad por elemento, más las que no tienen `elemento_id`, en orden de aparición. */
+  entidades: EntidadPersistida[];
+  conflictos: ConflictoUnificacion[];
+  /**
+   * `idUnificado → campo → idQueLoAportó`, **solo** para los campos que puso una
+   * hermana.
+   *
+   * Existe por una razón puntual: el mapa de orígenes por campo (§5.5) está
+   * indexado por id de entidad, y un `alturaM` deducido que aportó la hermana
+   * quedaría sin marcar en la entidad unificada — el ítem diría «explícito»
+   * apoyándose en un dato que no está escrito. `recomputarObra` usa esto para
+   * mover la marca al id que sobrevive.
+   */
+  aportes: Map<string, Map<string, string>>;
+}
+
+/** Diferencia relativa a partir de la cual dos lecturas son dos lecturas distintas. */
+export const TOLERANCIA_UNIFICACION = 0.01;
+
+/** Mismo criterio que `leerNumero()`: un número escrito como texto es un número. */
+function comoNumero(valor: unknown): number | null {
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : null;
+  if (typeof valor === 'string' && valor.trim() !== '') {
+    const parseado = Number(valor.replace(',', '.'));
+    return Number.isFinite(parseado) ? parseado : null;
+  }
+  return null;
+}
+
+/** `true` si un campo no trae dato: es el hueco que una hermana puede llenar. */
+function vacio(valor: unknown): boolean {
+  return valor === undefined || valor === null || valor === '';
+}
+
+/**
+ * ¿Son la misma lectura? Los números, con 1 % de tolerancia —dos lápices sobre
+ * el mismo muro no dan el mismo milímetro—; los textos, sin distinguir mayúsculas
+ * ni espacios de más («Durlock» y «durlock» son el mismo sistema).
+ */
+export function mismaLectura(a: unknown, b: unknown): boolean {
+  const na = comoNumero(a);
+  const nb = comoNumero(b);
+  if (na !== null && nb !== null) {
+    if (na === nb) return true;
+    const mayor = Math.max(Math.abs(na), Math.abs(nb));
+    if (mayor === 0) return true;
+    return Math.abs(na - nb) / mayor <= TOLERANCIA_UNIFICACION;
+  }
+  if (typeof a === 'string' && typeof b === 'string') {
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
+  }
+  return a === b;
+}
+
+/** La fuente propia de una entidad, más las que ya arrastre de otra unificación. */
+function fuentesDe(entidad: EntidadPersistida): Fuente[] {
+  return [
+    { laminaId: entidad.laminaId, bbox: entidad.bbox, detalle: entidad.nombre },
+    ...(entidad.fuentesUnificadas ?? []),
+  ];
+}
+
+function claveDeFuente(fuente: Fuente): string {
+  return `${fuente.laminaId}|${fuente.bbox.join(',')}`;
+}
+
+interface GrupoUnificado {
+  entidad: EntidadPersistida;
+  conflictos: ConflictoUnificacion[];
+  aportes: Map<string, string>;
+}
+
+function unificarGrupo(elementoId: string, grupo: readonly EntidadPersistida[]): GrupoUnificado {
+  // Empate de confianza ⇒ gana la de id menor. NO la primera del arreglo: las
+  // entidades llegan como las devuelve Postgres, y ese orden cambia solo (un
+  // `UPDATE` mueve la fila al final del heap). Dos recomputes de la misma obra
+  // tienen que elegir la misma base.
+  const base = grupo.reduce((mejor, entidad) => {
+    if (entidad.confianza !== mejor.confianza) {
+      return entidad.confianza > mejor.confianza ? entidad : mejor;
+    }
+    return entidad.id < mejor.id ? entidad : mejor;
+  });
+  const hermanas = grupo.filter((entidad) => entidad !== base);
+
+  const atributos = { ...base.atributos };
+  const aportes = new Map<string, string>();
+  const enPugna = new Map<string, ConflictoUnificacion>();
+
+  for (const hermana of hermanas) {
+    for (const [campo, valor] of Object.entries(hermana.atributos)) {
+      if (vacio(valor)) continue;
+
+      const actual = atributos[campo];
+      if (vacio(actual)) {
+        atributos[campo] = valor;
+        aportes.set(campo, hermana.id);
+        continue;
+      }
+      if (mismaLectura(actual, valor)) continue;
+
+      // Gana la base y el conflicto se cuenta: uno por campo, aunque tres
+      // hermanas digan tres cosas (la clave del hallazgo es por campo).
+      const previo = enPugna.get(campo) ?? {
+        elementoId,
+        campo,
+        valores: [actual as ValorAtributo],
+        entidadIds: [base.id],
+      };
+      if (!previo.valores.some((otro) => mismaLectura(otro, valor))) {
+        previo.valores.push(valor as ValorAtributo);
+        previo.entidadIds.push(hermana.id);
+      }
+      enPugna.set(campo, previo);
+    }
+  }
+
+  // La base primero: su fuente es la que la entidad unificada sigue teniendo
+  // como propia (`laminaId` + `bbox` no se tocan), y las demás viajan aparte
+  // para que el ítem las cite igual.
+  const fuentes: Fuente[] = [];
+  const vistas = new Set<string>();
+  for (const entidad of [base, ...hermanas]) {
+    for (const fuente of fuentesDe(entidad)) {
+      const clave = claveDeFuente(fuente);
+      if (vistas.has(clave)) continue;
+      vistas.add(clave);
+      fuentes.push(fuente);
+    }
+  }
+  const extra = fuentes.slice(1);
+
+  const entidad: EntidadPersistida = {
+    ...base,
+    atributos,
+    confianza: grupo.reduce((peor, quien) => Math.min(peor, quien.confianza), 1),
+    ...(extra.length === 0 ? {} : { fuentesUnificadas: extra }),
+  };
+
+  return { entidad, conflictos: [...enPugna.values()], aportes };
+}
+
+/**
+ * Las entidades con los elementos ya unificados, y lo que quedó en pugna.
+ *
+ * Las que no tienen `elemento_id` —y los grupos de uno— pasan tal cual, sin
+ * copiarse: una obra a la que el cruce todavía no le escribió nada sale de acá
+ * exactamente como entró.
+ */
+export function unificarPorElemento(
+  entidades: readonly EntidadPersistida[],
+): ResultadoUnificacion {
+  const grupos = new Map<string, EntidadPersistida[]>();
+  for (const entidad of entidades) {
+    if (entidad.elementoId === undefined || entidad.elementoId === null) continue;
+    const grupo = grupos.get(entidad.elementoId);
+    if (grupo) grupo.push(entidad);
+    else grupos.set(entidad.elementoId, [entidad]);
+  }
+
+  const salida: EntidadPersistida[] = [];
+  const conflictos: ConflictoUnificacion[] = [];
+  const aportes = new Map<string, Map<string, string>>();
+  const emitidos = new Set<string>();
+
+  for (const entidad of entidades) {
+    const elementoId = entidad.elementoId ?? null;
+    const grupo = elementoId === null ? undefined : grupos.get(elementoId);
+    if (grupo === undefined || grupo.length === 1) {
+      salida.push(entidad);
+      continue;
+    }
+    if (emitidos.has(elementoId as string)) continue;
+    emitidos.add(elementoId as string);
+
+    const unificado = unificarGrupo(elementoId as string, grupo);
+    salida.push(unificado.entidad);
+    conflictos.push(...unificado.conflictos);
+    if (unificado.aportes.size > 0) aportes.set(unificado.entidad.id, unificado.aportes);
+  }
+
+  return { entidades: salida, conflictos, aportes };
+}

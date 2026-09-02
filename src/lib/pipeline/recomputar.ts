@@ -53,37 +53,50 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { getDb, type Db } from '@/db/client';
 import {
   computoItems,
+  datosObra,
   deducciones,
   entidades,
   hallazgos,
   laminas,
   obras,
+  priceIndex,
   type ComputoItem,
+  type DatoObra,
   type Deduccion,
   type Hallazgo,
   type NuevaDeduccion,
   type NuevoComputoItem,
   type NuevoHallazgo,
+  type Obra,
 } from '@/db/schema';
 import { registrarAuditoria } from '@/lib/audit';
 import {
   computarObraConPlantillas,
   type CamposDeducidos,
+  type DatosObraResueltos,
   type EntidadPersistida,
 } from '@/lib/computo/engine';
 import { fuenteDeEntidad, unirFuentes } from '@/lib/computo/presentacion';
+import {
+  unificarPorElemento,
+  type ConflictoUnificacion,
+} from '@/lib/computo/unificar';
 import { redondear2 } from '@/lib/computo/unidades';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
 import {
   deducir,
   describirValor,
+  enumerar,
   etiquetaCampo,
+  UMBRAL_DEDUCCION,
   type DeduccionPropuesta,
   type LaminaResumen,
 } from '@/lib/deduccion/motor';
 import { hallazgoInconsistencia } from '@/lib/hallazgos/taxonomia';
 import { esClaveDelMotor } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
+import { listaDelEstudio } from '@/lib/precios/gestion';
+import { resolverPrecio, type CorteIndice } from '@/lib/precios/resolver';
 // Ciclo con `resumen.ts` (él importa `aplicarDeduccionesValidadas`,
 // `comoEntidadPersistida`, `ACTOR_PIPELINE` y `ObraInexistenteError` de acá).
 // Es sano: ninguno de los dos usa nada del otro en tiempo de inicialización —
@@ -93,7 +106,16 @@ import { igualJson } from '@/lib/pipeline/json';
 import { persistirResumen } from '@/lib/pipeline/resumen';
 import { leerConfig } from '@/lib/plataforma/config-estudio';
 import { plantillasConConfig } from '@/lib/rubros/overrides';
-import type { BBox, HallazgoDetectado, ItemComputo, Origen, ValorPropuesto } from '@/types/domain';
+import type {
+  BBox,
+  DatoObraResuelto,
+  EstadoDeduccion,
+  HallazgoDetectado,
+  ItemComputo,
+  Origen,
+  PrecioEstimado,
+  ValorPropuesto,
+} from '@/types/domain';
 
 /** Nombre del actor de todas las escrituras del pipeline en `auditoria`. */
 export const ACTOR_PIPELINE = 'pipeline';
@@ -116,11 +138,19 @@ export interface ResumenRecompute {
   hallazgosActualizados: number;
   hallazgosDescartados: number;
   deduccionesPropuestas: number;
+  /**
+   * Deducciones que nacieron **validadas** y se aplicaron en esta misma corrida
+   * (`estadoInicialDeduccion`). No pasaron por la bandeja: entraron al cómputo
+   * marcadas y reversibles.
+   */
+  deduccionesAutovalidadas: number;
   deduccionesActualizadas: number;
   /** Propuestas que el motor dejó de sostener y se borraron (no son historia). */
   deduccionesRetiradas: number;
   /** Marcas de "superada por la documentación" puestas **o** levantadas. */
   deduccionesContradichas: number;
+  /** Ítems a los que la cascada de precios les cambió el `precio_json`. */
+  preciosActualizados: number;
 }
 
 function resumenVacio(): ResumenRecompute {
@@ -132,9 +162,11 @@ function resumenVacio(): ResumenRecompute {
     hallazgosActualizados: 0,
     hallazgosDescartados: 0,
     deduccionesPropuestas: 0,
+    deduccionesAutovalidadas: 0,
     deduccionesActualizadas: 0,
     deduccionesRetiradas: 0,
     deduccionesContradichas: 0,
+    preciosActualizados: 0,
   };
 }
 
@@ -175,6 +207,9 @@ export function comoEntidadPersistida(fila: typeof entidades.$inferSelect): Enti
     confianza: fila.confianza,
     estadoReforma: fila.estadoReforma,
     atributos: fila.atributosJson,
+    // Lo escribe el cruce cuando reconoce que dos láminas hablan de la misma
+    // cosa; `unificarPorElemento` lo usa para computarla una sola vez.
+    ...(fila.elementoId === null ? {} : { elementoId: fila.elementoId }),
   };
 }
 
@@ -455,6 +490,56 @@ function claveDeDeduccion(fila: { entidadId: string; campo: string }): string {
   return `${fila.entidadId}::${fila.campo}`;
 }
 
+/**
+ * Con qué estado nace una deducción (§5.4 y §5.5 del diseño).
+ *
+ * La decisión de producto de esta ola: **lo deducido con fuentes entra al
+ * cómputo**, marcado y reversible, en vez de esperar en una bandeja a que
+ * alguien apriete un botón. Preguntar por un dato que dos láminas ya dicen es la
+ * otra cara de inventarlo — las dos hacen perder el tiempo del arquitecto.
+ *
+ * La línea es el `UMBRAL_DEDUCCION` de siempre (0,7): arriba nace `validada` con
+ * `validado_por = null` —el sistema se hace cargo, y se ve en la bandeja quién
+ * validó qué— y abajo nace `propuesta`, como hasta hoy.
+ *
+ * `medicion_grafica` va por **regla propia y no por umbral**: mide sobre el
+ * dibujo con confianza fija 0,5 y aun así entra, porque su honestidad no está en
+ * hacer esperar la fila sino en el `origen: 'inferido'` que le deja al ítem
+ * (§5.5). El 0,7 gobierna a las deterministas y al cruce.
+ *
+ * Nada de esto pisa una fila ya decidida: eso lo garantiza
+ * `sincronizarDeducciones`, que solo consulta esta función al **insertar**.
+ */
+export function estadoInicialDeduccion(
+  confianza: number,
+  regla: Deduccion['regla'],
+): EstadoDeduccion {
+  if (regla === 'medicion_grafica') return 'validada';
+  if (!Number.isFinite(confianza)) return 'propuesta';
+  return confianza >= UMBRAL_DEDUCCION ? 'validada' : 'propuesta';
+}
+
+/**
+ * Una propuesta recién nacida **como si ya fuera una fila validada**, para que
+ * `aplicarDeduccionesValidadas` la aplique en la misma corrida.
+ *
+ * No es una fila de la base: no tiene id todavía (se lo pone el `insert` de
+ * `sincronizarDeducciones`, unas líneas después). Vive lo que dura el recompute
+ * y existe para una sola cosa: que el ítem que depende del dato salga computado
+ * **ahora**, y no en la corrida siguiente. Sin esto, una deducción que nace
+ * validada dejaba la planilla exactamente igual que antes hasta que algo más
+ * disparara otro recompute.
+ */
+function comoFilaValidada(obraId: string, propuesta: DeduccionPropuesta): Deduccion {
+  return {
+    id: `sin-persistir:${propuesta.entidadId}:${propuesta.campo}`,
+    ...valoresDeDeduccion(obraId, propuesta),
+    estado: 'validada',
+    validadoPor: null,
+    createdAt: new Date(0),
+  };
+}
+
 function valoresDeDeduccion(
   obraId: string,
   propuesta: DeduccionPropuesta,
@@ -505,6 +590,11 @@ function diferenciasDeDeduccion(
  *     borra nunca acá.
  *  3. **Nada se escribe si nada cambió.** Misma regla y mismo valor ⇒ ni un
  *     `update` ni una línea de auditoría (`igualJson`, no `JSON.stringify`).
+ *  4. **El estado con el que nace lo decide `estadoInicialDeduccion`**, y solo
+ *     al insertar. Una deducción determinista con confianza suficiente nace
+ *     `validada` y ya se aplicó en el cómputo de esta misma corrida
+ *     (`recomputarObra` la pasó por el overlay antes de computar); una fila que
+ *     ya existe no cambia de estado por acá, cualquiera sea su estado.
  */
 async function sincronizarDeducciones(
   db: Db,
@@ -523,13 +613,25 @@ async function sincronizarDeducciones(
 
     const previa = porClave.get(clave);
     if (!previa) {
-      await db.insert(deducciones).values(valoresDeDeduccion(obraId, propuesta));
-      resumen.deduccionesPropuestas += 1;
-      await auditar(obraId, 'deduccion_propuesta', `deducciones:${clave.replace('::', '.')}`, {
-        regla: propuesta.regla,
-        valor: propuesta.valor,
-        confianza: propuesta.confianza,
-      });
+      // Regla 4: con qué estado nace lo decide `estadoInicialDeduccion`, y solo
+      // acá — una fila que ya existe no cambia de estado por esta vía.
+      const estado = estadoInicialDeduccion(propuesta.confianza, propuesta.regla);
+      await db
+        .insert(deducciones)
+        .values({ ...valoresDeDeduccion(obraId, propuesta), estado, validadoPor: null });
+      if (estado === 'validada') resumen.deduccionesAutovalidadas += 1;
+      else resumen.deduccionesPropuestas += 1;
+      await auditar(
+        obraId,
+        estado === 'validada' ? 'deduccion_autovalidada' : 'deduccion_propuesta',
+        `deducciones:${clave.replace('::', '.')}`,
+        {
+          regla: propuesta.regla,
+          valor: propuesta.valor,
+          confianza: propuesta.confianza,
+          estado,
+        },
+      );
       continue;
     }
 
@@ -678,6 +780,78 @@ function comoNumero(valor: unknown): number | null {
 }
 
 // ---------------------------------------------------------------------------
+// Unificación por elemento (§5.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mueve las marcas de origen por campo a la entidad que sobrevivió a la
+ * unificación.
+ *
+ * El mapa del §5.5 está indexado por id de entidad. Cuando la hermana aporta un
+ * `alturaM` que era deducido, ese id deja de existir para el motor y la marca se
+ * perdía: el ítem salía «explícito» apoyado en un dato que no está escrito.
+ *
+ * No hay colisión posible: `aportes` solo trae los campos que a la base le
+ * **faltaban**, y un campo ausente no puede tener marca previa.
+ */
+function mergearAportes(
+  camposDeducidos: CamposDeducidos,
+  aportes: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): CamposDeducidos {
+  if (aportes.size === 0) return camposDeducidos;
+
+  const merged = new Map<string, Map<string, Origen>>();
+  for (const [id, campos] of camposDeducidos) merged.set(id, new Map(campos));
+  for (const [idUnificado, porCampo] of aportes) {
+    for (const [campo, idOriginal] of porCampo) {
+      const origen = camposDeducidos.get(idOriginal)?.get(campo);
+      if (origen === undefined) continue;
+      const suyos = merged.get(idUnificado) ?? new Map<string, Origen>();
+      suyos.set(campo, origen);
+      merged.set(idUnificado, suyos);
+    }
+  }
+  return merged;
+}
+
+/**
+ * La consulta que avisa que dos láminas dicen cosas distintas del mismo elemento.
+ *
+ * `inconsistencia` y **no bloqueante**, igual que la contradicción de una
+ * deducción: el cómputo no está mal —usa la lectura más confiable y cuenta el
+ * elemento una sola vez— pero hay una diferencia real entre dos láminas que
+ * alguien tiene que mirar. La clave es estable por elemento y campo, así que el
+ * conciliador la abre una vez y, si el conflicto desaparece, la cierra sola.
+ */
+function hallazgoUnificacion(
+  conflicto: ConflictoUnificacion,
+  porId: ReadonlyMap<string, EntidadPersistida>,
+): HallazgoDetectado {
+  const lecturas = conflicto.valores.map((valor, i) => {
+    const entidad = porId.get(conflicto.entidadIds[i] ?? '');
+    const donde = entidad === undefined ? '' : ` (${entidad.nombre})`;
+    return `${comoTexto(conflicto.campo, valor)}${donde}`;
+  });
+  const gana = lecturas[0] ?? '';
+
+  return hallazgoInconsistencia({
+    rubro: null, // es coherencia del expediente, no de un rubro
+    clave: `unificacion.${conflicto.elementoId}.${conflicto.campo}`,
+    checklistItem: 'unificacion.conflicto',
+    descripcion:
+      `Dos láminas dicen cosas distintas sobre ${etiquetaCampo(conflicto.campo)} del mismo ` +
+      `elemento: ${enumerar(lecturas)}. Computo con ${gana}, que es la lectura más confiable, ` +
+      'y lo cuento una sola vez. Revisá cuál de las dos vale.',
+    fuentes: unirFuentes(
+      ...conflicto.entidadIds.map((id) => {
+        const entidad = porId.get(id);
+        return entidad === undefined ? [] : [fuenteDeEntidad(entidad)];
+      }),
+    ),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Deducciones superadas por la documentación
 // ---------------------------------------------------------------------------
 
@@ -811,6 +985,140 @@ async function sincronizarContradicciones(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Datos de obra (§5.2): los hechos que valen para toda la obra
+// ---------------------------------------------------------------------------
+
+/**
+ * La fila de `datos_obra` como la esperan las plantillas.
+ *
+ * El `valor_json` guarda `{ valor, unidad? }` y el resto de la provenance vive
+ * en columnas: acá se arma el objeto plano con el que la cadena de respaldo
+ * trabaja, sin perder ni el origen ni las fuentes ni el método (P1 — que el
+ * hecho sea de la obra entera no lo exime de citar de dónde salió).
+ */
+export function comoDatoResuelto(fila: DatoObra): DatoObraResuelto {
+  return {
+    clave: fila.clave,
+    valor: fila.valorJson.valor,
+    ...(fila.valorJson.unidad === undefined ? {} : { unidad: fila.valorJson.unidad }),
+    origen: fila.origen,
+    fuentes: fila.fuentesJson,
+    confianza: fila.confianza,
+    ...(fila.metodo === null ? {} : { metodo: fila.metodo }),
+  };
+}
+
+/**
+ * Los datos de obra de una obra, indexados por clave.
+ *
+ * Es un `Map` porque las plantillas lo consultan una vez por entidad y por campo
+ * (`altura_local.PB`, y si no está, `altura_local.general`): buscar linealmente
+ * en cada tabique sería cuadrático sin ninguna ganancia.
+ */
+export async function datosDeObra(db: Db, obraId: string): Promise<DatosObraResueltos> {
+  const filas = await db.select().from(datosObra).where(eq(datosObra.obraId, obraId));
+  return new Map(filas.map((fila) => [fila.clave, comoDatoResuelto(fila)]));
+}
+
+// ---------------------------------------------------------------------------
+// Precios (§5.6): la cascada, corrida contra lo que hay escrito
+// ---------------------------------------------------------------------------
+
+/**
+ * El corte del índice del estudio con el que se costea cada clave de ítem: el
+ * `p50` del **mes más reciente con al menos una muestra**, en la zona de la obra.
+ *
+ * Tres filtros y ninguno es cosmético:
+ *
+ *  - **la zona**, porque el precio de Rosario no es el precio de esta obra;
+ *  - **`n ≥ 1`**, porque una fila sin muestras no es un precio barato, es un
+ *    renglón vacío;
+ *  - **el mes más reciente**, comparado como texto — `price_index.mes` es
+ *    `YYYY-MM`, así que el orden alfabético *es* el cronológico.
+ */
+async function corteDelIndice(
+  db: Db,
+  estudioId: string,
+  zona: string,
+): Promise<Map<string, CorteIndice>> {
+  const filas = await db
+    .select({
+      claveItem: priceIndex.claveItem,
+      mes: priceIndex.mes,
+      p50: priceIndex.p50,
+      n: priceIndex.n,
+    })
+    .from(priceIndex)
+    .where(and(eq(priceIndex.estudioId, estudioId), eq(priceIndex.zona, zona)));
+
+  const porClave = new Map<string, CorteIndice>();
+  for (const fila of filas) {
+    if (fila.n < 1) continue;
+    const previo = porClave.get(fila.claveItem);
+    if (previo !== undefined && previo.mes >= fila.mes) continue;
+    porClave.set(fila.claveItem, { p50: fila.p50, mes: fila.mes, n: fila.n });
+  }
+  return porClave;
+}
+
+/**
+ * Recalcula `computo_items.precio_json` de los ítems **activos** de la obra.
+ *
+ * Corre después de sincronizar los ítems porque necesita las cantidades ya
+ * escritas: el precio es del ítem que quedó, no del que se acaba de anular.
+ *
+ * Qué precio le toca a cada uno lo decide `resolverPrecio` (puro, §5.6): precio
+ * manual del ítem → lista del estudio → índice de la zona → `null`. Acá solo
+ * está la mitad sucia: leer las dos tablas una vez por obra y escribir lo que
+ * cambió.
+ *
+ * **También le pone precio a los ítems editados a mano.** La regla 2 del archivo
+ * —lo humano es intocable— es sobre las cantidades, que son la afirmación del
+ * arquitecto sobre la obra; el precio no lo es, y un ítem que él agregó merece
+ * costearse como cualquier otro. Lo que sí es suyo y no se toca es el precio que
+ * cargó él: entra por el primer escalón de la cascada y le gana a todo.
+ *
+ * Idempotente: el mismo precio resuelto dos veces no escribe ni audita
+ * (`igualJson`, no `JSON.stringify` — el orden de las claves del jsonb no es un
+ * cambio de precio).
+ */
+async function sincronizarPrecios(
+  db: Db,
+  obra: Obra,
+  resumen: ResumenRecompute,
+): Promise<void> {
+  const [items, lista, indice] = await Promise.all([
+    db
+      .select()
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obra.id), eq(computoItems.estado, 'activo'))),
+    listaDelEstudio(db, obra.estudioId),
+    corteDelIndice(db, obra.estudioId, obra.zona),
+  ]);
+
+  for (const item of items) {
+    const manual: PrecioEstimado | null =
+      item.precioJson !== null && item.precioJson.fuente === 'manual' ? item.precioJson : null;
+
+    const precio = resolverPrecio(
+      { claveItem: item.claveItem, precioManual: manual },
+      lista,
+      indice.get(item.claveItem) ?? null,
+    );
+    if (igualJson(item.precioJson, precio)) continue;
+
+    await db
+      .update(computoItems)
+      .set({ precioJson: precio, updatedAt: new Date() })
+      .where(eq(computoItems.id, item.id));
+    resumen.preciosActualizados += 1;
+    await auditar(obra.id, 'computo_item_precio', `computo_items:${item.claveItem}`, {
+      precio: { antes: item.precioJson, despues: precio },
+    });
+  }
+}
+
 /** Las láminas de la obra, con lo único que el motor de deducción mira de ellas. */
 function laminasResumen(db: Db, obraId: string): Promise<LaminaResumen[]> {
   return db
@@ -893,21 +1201,28 @@ function auditar(
  *
  * El orden importa y es este:
  *
- *  1. Se leen las entidades y las deducciones ya decididas, y las **validadas**
- *     se aplican como una capa encima de las entidades
- *     (`aplicarDeduccionesValidadas`): así el dato validado sobrevive a un
- *     reanálisis de la lámina y los ítems que dependen de él salen marcados
+ *  1. Se leen las entidades, las deducciones ya decididas y los **datos de obra**
+ *     (§5.2), y las deducciones validadas se aplican como una capa encima de las
+ *     entidades (`aplicarDeduccionesValidadas`): así el dato validado sobrevive
+ *     a un reanálisis de la lámina y los ítems que dependen de él salen marcados
  *     `origen: 'deducido'`.
- *  2. `computarObra()` produce cómputo y consultas; `deducir()` produce
- *     propuestas nuevas e inconsistencias.
- *  3. Las inconsistencias del motor de deducción entran a la bandeja por el
+ *  2. `deducir()` produce propuestas nuevas e inconsistencias. Va **antes** de
+ *     computar y no después: lo que nace validado (`estadoInicialDeduccion`) se
+ *     suma a la capa del paso 1, así que el cómputo de esta misma corrida ya lo
+ *     usa. Al revés, la planilla mostraba el dato recién en el recompute
+ *     siguiente.
+ *  3. `computarObraConPlantillas()` produce cómputo y consultas, con la capa de
+ *     deducciones, el tipo de cada lámina y los datos de obra.
+ *  4. Las inconsistencias del motor de deducción entran a la bandeja por el
  *     mismo camino que el resto de los hallazgos (`deduccion.*` no es un
  *     namespace protegido, ver `claves.ts`): se emiten en esta misma pasada, así
  *     que el conciliador puede abrirlas y cerrarlas solo.
- *  4. Se refresca el resumen ejecutivo (`persistirResumen`), que es una lectura
+ *  5. La cascada de precios (§5.6) corre sobre los ítems ya sincronizados: el
+ *     precio es del ítem que quedó activo, con la cantidad que quedó.
+ *  6. Se refresca el resumen ejecutivo (`persistirResumen`), que es una lectura
  *     del estado que se acaba de sincronizar.
  *
- * `deps.resumen = false` saltea el paso 4, y lo usa **solo** `procesarLamina`:
+ * `deps.resumen = false` saltea el paso 6, y lo usa **solo** `procesarLamina`:
  * ahí el recompute corre una vez por lámina y `procesarDocumento` rehace el
  * resumen una sola vez al final, con todas analizadas. Publicar N resúmenes a
  * medio hacer sería ruido en `auditoria` y en la pantalla.
@@ -921,55 +1236,96 @@ export async function recomputarObra(
   const [obra] = await db.select().from(obras).where(eq(obras.id, obraId));
   if (!obra) throw new ObraInexistenteError(obraId);
 
-  const [filas, decididas, planos, config] = await Promise.all([
+  const [filas, decididas, planos, config, datos] = await Promise.all([
     db.select().from(entidades).where(eq(entidades.obraId, obraId)),
     db.select().from(deducciones).where(eq(deducciones.obraId, obraId)),
     laminasResumen(db, obraId),
     leerConfig(db, obra.estudioId),
+    datosDeObra(db, obraId),
   ]);
 
-  const { entidades: persistidas, camposDeducidos, contradichas } = aplicarDeduccionesValidadas(
-    filas.map(comoEntidadPersistida),
-    decididas,
+  const crudas = filas.map(comoEntidadPersistida);
+  const yaDecidido = aplicarDeduccionesValidadas(crudas, decididas);
+  // El motor deduce sobre el estado real de conocimiento de la obra: un dato ya
+  // validado es un dato, y puede sostener la deducción siguiente.
+  const { propuestas, inconsistencias } = deducir(yaDecidido.entidades, planos);
+
+  // Lo que **nace** validado se aplica en ESTA corrida, no en la siguiente: una
+  // deducción determinista con fuentes es un dato, y hacer esperar al cómputo
+  // hasta el próximo recompute dejaba la planilla mintiendo por omisión.
+  //
+  // Solo los nacimientos: una fila que ya existe manda ella. Si está validada o
+  // rechazada, es una decisión y entró por `decididas`; si está en `propuesta`
+  // —el cruce por debajo del umbral, o una fila que alguien dejó esperando— el
+  // cómputo tiene que verse como la bandeja la muestra, y no aplicarse a
+  // escondidas.
+  const yaExiste = new Set(decididas.map(claveDeDeduccion));
+  const nacenValidadas = propuestas.filter(
+    (propuesta) =>
+      !yaExiste.has(claveDeDeduccion(propuesta)) &&
+      estadoInicialDeduccion(propuesta.confianza, propuesta.regla) === 'validada',
   );
-  // Dos cosas que el motor no adivina y el pipeline sí sabe:
+  const { entidades: persistidas, camposDeducidos, contradichas } =
+    nacenValidadas.length === 0
+      ? yaDecidido
+      : aplicarDeduccionesValidadas(crudas, [
+          ...decididas,
+          ...nacenValidadas.map((propuesta) => comoFilaValidada(obraId, propuesta)),
+        ]);
+
+  // El mismo tabique dibujado en la planta y cortado en el corte es UNO
+  // (§5.3): sin esto se computa dos veces en cuanto lo deducido entra solo. Va
+  // después del overlay —las deducciones siguen apuntando a las filas reales— y
+  // antes de computar. `deducir()` corre sobre las entidades **sin** unificar a
+  // propósito: sus reglas son las que cruzan una lámina con la otra.
+  const { entidades: unificadas, conflictos, aportes } = unificarPorElemento(persistidas);
+  const camposUnificados = mergearAportes(camposDeducidos, aportes);
+
+  // Tres cosas que el motor no adivina y el pipeline sí sabe:
   //  - `plantillasConConfig(config)`: el desperdicio por rubro es configurable
   //    por estudio (P2 del PRD), y sin esto el formulario de configuración
   //    guardaba un número que no cambiaba ningún ítem;
   //  - `planos`: sin el tipo de cada lámina, la misma carpintería dibujada en la
   //    planta y listada en la planilla se contaría dos veces
-  //    (ver `src/lib/rubros/aberturas.ts`).
+  //    (ver `src/lib/rubros/aberturas.ts`);
+  //  - `datos`: los hechos que valen para toda la obra (§5.2), que son el
+  //    respaldo de un campo que la entidad no trae — sin ellos, cuatro tabiques
+  //    del mismo local abren cuatro consultas por la misma altura.
   const { items, hallazgos: detectados } = computarObraConPlantillas(
-    persistidas,
+    unificadas,
     obra.tipo,
     plantillasConConfig(config),
-    { camposDeducidos, laminas: planos },
+    { camposDeducidos: camposUnificados, laminas: planos, datosObra: datos },
   );
-  // El motor deduce sobre el estado real de conocimiento de la obra: un dato ya
-  // validado es un dato, y puede sostener la deducción siguiente.
-  const { propuestas, inconsistencias } = deducir(persistidas, planos);
 
   // Las contradicciones son hallazgos como cualquier otro: se emiten en esta
-  // misma pasada, así que el conciliador las abre y las cierra solo.
+  // misma pasada, así que el conciliador las abre y las cierra solo. Lo mismo
+  // vale para lo que quedó en pugna al unificar.
   const superadas = contradichas.map(hallazgoContradiccion);
+  const porId = new Map(persistidas.map((entidad) => [entidad.id, entidad]));
+  const enPugna = conflictos.map((conflicto) => hallazgoUnificacion(conflicto, porId));
 
   const resumen = resumenVacio();
   await sincronizarItems(db, obraId, items, resumen);
   await sincronizarHallazgos(
     db,
     obraId,
-    [...detectados, ...inconsistencias, ...superadas],
+    [...detectados, ...inconsistencias, ...superadas, ...enPugna],
     resumen,
   );
   await sincronizarDeducciones(db, obraId, propuestas, resumen);
   await sincronizarContradicciones(db, obraId, decididas, contradichas, resumen);
+  // Al final y sobre lo ya escrito: el precio es del ítem que quedó activo, con
+  // la cantidad que quedó (§5.6).
+  await sincronizarPrecios(db, obra, resumen);
 
   const huboCambios = Object.values(resumen).some((n) => n > 0);
   if (huboCambios) {
     await auditar(obraId, 'computo_recalculado', `obras:${obraId}`, {
       entidades: filas.length,
       items: items.length,
-      hallazgos: detectados.length + inconsistencias.length + superadas.length,
+      hallazgos:
+        detectados.length + inconsistencias.length + superadas.length + enPugna.length,
       deducciones: propuestas.length,
       ...resumen,
     });

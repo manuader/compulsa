@@ -14,6 +14,7 @@ import { useState, useTransition } from 'react';
 
 import { anularItemAction, editarItemAction } from '@/app/obras/[obraId]/computo/actions';
 import { textoEscalaAsumida, type EscalaAsumida } from '@/components/planilla/escala-asumida';
+import type { PrecioPlanilla } from '@/components/planilla/precio';
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -44,7 +45,31 @@ export interface ItemPlanilla {
    * el número de esta fila puede estar tan afuera como lo esté la escala.
    */
   escalaAsumida: EscalaAsumida | null;
+  /**
+   * El precio del ítem, **ya formateado en es-AR** por el server (§8 de
+   * `src/app/CLAUDE.md`): unitario, subtotal (unitario × cantidad de compra) y
+   * de dónde salió, para el tooltip.
+   *
+   * `null` ⇒ no hay con qué valorizarlo. Un cero se leería como "no cuesta
+   * nada", que es una afirmación que nadie hizo.
+   */
+  precio: PrecioPlanilla | null;
+  /**
+   * El mismo precio unitario, como hay que meterlo en el input: coma decimal y
+   * **sin separador de miles** (mismo criterio que `/estudio/precios`, para que
+   * abrir la fila y guardarla sin tocarla no convierta 145.000 en 145). Vacío ⇒
+   * el ítem no tiene precio.
+   */
+  precioEditable: string;
+  /**
+   * Por qué este ítem no es explícito, con su fuente o su método, para el
+   * tooltip del badge de origen. `null` cuando el dato está escrito en la
+   * documentación y no hay nada que advertir.
+   */
+  origenDetalle: string | null;
 }
+
+export type { PrecioPlanilla };
 
 const ETIQUETA_ORIGEN: Record<Origen, string> = {
   explicito: 'Explícito',
@@ -81,11 +106,13 @@ export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
   const [descripcion, setDescripcion] = useState(item.descripcion);
   const [cantNeta, setCantNeta] = useState(formatearNumero(item.cantNeta));
   const [desperdicioPct, setDesperdicioPct] = useState(formatearNumero(item.desperdicioPct));
+  const [precioUnitario, setPrecioUnitario] = useState(item.precioEditable);
 
   function cancelar(): void {
     setDescripcion(item.descripcion);
     setCantNeta(formatearNumero(item.cantNeta));
     setDesperdicioPct(formatearNumero(item.desperdicioPct));
+    setPrecioUnitario(item.precioEditable);
     setError(null);
     setEditando(false);
   }
@@ -99,6 +126,10 @@ export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
         descripcion,
         cantNeta,
         desperdicioPct,
+        // Solo si la persona lo tocó: mandarlo siempre convertiría el precio de
+        // la lista en un precio "cargado a mano" por el solo hecho de haber
+        // abierto la fila para corregir una cantidad.
+        ...(precioUnitario === item.precioEditable ? {} : { precioUnitario }),
       });
       if (resultado.ok) setEditando(false);
       else setError(resultado.error);
@@ -188,8 +219,44 @@ export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
 
         <TableCell>{item.presentacion}</TableCell>
 
+        {/* El precio no se recalcula acá: lo resuelve el recompute con la
+            cascada del §5.6 y esta celda lo muestra con de dónde salió. Sin
+            precio va un guion, no un cero. */}
+        <TableCell numeric>
+          {editando ? (
+            <Input
+              aria-label="Precio unitario"
+              inputMode="decimal"
+              className="w-28 text-right"
+              placeholder="sin precio"
+              value={precioUnitario}
+              onChange={(evento) => setPrecioUnitario(evento.target.value)}
+              disabled={pendiente}
+            />
+          ) : item.precio ? (
+            <span title={item.precio.detalle}>{item.precio.unitario}</span>
+          ) : (
+            <span
+              className="text-neutral-400"
+              title="Sin precio: este ítem no está en la lista del estudio ni tiene muestras en el índice."
+            >
+              —
+            </span>
+          )}
+        </TableCell>
+
+        <TableCell numeric className="font-medium">
+          {item.precio ? (
+            <span title={item.precio.detalle}>{item.precio.subtotal}</span>
+          ) : (
+            <span className="text-neutral-400">—</span>
+          )}
+        </TableCell>
+
         <TableCell>
-          <Badge tone={TONO_ORIGEN[item.origen]}>{ETIQUETA_ORIGEN[item.origen]}</Badge>
+          <Badge tone={TONO_ORIGEN[item.origen]} title={item.origenDetalle ?? undefined}>
+            {ETIQUETA_ORIGEN[item.origen]}
+          </Badge>
         </TableCell>
 
         <TableCell numeric>
@@ -253,7 +320,7 @@ export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
 
       {error ? (
         <TableRow>
-          <TableCell colSpan={10} className="bg-red-50 text-sm text-red-800">
+          <TableCell colSpan={12} className="bg-red-50 text-sm text-red-800">
             {error}
           </TableCell>
         </TableRow>

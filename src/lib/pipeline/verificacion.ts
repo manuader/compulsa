@@ -32,10 +32,13 @@ import { and, eq } from 'drizzle-orm';
 import type { Db } from '@/db/client';
 import {
   computoItems,
+  deducciones,
   documentos,
+  entidades,
   hallazgos,
   laminas,
   obras,
+  type Deduccion,
   type Hallazgo,
   type NuevoHallazgo,
 } from '@/db/schema';
@@ -53,7 +56,12 @@ import { hallazgoInconsistencia } from '@/lib/hallazgos/taxonomia';
 import { claveVerificacion, PREFIJO_VERIFICACION } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
 import { tieneBBoxUtil } from '@/lib/pipeline/procesar';
-import { ACTOR_PIPELINE, ObraInexistenteError } from '@/lib/pipeline/recomputar';
+import {
+  ACTOR_PIPELINE,
+  aplicarDeduccionesValidadas,
+  datosDeObra,
+  ObraInexistenteError,
+} from '@/lib/pipeline/recomputar';
 import { requireRolCore, type UsuarioConRol } from '@/lib/plataforma/roles';
 import { getStorage, type StorageAdapter } from '@/lib/storage/index';
 import type { Fuente, ItemComputo, LaminaInput, RubroId, TipoObra, Unidad } from '@/types/domain';
@@ -471,6 +479,47 @@ async function sincronizarConsultas(
 // Entrada pública
 // ---------------------------------------------------------------------------
 
+/**
+ * Las deducciones de la obra, apuntando a las entidades **de la segunda pasada**.
+ *
+ * La segunda lectura no persiste nada, así que sus entidades no tienen el id de
+ * la base sino el sintético de `idSintetico()`. Una deducción apunta al id real,
+ * y sin traducirlo el overlay no engancharía con ninguna: la verificación
+ * computaría sin los datos deducidos y reportaría como diferencia cada ítem que
+ * se apoya en uno.
+ *
+ * La traducción es por `(lámina, tipo, nombre)`, que es exactamente la identidad
+ * con la que la segunda pasada reconoce una entidad. Una deducción sobre una
+ * entidad que la segunda lectura no volvió a ver se cae acá, y está bien: eso
+ * **sí** es una diferencia entre las dos lecturas y tiene que aparecer.
+ */
+async function conIdSintetico(
+  db: Db,
+  obraId: string,
+  filas: readonly Deduccion[],
+): Promise<Deduccion[]> {
+  if (filas.length === 0) return [];
+  const persistidas = await db
+    .select({
+      id: entidades.id,
+      laminaId: entidades.laminaId,
+      tipo: entidades.tipo,
+      nombre: entidades.nombre,
+    })
+    .from(entidades)
+    .where(eq(entidades.obraId, obraId));
+
+  const sintetico = new Map(
+    persistidas.map((fila) => [fila.id, idSintetico(fila.laminaId, fila.tipo, fila.nombre)]),
+  );
+  const traducidas: Deduccion[] = [];
+  for (const fila of filas) {
+    const id = sintetico.get(fila.entidadId);
+    if (id !== undefined) traducidas.push({ ...fila, entidadId: id });
+  }
+  return traducidas;
+}
+
 function comoItemDelComputo(item: ItemComputo): ItemDelComputo {
   return {
     claveItem: item.claveItem,
@@ -503,16 +552,39 @@ export async function verificarComputo(
   const storage = deps.storage ?? getStorage();
   const provider = deps.provider ?? getProviderSegundaPasada();
 
-  const { entidades, laminasLeidas, laminas: laminasReleidas } = await segundaLectura(
+  const { entidades: releidas, laminasLeidas, laminas: laminasReleidas } = await segundaLectura(
     db,
     obra,
     storage,
     provider,
   );
+
+  // Las dos pasadas tienen que computar con el MISMO conocimiento de la obra:
+  // lo único que puede diferir es lo que se leyó de las láminas. Sin esto, cada
+  // dato que aportó una deducción o un dato de obra aparecía como «el cómputo
+  // lo tiene y la segunda lectura no» — una diferencia del harness, no de la
+  // documentación (y con la auto-validación del §5.4, seis por obra).
+  const decididas = await db
+    .select()
+    .from(deducciones)
+    .where(eq(deducciones.obraId, obra.id));
+  const { entidades: conDeducciones, camposDeducidos } = aplicarDeduccionesValidadas(
+    releidas,
+    await conIdSintetico(db, obra.id, decididas),
+  );
+  const datos = await datosDeObra(db, obra.id);
+
   // Sin persistir nada: la segunda pasada es una hipótesis, no el estado de la obra.
   // Las láminas van igual que en el recompute: si la segunda pasada contara las
   // carpinterías con otra regla, la diferencia sería del harness, no de la obra.
-  const { items } = computarObra(entidades, obra.tipo, undefined, undefined, laminasReleidas);
+  const { items } = computarObra(
+    conDeducciones,
+    obra.tipo,
+    undefined,
+    camposDeducidos,
+    laminasReleidas,
+    datos,
+  );
   const verificacion = items.map(comoItemDelComputo);
 
   const filas = await db

@@ -30,6 +30,7 @@ import { registrarAuditoria } from '@/lib/audit';
 import { requireObra, requireObraCore, requireUser } from '@/lib/auth/guards';
 import { redondear2 } from '@/lib/computo/unidades';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
+import { igualJson } from '@/lib/pipeline/json';
 import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
 import {
   requireAccion,
@@ -37,6 +38,8 @@ import {
   UsuarioInactivoError,
   type AccionConRol,
 } from '@/lib/plataforma/roles';
+import { fechaHoyIso } from '@/lib/precios/gestion';
+import { parsearPrecio } from '@/lib/precios/import-csv';
 import { PLANTILLAS } from '@/lib/rubros/index';
 import {
   numeroEsAr,
@@ -44,7 +47,13 @@ import {
   type CompraCalculada,
   type EntradaCompra,
 } from '@/lib/rubros/overrides';
-import { RUBROS, UNIDADES, type RolUsuario, type RubroId } from '@/types/domain';
+import {
+  RUBROS,
+  UNIDADES,
+  type PrecioEstimado,
+  type RolUsuario,
+  type RubroId,
+} from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Resultado que ven las pantallas
@@ -140,6 +149,16 @@ const zEdicion = z.object({
   descripcion: z.string().trim().min(1, 'La descripción no puede quedar vacía.').max(200).optional(),
   cantNeta: z.string().optional(),
   desperdicioPct: z.string().optional(),
+  /**
+   * El precio unitario que carga el arquitecto, en es-AR (`12.500,50`).
+   *
+   * Ausente ⇒ no se toca. Vacío ⇒ se borra el precio manual y se recompone la
+   * cascada en el acto (lista del estudio → índice). Es la **única**
+   * puerta por la que entra un `precio_json` con `fuente: 'manual'`: el resto
+   * de los precios los pone `sincronizarPrecios` desde tablas que cargó una
+   * persona, y la IA no participa en ninguno de los dos caminos (§5.6).
+   */
+  precioUnitario: z.string().optional(),
 });
 
 const zAnulacion = z.object({ obraId: zUuid, itemId: zUuid });
@@ -204,7 +223,7 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
   if (!parseo.success) {
     return { ok: false, error: primerError(parseo.error, 'No pude leer los datos del ítem.') };
   }
-  const { obraId, itemId, descripcion, cantNeta, desperdicioPct } = parseo.data;
+  const { obraId, itemId, descripcion, cantNeta, desperdicioPct, precioUnitario } = parseo.data;
 
   const { usuario } = await requireUser();
   const permiso = chequearRol(usuario, 'editar_computo');
@@ -263,12 +282,43 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
     presentacion: compra.presentacion,
   };
 
+  // El precio va aparte de las cantidades a propósito. Editar una cantidad es
+  // el arquitecto afirmando algo sobre la obra, y por eso marca `editado_por` y
+  // congela la fila para el recompute; poner un precio no dice nada de la obra,
+  // así que no la congela — lo que sí hace es ganarle a la cascada para siempre
+  // (`resolverPrecio`, primer escalón).
+  let precioNuevo: PrecioEstimado | null | undefined;
+  if (precioUnitario !== undefined) {
+    const limpio = precioUnitario.trim();
+    if (limpio === '') {
+      precioNuevo = null; // volver a la lista: el próximo recompute lo repone
+    } else {
+      const valor = parsearPrecio(limpio);
+      if (valor === null || valor <= 0) {
+        return { ok: false, error: 'El precio unitario tiene que ser un número mayor que cero (ej.: 12.500,50).' };
+      }
+      precioNuevo = {
+        unitario: redondear2(valor),
+        moneda: obra.moneda,
+        fuente: 'manual',
+        fechaPrecio: fechaHoyIso(),
+      };
+    }
+  }
+  const cambiaPrecio = precioNuevo !== undefined && !igualJson(item.precioJson, precioNuevo);
+
   const diff = await diffDeItem(antes, despues);
-  if (Object.keys(diff).length === 0) return { ok: true };
+  const cambiaItem = Object.keys(diff).length > 0;
+  if (!cambiaItem && !cambiaPrecio) return { ok: true };
 
   await db
     .update(computoItems)
-    .set({ ...despues, editadoPor: usuario.id, updatedAt: new Date() })
+    .set({
+      ...despues,
+      ...(cambiaItem ? { editadoPor: usuario.id } : {}),
+      ...(cambiaPrecio ? { precioJson: precioNuevo ?? null } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(computoItems.id, item.id));
 
   await registrarAuditoria({
@@ -277,8 +327,20 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
     actorNombre: usuario.email,
     accion: 'computo_item_editado',
     targetRef: `computo_items:${item.claveItem}`,
-    diff,
+    diff: cambiaPrecio
+      ? { ...diff, precio: { antes: item.precioJson, despues: precioNuevo ?? null } }
+      : diff,
   });
+
+  // Borrar el precio manual es pedir explícitamente «volvé a la lista»: sin
+  // esto el ítem se quedaba sin precio hasta que algo más disparara un
+  // recompute, y el arquitecto veía un guion donde esperaba el precio de la
+  // lista. Solo en ese caso: recomputar en cada edición de precio sería pagar
+  // una corrida entera para escribir un número que ya tenemos.
+  if (precioNuevo === null && cambiaPrecio) {
+    const { recomputarObra } = await import('@/lib/pipeline/recomputar');
+    await recomputarObra(obra.id, { db });
+  }
 
   await revalidarPlanilla(obra.id);
   return { ok: true };
