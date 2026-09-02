@@ -214,9 +214,9 @@ describe('generarXlsx', () => {
 
     // En la consolidada todo corre una columna (la de rubro va adelante).
     const cons = wb.getWorksheet('Consolidado')!;
-    expect(cons.getCell('A5').value).toBe('TOTAL GENERAL');
+    expect(cons.getCell('A5').value).toBe('Total general');
     expect(cons.getCell('N5').value).toBe(435_625);
-    expect(cons.getCell('P5').value).toBe('no incluye 1 ítem sin precio');
+    expect(cons.getCell('P5').value).toBe('No incluye 1 ítem sin precio.');
   });
 
   it('sin ningún ítem con precio no dibuja fila de total: el cero mentiría', async () => {
@@ -271,7 +271,7 @@ describe('generarXlsx', () => {
     // fila de total: ninguno de sus ítems tiene precio, y un total en cero
     // sería una afirmación que nadie hizo.
     expect(cons.rowCount).toBe(5);
-    expect(cons.getCell('A5').value).toBe('TOTAL GENERAL');
+    expect(cons.getCell('A5').value).toBe('Total general');
   });
 
   it('deja el disclaimer profesional, la obra y la leyenda de orígenes en Referencias', async () => {
@@ -294,6 +294,22 @@ describe('generarXlsx', () => {
     expect(plano).toContain('Explícito');
     expect(plano).toContain('Deducido');
     expect(plano).toContain('Supuesto');
+  });
+
+  it('el total estimado se escribe en es-AR, no en formato máquina', async () => {
+    // Salía `ARS 396000.00` —punto decimal, sin separador de miles, la moneda
+    // en código ISO— en el único lugar del libro donde se lee el total de la
+    // obra, mientras toda la app escribe `$ 396.000`.
+    const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
+    const ref = wb.getWorksheet('Referencias')!;
+
+    const valores: string[] = [];
+    ref.eachRow((row) => row.eachCell((cell) => valores.push(String(cell.value ?? ''))));
+
+    const total = valores.find((valor) => valor.startsWith('$'));
+    expect(total).toBeDefined();
+    expect(total).toMatch(/^\$ [\d.]+(,\d{2})?$/);
+    expect(valores.some((valor) => valor.startsWith('ARS '))).toBe(false);
   });
 
   it('con un rubro pedido exporta solo esa hoja y las referencias', async () => {

@@ -15,14 +15,19 @@
  * se lee como "acá no había que mirar", y el documento existe justamente para
  * que el hueco se vea. Vacía dice `— nada registrado —` y se acabó.
  *
- * ## Por qué no importa `deduccion/memoria.ts`
+ * ## Los nombres de las cosas salen de un solo lado
  *
- * La memoria de deducciones (RF-505) es el otro documento del estudio y sus
- * títulos de regla son los mismos, pero traerlos de ahí arrastra
- * `deduccion/motor` —y con él las cinco reglas del §11— adentro del grafo de un
- * route que solo quiere imprimir texto. La duplicación es de siete strings y el
- * `Record<ReglaDeduccion, string>` la hace un error de compilación el día que
- * aparezca una regla nueva, que es exactamente la garantía que hacía falta.
+ * `alturaM`, `altura_local.PB`, `dato_obra.altura_local.PB` son identificadores
+ * nuestros. En un documento que el arquitecto puede llegar a adjuntar a un
+ * legajo no van: los traduce el mismo par de funciones que las pantallas
+ * (`etiquetaCampo` de `deduccion/motor`, `etiquetaDeDatoObra` de la taxonomía).
+ * Que el `.md` y la bandeja llamen distinto a la misma cosa es peor que un
+ * import de más.
+ *
+ * Los **títulos de regla** sí siguen duplicados acá (`ETIQUETA_REGLA`): traerlos
+ * de `deduccion/memoria.ts` arrastra ese módulo entero por siete strings, y el
+ * `Record<ReglaDeduccion, string>` hace del olvido un error de compilación el
+ * día que aparezca una regla nueva.
  *
  * Números en es-AR (`2,6 m`, `80%`): el que lee esto es una persona, no un
  * modelo. La compacta (`compacta.ts`) hace lo contrario, y a propósito.
@@ -31,10 +36,12 @@
  */
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { ETIQUETA_UNIDAD, formatearNumero } from '@/lib/computo/unidades';
+import { etiquetaCampo } from '@/lib/deduccion/motor';
+import { etiquetaDeDatoObra, PREFIJO_DATO_OBRA } from '@/lib/hallazgos/taxonomia';
 import {
   agruparPorLamina,
-  refDeLamina,
-  refsDeFuentes,
+  etiquetaDeLamina,
+  etiquetasDeFuentes,
   SIN_REGISTRO,
   type DeduccionDeMemoria,
   type EntradaMemoria,
@@ -110,7 +117,7 @@ const ETIQUETA_TIPO_ENTIDAD: Record<TipoEntidad, string> = {
   terminacion: 'Terminación',
   cota: 'Cota',
   otro: 'Otro',
-  tramo: 'Tramo',
+  tramo: 'Tramo de cañería',
   accesorio: 'Accesorio',
   boca: 'Boca',
 };
@@ -205,7 +212,7 @@ function documentacion(laminas: readonly LaminaDeMemoria[]): string[] {
   return tabla(
     ['Lámina', 'Título', 'Tipo', 'Escala', 'Estado'],
     laminas.map((lamina) => [
-      refDeLamina(lamina),
+      etiquetaDeLamina(lamina),
       lamina.titulo ?? VACIO,
       lamina.tipo === null ? VACIO : ETIQUETA_TIPO_LAMINA[lamina.tipo],
       escala(lamina),
@@ -228,7 +235,7 @@ function datosDeObra(entrada: EntradaMemoria): string[] {
   return tabla(
     ['Dato', 'Valor', 'Origen', 'Confianza', 'Fuentes', 'Método'],
     entrada.datosObra.map((dato) => [
-      dato.clave,
+      etiquetaDeDatoObra(dato.clave),
       valorDeDato(dato),
       ETIQUETA_ORIGEN[dato.origen],
       porcentaje(dato.confianza),
@@ -244,7 +251,7 @@ function valorDeDato(dato: DatoObraResuelto): string {
 }
 
 function citar(dato: DatoObraResuelto, entrada: EntradaMemoria): string {
-  const refs = refsDeFuentes(dato.fuentes, entrada.laminas);
+  const refs = etiquetasDeFuentes(dato.fuentes, entrada.laminas);
   return refs.length === 0 ? VACIO : refs.join(', ');
 }
 
@@ -252,7 +259,7 @@ function citar(dato: DatoObraResuelto, entrada: EntradaMemoria): string {
 function elementos(entrada: EntradaMemoria): string[] {
   const grupos = agruparPorLamina(entrada).map((grupo) =>
     [
-      `### ${grupo.ref}`,
+      `### ${grupo.etiqueta}`,
       '',
       ...tabla(
         ['Elemento', 'Tipo', 'Estado', 'Atributos'],
@@ -269,11 +276,20 @@ function elementos(entrada: EntradaMemoria): string[] {
   return grupos.length === 0 ? [] : [grupos.join('\n\n')];
 }
 
-/** `largoM = 3; alturaM = 2,6` — lo que nadie leyó (`null`) no es un atributo. */
+/**
+ * `largo = 3; altura = 2,60 m` — lo que nadie leyó (`null`) no es un atributo.
+ *
+ * Los nombres de campo salen de `etiquetaCampo`, el mismo traductor que usa la
+ * bandeja: acá salía `largoM = 3; alturaM = 2,6`, camelCase y todo, en el
+ * documento que se adjunta al legajo.
+ */
 function atributos(entidad: EntidadPersistida): string {
   const pares = Object.entries(entidad.atributos)
     .filter(([, valor]) => valor !== null)
-    .map(([clave, valor]) => `${clave} = ${typeof valor === 'number' ? formatearNumero(valor) : valor}`);
+    .map(
+      ([clave, valor]) =>
+        `${etiquetaCampo(clave)} = ${typeof valor === 'number' ? formatearNumero(valor) : valor}`,
+    );
   return pares.length === 0 ? VACIO : pares.join('; ');
 }
 
@@ -289,7 +305,7 @@ function relaciones(deducciones: readonly DeduccionDeMemoria[]): string[] {
     ['Elemento', 'Campo', 'Regla', 'Confianza', 'Estado', 'Lámina'],
     deducciones.map((deduccion) => [
       deduccion.entidadNombre,
-      deduccion.campo,
+      etiquetaCampo(deduccion.campo),
       ETIQUETA_REGLA[deduccion.regla],
       porcentaje(deduccion.confianza),
       ETIQUETA_ESTADO_DEDUCCION[deduccion.estado],
@@ -298,13 +314,31 @@ function relaciones(deducciones: readonly DeduccionDeMemoria[]): string[] {
   );
 }
 
+/**
+ * Cómo se nombra una consulta en la columna «Consulta».
+ *
+ * La clave es el identificador estable (`dato_obra.altura_local.PB`,
+ * `seco.altura_tabiques.T2`) y por eso se conserva la de rubro, que se lee como
+ * lo que es. La de dato de obra, en cambio, lleva el prefijo del namespace
+ * adelante y se traduce: «Altura de local en PB».
+ */
+function nombreDeConsulta(clave: string): string {
+  return clave.startsWith(PREFIJO_DATO_OBRA)
+    ? etiquetaDeDatoObra(clave.slice(PREFIJO_DATO_OBRA.length))
+    : clave;
+}
+
 /** Lo que la documentación dice dos veces y distinto (§17). */
 function conflictos(hallazgos: readonly HallazgoDeMemoria[]): string[] {
   const filas = hallazgos.filter((hallazgo) => hallazgo.tipo === 'inconsistencia');
   if (filas.length === 0) return [];
   return tabla(
     ['Consulta', 'Descripción', 'Bloquea'],
-    filas.map((hallazgo) => [hallazgo.clave, hallazgo.descripcion, siNo(hallazgo.bloqueante)]),
+    filas.map((hallazgo) => [
+      nombreDeConsulta(hallazgo.clave),
+      hallazgo.descripcion,
+      siNo(hallazgo.bloqueante),
+    ]),
   );
 }
 
@@ -315,7 +349,7 @@ function faltantes(hallazgos: readonly HallazgoDeMemoria[]): string[] {
   return tabla(
     ['Consulta', 'Tipo', 'Descripción', 'Bloquea'],
     filas.map((hallazgo) => [
-      hallazgo.clave,
+      nombreDeConsulta(hallazgo.clave),
       ETIQUETA_TIPO_HALLAZGO[hallazgo.tipo],
       hallazgo.descripcion,
       siNo(hallazgo.bloqueante),
@@ -336,13 +370,18 @@ function inferidos(entrada: EntradaMemoria): string[] {
     .filter((dato) => dato.origen === 'inferido')
     // Sin `metodo` no se inventa uno: un método que nadie registró es
     // justamente lo que hay que ir a preguntar.
-    .map((dato) => [dato.clave, valorDeDato(dato), dato.metodo ?? VACIO, porcentaje(dato.confianza)]);
+    .map((dato) => [
+      etiquetaDeDatoObra(dato.clave),
+      valorDeDato(dato),
+      dato.metodo ?? VACIO,
+      porcentaje(dato.confianza),
+    ]);
   const deMedidas = entrada.deducciones
     .filter(
       (deduccion) => deduccion.regla === 'medicion_grafica' && deduccion.estado !== 'rechazada',
     )
     .map((deduccion) => [
-      `${deduccion.entidadNombre} · ${deduccion.campo}`,
+      `${deduccion.entidadNombre} · ${etiquetaCampo(deduccion.campo)}`,
       VACIO,
       ETIQUETA_REGLA.medicion_grafica,
       porcentaje(deduccion.confianza),

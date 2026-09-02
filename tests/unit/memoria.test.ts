@@ -29,6 +29,7 @@ const BBOX: BBox = [0.1, 0.2, 0.3, 0.05];
 const LAMINAS: EntradaMemoria['laminas'] = [
   {
     id: 'lam-1',
+    numeroPagina: 1,
     codigo: 'A-01',
     titulo: 'Planta baja',
     tipo: 'planta',
@@ -38,6 +39,7 @@ const LAMINAS: EntradaMemoria['laminas'] = [
   },
   {
     id: 'lam-2',
+    numeroPagina: 2,
     codigo: 'A-02',
     titulo: 'Corte AA',
     tipo: 'corte',
@@ -47,6 +49,7 @@ const LAMINAS: EntradaMemoria['laminas'] = [
   },
   {
     id: 'lam-3',
+    numeroPagina: 3,
     codigo: null,
     titulo: null,
     tipo: null,
@@ -148,6 +151,14 @@ const HALLAZGOS: EntradaMemoria['hallazgosAbiertos'] = [
     clave: 'cruce.conflicto.ab12cd34',
     tipo: 'inconsistencia',
     descripcion: 'El corte dice 2,60 y la planta 2,80.',
+    bloqueante: false,
+  },
+  {
+    // Una consulta de dato de obra: su clave lleva adelante el namespace, que
+    // es lo último que quiere leer alguien en un documento del legajo.
+    clave: 'dato_obra.altura_local.1P',
+    tipo: 'faltante',
+    descripcion: 'Falta la altura de local del primer piso.',
     bloqueante: false,
   },
 ];
@@ -293,30 +304,38 @@ describe('renderMemoriaMd: las 7 secciones del §27', () => {
 
     expect(md).toContain('| A-01 | Planta baja | Planta | 1:50 (confirmada) | Analizada |');
     expect(md).toContain('| A-02 | Corte AA | Corte | 1:50 (asumida) | Analizada |');
-    expect(md).toContain('| lam-3 | — | — | sin escala | Bloqueada por escala |');
+    // Una lámina sin código leído se nombra por su página, como en toda la app:
+    // acá salía su uuid, en un documento que se adjunta al legajo.
+    expect(md).toContain('| Página 3 | — | — | sin escala | Bloqueada por escala |');
+    expect(md).not.toContain('lam-3');
   });
 
   it('los datos de obra van con su origen, su confianza y las láminas que los sostienen', () => {
     const md = renderMemoriaMd(OBRA);
 
-    expect(md).toContain('| altura_local.PB | 2,6 m | Deducido | 80% | A-02 | — |');
+    // La clave es nuestra; el nombre del hecho es el que el arquitecto lee, y
+    // sale del mismo traductor que usa la bandeja.
+    expect(md).toContain('| Altura de local en PB | 2,6 m | Deducido | 80% | A-02 | — |');
   });
 
   it('los elementos van agrupados por lámina, con su estado de reforma', () => {
     const md = renderMemoriaMd(OBRA);
 
     expect(md).toContain('### A-01');
-    expect(md).toContain('| T1 | Tabique | — | largoM = 4 |');
-    expect(md).toContain('| M1 | Muro | A demoler | largoM = 3; alturaM = 2,6; tipo = mamposteria |');
-    expect(md).toContain('### lam-3');
+    // Los nombres de campo también se traducen: salían `largoM = 3; alturaM = 2,6`.
+    expect(md).toContain('| T1 | Tabique | — | largo = 4 |');
+    expect(md).toContain(
+      '| M1 | Muro | A demoler | largo = 3; altura = 2,6; tipo = mamposteria |',
+    );
+    expect(md).toContain('### Página 3');
   });
 
   it('las relaciones y deducciones nombran la regla en criollo y su estado', () => {
     const md = renderMemoriaMd(OBRA);
 
-    expect(md).toContain('| T1 | alturaM | Planta ↔ corte | 80% | Validada | A-02 |');
+    expect(md).toContain('| T1 | altura | Planta ↔ corte | 80% | Validada | A-02 |');
     // La propuesta también se muestra: es una relación leída, todavía sin decidir.
-    expect(md).toContain('| V1 | anchoM | Ídem tipología | 60% | Propuesta | A-01 |');
+    expect(md).toContain('| V1 | ancho | Ídem tipología | 60% | Propuesta | A-01 |');
   });
 
   it('separa conflictos de información faltante por el tipo del hallazgo', () => {
@@ -328,6 +347,10 @@ describe('renderMemoriaMd: las 7 secciones del §27', () => {
     expect(conflictos).not.toContain('seco.altura_tabiques.T2');
     expect(faltante).toContain('| seco.altura_tabiques.T2 | Faltante | Falta la altura del tabique T2. | Sí |');
     expect(faltante).not.toContain('cruce.conflicto.ab12cd34');
+    // La de rubro conserva su clave —se lee como lo que es—; la de dato de obra
+    // se traduce, porque su clave es puro namespace nuestro.
+    expect(faltante).toContain('| Altura de local en 1P | Faltante |');
+    expect(faltante).not.toContain('dato_obra.altura_local.1P');
   });
 
   it('los datos inferidos van con su método, y la medición gráfica también', () => {
@@ -335,11 +358,11 @@ describe('renderMemoriaMd: las 7 secciones del §27', () => {
     const inferidos = seccion(md, 'Datos inferidos');
 
     expect(inferidos).toContain(
-      '| altura_revestimiento.general | 2 m | medición gráfica sobre el dibujo a escala 1:50 | 50% |',
+      '| Altura de revestimiento | 2 m | medición gráfica sobre el dibujo a escala 1:50 | 50% |',
     );
     // La medición gráfica de un campo de entidad: el valor vive en la planilla,
     // acá se cita el hecho y el método.
-    expect(inferidos).toContain('| M1 · largoM | — | Medición gráfica sobre el dibujo | 50% |');
+    expect(inferidos).toContain('| M1 · largo | — | Medición gráfica sobre el dibujo | 50% |');
     // Lo deducido por regla documental NO es inferido: no entra a esta sección.
     expect(inferidos).not.toContain('altura_local.PB');
   });

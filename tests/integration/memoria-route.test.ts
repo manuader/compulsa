@@ -279,7 +279,7 @@ describe('GET /api/obras/[obraId]/memoria: el documento', () => {
     expect(texto).toContain('| Corte AA | Corte | 1:50 (asumida) | Analizada |');
     // El elemento sale bajo su lámina, con el largo que trae el atributo.
     expect(texto).toContain('### A-01');
-    expect(texto).toContain('| T1 | Tabique | — | largoM = 4 |');
+    expect(texto).toContain('| T1 | Tabique | — | largo = 4 |');
   });
 
   it('el dato de obra cita su lámina, y el que cargó una persona no miente una fuente', async () => {
@@ -287,9 +287,9 @@ describe('GET /api/obras/[obraId]/memoria: el documento', () => {
 
     const texto = await (await pedir()).text();
 
-    expect(texto).toContain('| altura_local.PB | 2,6 m | Deducido | 80% |');
+    expect(texto).toContain('| Altura de local en PB | 2,6 m | Deducido | 80% |');
     // `fuentes_json` vacío es legítimo solo acá: lo cargó el arquitecto.
-    expect(texto).toContain('| nivel.PB | ±0,00 | Explícito | 100% | — | — |');
+    expect(texto).toContain('| Nivel en PB | ±0,00 | Explícito | 100% | — | — |');
   });
 
   it('la deducción se cita en la lámina donde se leyó el dato, no en la de la entidad', async () => {
@@ -298,10 +298,10 @@ describe('GET /api/obras/[obraId]/memoria: el documento', () => {
     const texto = await (await pedir()).text();
 
     // T1 vive en A-01, pero la altura salió del corte: esa es la lámina a abrir.
-    // El corte no tiene código leído, así que se nombra por su id (un uuid).
-    expect(texto).toMatch(
-      /\| T1 \| alturaM \| Planta ↔ corte \| 80% \| Validada \| [0-9a-f-]{36} \|/,
-    );
+    // El corte no tiene código leído, así que se nombra por su página — antes
+    // salía su uuid, que es lo que este arreglo vino a sacar del documento.
+    expect(texto).toContain('| T1 | altura | Planta ↔ corte | 80% | Validada | Página 2 |');
+    expect(texto).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
   });
 
   it('separa el conflicto de lo faltante y deja afuera lo ya respondido', async () => {
@@ -321,7 +321,7 @@ describe('GET /api/obras/[obraId]/memoria: el documento', () => {
     const texto = await (await pedir()).text();
 
     expect(texto).toContain(
-      '| altura_revestimiento.general | 2 m | medición gráfica sobre el dibujo a escala 1:50 | 50% |',
+      '| Altura de revestimiento | 2 m | medición gráfica sobre el dibujo a escala 1:50 | 50% |',
     );
     expect(texto).toContain('_La plataforma asiste');
   });
