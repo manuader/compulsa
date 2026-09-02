@@ -316,7 +316,11 @@ export async function SolapaRevisar({ obraId, regla, enlace }: SolapaRevisarProp
     if (metodo !== null && !mediciones.has(fila.entidadId)) mediciones.set(fila.entidadId, metodo);
   }
 
-  const inferidos: ItemInferidoVista[] = items.map((item) => ({
+  // Los ítems inferidos son la consecuencia de una medición gráfica, así que
+  // siguen al chip: filtrar por «planta ↔ corte» y seguir viéndolos abajo haría
+  // creer que salieron de esa regla.
+  const muestraInferidos = regla === null || regla === 'medicion_grafica';
+  const inferidos: ItemInferidoVista[] = (muestraInferidos ? items : []).map((item) => ({
     id: item.id,
     claveItem: item.claveItem,
     descripcion: item.descripcion,
