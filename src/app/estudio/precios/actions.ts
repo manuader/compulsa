@@ -147,11 +147,11 @@ export async function guardarPrecioAction(
     if (!resultado.ok) return { errores: resultado.errores, valores };
 
     await revalidar();
-    if (resultado.creado) return { mensaje: `Guardamos ${resultado.precio.claveItem}.` };
+    if (resultado.creado) return { mensaje: `Guardé el precio de ${resultado.precio.descripcion}.` };
     if (Object.keys(resultado.cambios).length === 0) {
       return { mensaje: 'No había nada que cambiar.' };
     }
-    return { mensaje: `Actualizamos ${resultado.precio.claveItem}.` };
+    return { mensaje: `Actualicé el precio de ${resultado.precio.descripcion}.` };
   } catch (error) {
     const mensaje = mensajeDeDominio(error);
     if (!mensaje) throw error;

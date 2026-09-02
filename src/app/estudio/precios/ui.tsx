@@ -32,6 +32,7 @@ import {
 } from '@/components/ui/table';
 // Puro y sin base: el preview del import corre en el navegador con la misma
 // función que después usa el server para persistir.
+import { fechaDePrecio } from '@/components/planilla/precio';
 import { importarCsvPrecios } from '@/lib/precios/import-csv';
 import { UNIDADES, type Unidad } from '@/types/domain';
 
@@ -77,10 +78,28 @@ const ETIQUETA_ORIGEN: Record<PrecioVista['origen'], string> = {
 
 const ESTADO_INICIAL: EstadoPrecio = {};
 
+/**
+ * El ejemplo del pegado, con **las claves que emiten las plantillas**.
+ *
+ * Antes decía `aberturas.ventana.dvh`, `seco.placa.durlock` y
+ * `pintura.latex.interior`: tres claves que no existen en ningún cómputo. Un
+ * ejemplo que enseña a cargar precios que después no matchean con nada es peor
+ * que no tener ejemplo — la cascada del §5.6 busca por `clave_item` exacta.
+ * Estas tres son las de `seco`, `pintura` y `gruesa`, y las mismas que siembra
+ * `scripts/seed.ts`.
+ */
 const EJEMPLO_CSV = `clave_item;descripcion;unidad;precio;fecha
-aberturas.ventana.dvh;Ventana corrediza DVH;m2;145000;2026-08-10
-seco.placa.durlock;Placa de durlock 12,5 mm;u;18500;
-pintura.latex.interior;Látex interior mate;l;"9.800,50";`;
+seco.placas;Placa de yeso 12,5 mm;m2;9800;2026-08-10
+pintura.latex_paredes;Látex interior para paredes;l;4300;
+gruesa.cemento;Cemento de albañilería;kg;"260,50";`;
+
+/** Hoy en ISO (`2026-09-02`), que es la que va a poner el server si el CSV no trae ninguna. */
+function hoyIso(): string {
+  const hoy = new Date();
+  const mes = String(hoy.getMonth() + 1).padStart(2, '0');
+  const dia = String(hoy.getDate()).padStart(2, '0');
+  return `${hoy.getFullYear()}-${mes}-${dia}`;
+}
 
 function mensajeDe(error: unknown): string {
   return error instanceof Error ? error.message : 'Algo salió mal.';
@@ -192,7 +211,7 @@ export function TablaPrecios({
       <Dialog
         open={aEditar !== null}
         onClose={() => setAEditar(null)}
-        title={aEditar ? `Editar ${aEditar.claveItem}` : ''}
+        title={aEditar ? `Editar ${aEditar.descripcion}` : ''}
       >
         {aEditar ? (
           <FormularioPrecio
@@ -220,9 +239,10 @@ export function TablaPrecios({
         }
       >
         <p className="text-sm text-neutral-700">
-          Vas a sacar <strong>{aBorrar?.claveItem}</strong> de la lista del estudio. Los ítems que se
-          estaban costeando con este precio pasan al índice, o se quedan sin precio hasta que cargues
-          otro.
+          Vas a sacar <strong>{aBorrar?.descripcion}</strong>{' '}
+          <span className="font-mono text-xs text-neutral-500">({aBorrar?.claveItem})</span> de la
+          lista del estudio. Los ítems que se estaban costeando con este precio pasan al índice, o se
+          quedan sin precio hasta que cargues otro.
         </p>
       </Dialog>
     </div>
@@ -287,7 +307,7 @@ export function FormularioPrecio({
         <Input
           name="claveItem"
           label="Clave del ítem"
-          placeholder="aberturas.ventana.dvh"
+          placeholder="seco.placas"
           defaultValue={valores?.claveItem ?? inicial?.claveItem ?? ''}
           readOnly={editando}
           required
@@ -296,7 +316,7 @@ export function FormularioPrecio({
         <Input
           name="descripcion"
           label="Descripción"
-          placeholder="Ventana corrediza DVH de aluminio"
+          placeholder="Placa de yeso 12,5 mm"
           defaultValue={valores?.descripcion ?? inicial?.descripcion ?? ''}
           required
           error={estado.errores?.descripcion}
@@ -444,7 +464,7 @@ export function ImportadorCsvPrecios() {
       </label>
 
       <p className="text-xs text-neutral-500">
-        Separador coma o punto y coma (lo detectamos solos) y coma decimal en el precio
+        Separador coma o punto y coma (lo detecto solo) y coma decimal en el precio
         («12,50» son doce pesos con cincuenta). Una clave que ya esté en la lista se pisa con el
         precio nuevo; la fila que quede igual no se toca. Sin fecha, va la de hoy.
       </p>
@@ -495,7 +515,12 @@ export function ImportadorCsvPrecios() {
                         el formato local del cliente, que para es-AR es el mismo
                         que usa el server en la tabla de arriba. */}
                     <TableCell numeric>{fila.precio.toLocaleString('es-AR')}</TableCell>
-                    <TableCell>{fila.fecha ?? 'hoy'}</TableCell>
+                    {/* Una columna de fechas con un «hoy» en minúscula en el
+                        medio se lee como un valor más, y las de arriba venían
+                        en ISO mientras la tabla de al lado las escribe en
+                        es-AR. Sin fecha en el CSV va la de hoy, y se muestra
+                        la fecha. */}
+                    <TableCell>{fechaDePrecio(fila.fecha ?? hoyIso())}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
