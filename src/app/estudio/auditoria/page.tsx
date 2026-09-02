@@ -40,15 +40,18 @@ const FECHA = new Intl.DateTimeFormat('es-AR', {
  *
  * La columna `accion` guarda verbos en `snake_case` porque es una clave estable
  * que se filtra y se agrupa; esta tabla es la traducción para leerla. Una acción
- * que no esté acá se muestra humanizada (`hallazgo_reabierto` → "hallazgo
- * reabierto"): mejor un texto imperfecto que una fila que no se entiende.
+ * que no esté acá se muestra humanizada (`lamina_reintentada` → "lamina
+ * reintentada"): mejor un texto imperfecto que una fila que no se entiende, y
+ * por eso el fallback existe y se queda.
  *
- * Ese ejemplo es literal: `hallazgo_reabierto` **ya no lo emite nadie** y por
- * eso salió de la tabla. Reabrir una consulta cerrada era la excepción que
- * necesitaba el bloqueo por escala, y desde "proponer en vez de bloquear" lo que
- * el arquitecto cerró no se reabre (`upsertHallazgoEscala`). Las filas viejas
- * que la tengan siguen siendo legibles, humanizadas, que es justo para lo que
- * está el fallback.
+ * **El fallback no es una excusa para no completar la tabla.** Acá vivió durante
+ * una ola un comentario que daba `hallazgo_reabierto` como ejemplo de acción
+ * "que ya no emite nadie" — y para cuando alguien lo leyó, el recompute había
+ * vuelto a emitirla (§5.8: una consulta que cerró el propio recompute se reabre
+ * si el dato que la resolvía se va). La auditoría es la pantalla donde se va a
+ * mirar qué pasó: una acción sin frase es una fila que hay que descifrar justo
+ * cuando hay apuro. Si agregás una acción nueva a `registrarAuditoria`, agregala
+ * también acá, en el mismo commit.
  */
 const FRASE_ACCION: Record<string, string> = {
   analisis_llm: 'Analizó una lámina con el modelo',
@@ -60,13 +63,30 @@ const FRASE_ACCION: Record<string, string> = {
   computo_item_editado: 'Editó un ítem del cómputo',
   computo_recalculado: 'Recalculó el cómputo de la obra',
   config_estudio_actualizada: 'Cambió la configuración del estudio',
+  cruce_llm: 'Cruzó el expediente con el modelo',
+  dato_obra_actualizado: 'El cruce corrigió un dato de la obra',
+  dato_obra_definido: 'Cargó un dato de toda la obra',
+  dato_obra_escrito: 'El cruce escribió un dato de la obra',
+  deduccion_actualizada: 'Cambió una deducción propuesta',
+  deduccion_aplicada: 'El sistema aplicó una deducción',
+  deduccion_autovalidada: 'El sistema validó una deducción y la aplicó',
+  deduccion_borrada: 'Se borró una deducción sin elemento',
+  deduccion_contradiccion_resuelta: 'La documentación volvió a coincidir con una deducción',
+  deduccion_contradicha: 'La documentación superó una deducción',
+  deduccion_propuesta: 'El motor propuso una deducción',
+  deduccion_rechazada: 'Rechazó una deducción',
+  deduccion_retirada: 'Se retiró una deducción sin sustento',
+  deduccion_revertida: 'Revirtió el dato de una deducción rechazada',
+  deduccion_validada: 'Validó una deducción',
   documento_eliminado: 'Eliminó un documento',
   documento_subido: 'Subió un documento',
   entidad_actualizada: 'Completó un dato de una entidad',
   hallazgo_abierto: 'Se abrió una consulta',
   hallazgo_actualizado: 'Cambió una consulta',
   hallazgo_descartado: 'Descartó una consulta',
+  hallazgo_reabierto: 'Se reabrió una consulta porque el dato se fue',
   hallazgo_respondido: 'Respondió una consulta',
+  inventario_llm: 'Inventarió las láminas con el modelo',
   invitacion_creada: 'Generó una invitación',
   invitacion_usada: 'Se sumó al estudio con una invitación',
   lamina_analizada: 'Terminó de analizar una lámina',

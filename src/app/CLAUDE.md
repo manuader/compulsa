@@ -8,9 +8,9 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
 2. **Server Components por defecto;** `"use client"` solo donde hay interactividad real (visor, grilla editable, formularios). Data fetching en el server con `getDb()`; mutaciones vía Server Actions o route handlers de `src/app/api/`.
 3. **Toda página de obra valida pertenencia:** helper `requireObra(obraId)` — sesión válida + obra del estudio del usuario; si no, `notFound()`. Nunca consultes una obra por id sin pasar por ahí (aislamiento RNF-4).
 4. **El visor y la planilla están acoplados por contrato, no por imports:** la fila de la planilla linkea a `/obras/[obraId]/laminas/[laminaId]?highlight=<bboxId>`; el visor lee `highlight` y resalta el bbox (RF-303: < 2 s). Ese query param es API pública interna — no lo renombres sin buscar sus usos. `resolverDestacado` lo resuelve contra las fuentes del hallazgo (`hallazgos.laminasJson`) **y también contra `valorPropuesto.fuente`**, con la de la propuesta adelante: una propuesta de la búsqueda dirigida puede vivir en una lámina que el hallazgo no cita, y sin eso el link abría el plano sin resaltar nada. Fue una **ampliación** del contrato, no un cambio: lo que resolvía antes sigue resolviendo igual.
-5. **Donde hay que mirar el plano para contestar, el plano se embebe — no se navega.** La bandeja de consultas y la de deducciones son split view (`grid lg:grid-cols-2 lg:items-start`, lista a la izquierda y `<PanelVisor>` `lg:sticky` a la derecha, apilado abajo de `lg`); el `?highlight=` queda degradado a un "Abrir en página completa". El panel se alimenta solo por `GET /api/laminas/[laminaId]/marcas`. Confirmar un número que el sistema dice haber leído en algún lado, sin ver ese lado, es firmar a ciegas.
+5. **Donde hay que mirar el plano para contestar, el plano se embebe — no se navega.** Las dos solapas de la bandeja son split view (`grid lg:grid-cols-2 lg:items-start`, lista a la izquierda y `<PanelVisor>` `lg:sticky` a la derecha, apilado abajo de `lg`); el `?highlight=` queda degradado a un "Abrir en página completa". El panel se alimenta solo por `GET /api/laminas/[laminaId]/marcas`. Confirmar un número que el sistema dice haber leído en algún lado, sin ver ese lado, es firmar a ciegas.
    **`destacados` se le pasa como referencia estable** (guardada en el estado de la selección, nunca recalculada en el render, y el vacío es una constante de módulo): `Overlay` hace `scrollIntoView` en un `useEffect([destacados])` y un array nuevo por render scrollea de más con cada redibujo.
-6. **Estados visibles:** una lámina siempre muestra su `estado_analisis` (pendiente / procesando / analizada / bloqueada por escala / error) y una lámina bloqueada explica qué necesita (medida de referencia). Una lámina computada con la escala que el rótulo declara pero nadie verificó **lo dice** ("escala asumida") y ofrece confirmarla en un click, desde el expediente **y** desde la propia página del visor. Nada de spinners eternos sin explicación.
+6. **Estados visibles:** el expediente dice **en qué fase está el análisis** mientras corre (inventario → extracción → cruce → relectura → listo, con su cuenta y su detalle de error), y refresca solo hasta que termina; una lámina siempre muestra su `estado_analisis` (pendiente / procesando / analizada / bloqueada por escala / error) y una lámina bloqueada explica qué necesita (medida de referencia). Una lámina computada con la escala que el rótulo declara pero nadie verificó **lo dice** ("escala asumida") y ofrece confirmarla en un click, desde el expediente **y** desde la propia página del visor. Nada de spinners eternos sin explicación.
 7. **Acciones destructivas o de aprobación piden confirmación** (aprobar rubro, descartar hallazgo) y quedan en `auditoria`.
 8. Formularios con validación Zod compartida entre cliente y server (`src/types/domain.ts` exporta los schemas). El server NUNCA confía en el payload. **El `disabled` del botón es cortesía, nunca la integridad:** la regla de que una consulta se responde con todas sus medidas juntas vive en el core, porque cada `*Action` es un endpoint invocable sin pasar por la pantalla.
 9. Tailwind directo, sin librería de componentes externa; primitivas propias en `src/components/ui/` (Button, Input, Select, Badge, Card, Table, Dialog). Reusalas — no dupliques estilos inline de botones.
@@ -25,18 +25,28 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
 /obras/nueva                        alta de obra
 
 /obras/[obraId]                     tablero (rubros, huecos, compulsas, ahorro, accesos)
-       /expediente                  documentos y láminas (upload, clasificación, estados),
+       /expediente                  progreso del análisis por fase (`obras.analisis_json`, con
+                                    polling suave hasta `listo`/`error`), documentos y láminas
+                                    (upload, clasificación, estados),
                                     resumen ejecutivo, «Preguntale al expediente» (RF-106)
                                     y «Qué cambió» (historial de recomputos)
        /laminas/[laminaId]          visor (pdf.js + overlay SVG de entidades/hallazgos)
        /computo                     planilla por rubro (grilla editable, aprobar rubro,
                                     export, «Verificar cómputo» RF-306)
-       /bandeja                     bandeja de consultas: la tarjeta trae el valor propuesto
-                                    con su fuente y se confirma de a una o en lote, con el
-                                    plano de esa consulta embebido al lado (split view)
-       /deducciones                 bandeja de deducciones (propuestas del motor §11,
-                                    validar/rechazar, memoria .md y planilla derivada .xlsx),
-                                    también con el plano al lado
+       /bandeja                     bandeja en dos solapas (`?solapa=preguntas|revisar`), las
+                                    dos con el plano embebido al lado (split view):
+                                      · **Preguntas** — consultas abiertas: lo único que espera
+                                        algo del arquitecto y lo único que frena un rubro. La
+                                        tarjeta trae el valor propuesto con su fuente y se
+                                        confirma de a una o en lote; una consulta de **dato de
+                                        obra** (§5.2) es UN input para las N entidades que lo
+                                        esperan, y responderla escribe `datos_obra`
+                                      · **Para revisar** — lo que el sistema aplicó solo:
+                                        deducciones auto-validadas (rechazar revierte y reabre
+                                        el faltante), las que no llegaron al umbral (validar /
+                                        rechazar) y los ítems `inferido`, con memoria .md y
+                                        planilla derivada .xlsx. Informa; no bloquea
+       /deducciones                 redirige a `/bandeja?solapa=revisar` conservando `?regla=`
        /compulsas                   las compulsas del rubro, con su versión y su hash
        /compulsas/nueva             wizard de armado (rubro aprobado → snapshot → shortlist)
        /compulsas/[compulsaId]      lo que se pidió, y proveedor por proveedor: timeline,

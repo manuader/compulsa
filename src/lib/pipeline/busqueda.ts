@@ -79,7 +79,7 @@ import type { RelecturaPedida } from '@/lib/analysis/cruce-tipos';
 import { registrarAuditoria } from '@/lib/audit';
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { camposDelTarget } from '@/lib/hallazgos/target';
-import { leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
+import { CAMPO_DATO_OBRA, leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
 import { PREFIJO_ESCALA, PREFIJO_VERIFICACION } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
 import { ACTOR_PIPELINE, comoEntidadPersistida, ObraInexistenteError } from '@/lib/pipeline/recomputar';
@@ -255,14 +255,15 @@ interface Pedido {
 }
 
 /**
- * El único campo de un objetivo de dato de obra.
+ * El único campo de un objetivo de dato de obra, re-exportado.
  *
- * Un `targetRef` pide campos con nombre de dominio (`anchoM`, `altoM`); un
- * `targetDato` pide **un** valor, y qué valor es lo dice la clave del dato
- * (`altura_local.PB`). Inventarle un nombre de campo —`alturaM`— sería mentir
- * sobre a qué entidad pertenece: no pertenece a ninguna, es un hecho de la obra.
+ * La constante vive en `@/lib/hallazgos/taxonomia` —el módulo puro de la
+ * taxonomía— porque son tres los que tienen que coincidir en la misma cadena:
+ * esta búsqueda, el resolver de la bandeja (que lee `valores.valor` al
+ * responder) y la pantalla (que nombra su input con eso). Se re-exporta acá
+ * para no romper a quien la venía leyendo de este módulo.
  */
-export const CAMPO_DATO_OBRA = 'valor';
+export { CAMPO_DATO_OBRA };
 
 /**
  * Cómo se le pide al modelo un hecho de la obra.

@@ -14,6 +14,7 @@ import type { DiffDeRevision, MotivoRecomputo } from '@/lib/pipeline/procesar';
 import { leerResumen } from '@/lib/pipeline/resumen';
 
 import { CambiosDeRevision, type RevisionVista } from './cambios-ui';
+import { ProgresoAnalisis } from './progreso-ui';
 import { PanelQa } from './qa-ui';
 import { ResumenEjecutivo } from './resumen-ui';
 import { Expediente, type DocumentoVista, type LaminaVista } from './ui';
@@ -113,6 +114,11 @@ export default async function ExpedientePage({
           verificable esperan que se la indiques: sin escala no se computa nada.
         </p>
       </div>
+
+      {/* Arriba de todo: mientras el pipeline corre, es lo único que el
+          arquitecto quiere saber. El resumen y la lista de láminas de abajo
+          están a medio hacer hasta que la fase dice «listo». */}
+      <ProgresoAnalisis fase={obra.analisisJson} />
 
       <ResumenEjecutivo obraId={obra.id} resumen={leerResumen(obra)} />
 

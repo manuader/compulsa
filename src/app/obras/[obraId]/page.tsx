@@ -287,10 +287,10 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
               <Badge tone="ok">Nada pendiente</Badge>
             ) : null}
             <Link
-              href={`${base}/deducciones`}
+              href={`${base}/bandeja?solapa=revisar`}
               className="text-xs font-medium text-neutral-900 underline"
             >
-              Ver deducciones
+              Ver para revisar
             </Link>
           </div>
         </Metrica>

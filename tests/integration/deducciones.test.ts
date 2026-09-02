@@ -325,12 +325,14 @@ describe('el pipeline deduce y lo aplica en la misma corrida', () => {
     expect(v2.atributosJson.anchoM).toBeUndefined();
     expect(v2.atributosJson.altoM).toBeUndefined();
 
-    // Y sin embargo la ventana ya está computada, con su medida y su marca: la
-    // consulta por el dato faltante se cerró sola y el rubro quedó liberado.
+    // Y sin embargo la ventana ya está computada, con su medida y su marca, y
+    // el rubro quedó liberado. La consulta por el dato faltante **ni llegó a
+    // abrirse**: la deducción entró en la misma corrida, así que cuando el
+    // motor computó la ventana ya tenía sus medidas y no hubo qué preguntar.
     const item = await itemPorClave('aberturas.V2');
     expect(item?.origen).toBe('deducido');
     expect(item?.descripcion).toBe('Ventana V2 (1,50 × 1,10 m)');
-    expect((await hallazgoPorClave('aberturas.medidas_vano.V2'))?.estado).toBe('descartado');
+    expect(await hallazgoPorClave('aberturas.medidas_vano.V2')).toBeUndefined();
     expect(await gateDe('aberturas')).toEqual({ ok: true, bloqueantes: 0 });
 
     // Todo lo escribió el agente, y quedó auditado una vez por deducción.
@@ -413,11 +415,11 @@ describe('la deducción aplicada', () => {
     expect(item?.descripcion).toBe('Ventana V2 (1,50 × 1,10 m)');
     expect(await laminasCitadas(item!.fuentesJson)).toEqual(['A-01', 'A-05']);
 
-    // La consulta por el dato faltante se cerró sola y el rubro se libera. La
-    // de «cantidad supuesta por la planilla» ni llegó a abrirse: la deducción
-    // entró en la misma corrida en la que se leyó la planilla, así que la V2 de
-    // la planta ya estaba computable cuando el rubro se computó.
-    expect((await hallazgoPorClave('aberturas.medidas_vano.V2'))?.estado).toBe('descartado');
+    // Ni la consulta por el dato faltante ni la de «cantidad supuesta por la
+    // planilla» llegaron a abrirse: la deducción entró en la misma corrida en
+    // la que se leyó la planilla, así que la V2 de la planta ya estaba
+    // computable cuando el rubro se computó. El rubro se libera.
+    expect(await hallazgoPorClave('aberturas.medidas_vano.V2')).toBeUndefined();
     expect(await hallazgoPorClave('aberturas.cantidad_planilla.V2')).toBeUndefined();
     expect(await gateDe('aberturas')).toEqual({ ok: true, bloqueantes: 0 });
   });
@@ -429,7 +431,9 @@ describe('la deducción aplicada', () => {
     const placas = await itemPorClave('seco.placas');
     expect(placas?.origen).toBe('deducido');
     expect(placas?.cantNeta).toBe(52);
-    expect((await hallazgoPorClave('dato_obra.altura_local.general'))?.estado).toBe('descartado');
+    // Y la consulta agrupada por la altura de local nunca se abrió: la altura
+    // la puso el corte en la misma corrida (§5.2 + §5.4).
+    expect(await hallazgoPorClave('dato_obra.altura_local.general')).toBeUndefined();
   });
 
   it('con el elemento unificado se computa UNA vez, citando las dos láminas', async () => {
@@ -707,17 +711,123 @@ describe('rechazar una deducción', () => {
     expect((await deduccionDe('A-01', 'V2', 'anchoM')).estado).toBe('propuesta');
   });
 
-  it('rechazar una AUTO-validada todavía no procede — lo habilita T11', async () => {
-    // Estado intermedio y declarado de la ola: la deducción entra sola al
-    // cómputo (§5.4) pero el camino de vuelta —revertir el dato y reabrir el
-    // faltante— es de la bandeja «Para revisar» (T11). Hasta entonces
-    // `rechazarDeduccion` la trata como cualquier fila ya resuelta.
+  it('rechazar una AUTO-validada la revierte y reabre el faltante', async () => {
+    // El camino de vuelta de §5.4: la deducción entró sola al cómputo y la
+    // solapa «Para revisar» la deshace. El pipeline nunca la escribió en la
+    // entidad —la aplica el overlay—, así que revertir es sacarla de la capa:
+    // el ítem deja de apoyarse en ella y el hueco vuelve a verse.
     const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
     expect(ancho.estado).toBe('validada');
     expect(ancho.validadoPor).toBeNull();
+    expect(await hallazgoPorClave('aberturas.medidas_vano.V2')).toBeUndefined();
 
-    const resultado = await rechazarDeduccion({ obraId, deduccionId: ancho.id }, titular);
-    expect(resultado.ok).toBe(false);
-    expect((await deduccionDe('A-01', 'V2', 'anchoM')).estado).toBe('validada');
+    expect(await rechazarDeduccion({ obraId, deduccionId: ancho.id }, titular)).toEqual({
+      ok: true,
+    });
+
+    const rechazada = await deduccionDe('A-01', 'V2', 'anchoM');
+    expect(rechazada.estado).toBe('rechazada');
+    expect(rechazada.validadoPor).toBe(titular.usuarioId);
+
+    // Nada que revertir en la entidad: la auto-validada nunca escribió ahí.
+    expect((await entidadEn('A-01', 'V2')).atributosJson.anchoM).toBeUndefined();
+    expect((await itemPorClave('aberturas.V2'))?.origen).toBe('supuesto');
+
+    // Y el faltante vuelve a la bandeja: sin la deducción, a la ventana le
+    // faltan las medidas y el motor lo emite de nuevo.
+    const faltante = await hallazgoPorClave('aberturas.medidas_vano.V2');
+    expect(faltante?.estado).toBe('abierto');
+    expect(faltante?.bloqueante).toBe(true);
+
+    expect(await auditoriaDe('deduccion_rechazada')).toHaveLength(1);
+  });
+
+  it('rechazar una validada A MANO borra el atributo que había escrito', async () => {
+    // La otra mitad de la reversión: `validarDeduccion` sí escribe el dato en
+    // `atributos_json`, y rechazar después tiene que dejarlo como estaba. Si el
+    // campo no estaba, se borra; nunca se pisa con un cero ni con un vacío.
+    const altura = await volverAPropuesta(await deduccionDe('A-01', 'T1', 'alturaM'));
+    expect(await validarDeduccion({ obraId, deduccionId: altura.id }, titular)).toEqual({
+      ok: true,
+    });
+    expect((await entidadEn('A-01', 'T1')).atributosJson.alturaM).toBe(2.6);
+
+    expect(await rechazarDeduccion({ obraId, deduccionId: altura.id }, titular)).toEqual({
+      ok: true,
+    });
+
+    expect((await deduccionDe('A-01', 'T1', 'alturaM')).estado).toBe('rechazada');
+    expect('alturaM' in (await entidadEn('A-01', 'T1')).atributosJson).toBe(false);
+    // El T1 de la planta se queda sin altura: quedan los 26 m² del corte.
+    expect((await itemPorClave('seco.placas'))?.cantNeta).toBe(26);
+
+    const revertidas = await auditoriaDe('deduccion_revertida');
+    expect(revertidas).toHaveLength(1);
+    expect(revertidas[0]?.diffJson).toMatchObject({ alturaM: { antes: 2.6, despues: null } });
+  });
+
+  it('el faltante que el recompute cerró solo se reabre al rechazar', async () => {
+    // El caso donde la consulta sí llegó a existir: las dos deducciones de la
+    // V2 vuelven a `propuesta`, el recompute abre el faltante porque la ventana
+    // no tiene medidas, validarlas lo cierra **solo** (`resuelto por
+    // recomputo`) y rechazar una lo tiene que reabrir. Sin esto el hueco
+    // quedaba invisible para siempre: sin ítem, sin consulta y sin nada que lo
+    // dijera, que es exactamente lo que P4 prohíbe.
+    const ancho = await volverAPropuesta(await deduccionDe('A-01', 'V2', 'anchoM'));
+    const alto = await volverAPropuesta(await deduccionDe('A-01', 'V2', 'altoM'));
+    await recomputarObra(obraId);
+    expect((await hallazgoPorClave('aberturas.medidas_vano.V2'))?.estado).toBe('abierto');
+
+    await validarDeduccion({ obraId, deduccionId: ancho.id }, titular);
+    await validarDeduccion({ obraId, deduccionId: alto.id }, titular);
+    const cerrado = await hallazgoPorClave('aberturas.medidas_vano.V2');
+    expect(cerrado?.estado).toBe('descartado');
+    expect(cerrado?.resueltoPor).toBeNull(); // lo cerró el recompute, no una persona
+
+    await rechazarDeduccion({ obraId, deduccionId: ancho.id }, titular);
+
+    const reabierto = await hallazgoPorClave('aberturas.medidas_vano.V2');
+    expect(reabierto?.estado).toBe('abierto');
+    expect(reabierto?.respuestaJson).toBeNull();
+    const reaperturas = await auditoriaDe('hallazgo_reabierto');
+    expect(reaperturas.map((fila) => fila.targetRef)).toContain(
+      'hallazgos:aberturas.medidas_vano.V2',
+    );
+  });
+
+  it('lo que cerró una PERSONA no se reabre nunca, ni al rechazar', async () => {
+    // La contracara, y la regla que ya se rompió dos veces: una consulta que el
+    // arquitecto descartó es una decisión suya. El recompute puede volver a
+    // emitirla todas las veces que quiera; no la toca.
+    const ancho = await volverAPropuesta(await deduccionDe('A-01', 'V2', 'anchoM'));
+    const alto = await volverAPropuesta(await deduccionDe('A-01', 'V2', 'altoM'));
+    await recomputarObra(obraId);
+    const abierto = await hallazgoPorClave('aberturas.medidas_vano.V2');
+    await descartarHallazgo({ obraId, hallazgoId: abierto!.id }, titular);
+
+    await validarDeduccion({ obraId, deduccionId: ancho.id }, titular);
+    await validarDeduccion({ obraId, deduccionId: alto.id }, titular);
+    await rechazarDeduccion({ obraId, deduccionId: ancho.id }, titular);
+
+    const sigue = await hallazgoPorClave('aberturas.medidas_vano.V2');
+    expect(sigue?.estado).toBe('descartado');
+    expect(sigue?.resueltoPor).toBe(titular.usuarioId);
+    const reaperturas = await auditoriaDe('hallazgo_reabierto');
+    expect(reaperturas.map((fila) => fila.targetRef)).not.toContain(
+      'hallazgos:aberturas.medidas_vano.V2',
+    );
+  });
+
+  it('lo rechazado desde «Para revisar» no lo vuelve a escribir ningún recompute', async () => {
+    const ancho = await deduccionDe('A-01', 'V2', 'anchoM');
+    await rechazarDeduccion({ obraId, deduccionId: ancho.id }, titular);
+
+    await recomputarObra(obraId);
+    await procesarDocumento(documentoId, { db, storage });
+
+    const filas = (await todasLasDeducciones()).filter((fila) => fila.campo === 'anchoM');
+    expect(filas).toHaveLength(1);
+    expect(filas[0]?.estado).toBe('rechazada');
+    expect((await entidadEn('A-01', 'V2')).atributosJson.anchoM).toBeUndefined();
   });
 });

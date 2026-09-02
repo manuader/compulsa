@@ -600,14 +600,45 @@ export async function aprobarRubroCore(
       set: { estado: 'aprobado', aprobadoPor: actor.usuarioId, aprobadoAt: new Date() },
     });
 
+  // Con qué se está aprobando, y no como decoración: desde §5.4 lo deducido y
+  // lo inferido entran solos al cómputo, así que un rubro puede aprobarse con
+  // cero bloqueantes y aun así apoyarse en datos que no están escritos en
+  // ninguna lámina. Cuántos eran queda registrado en la aprobación —es lo que
+  // convierte «aprobé el rubro» en «aprobé el rubro con 3 medidas deducidas y
+  // 1 medida sacada del dibujo»— y no cambia el gate: la solapa «Para revisar»
+  // informa, no bloquea (§5.8).
+  const porOrigen = await contarPorOrigen(db, obraId, rubro);
+
   await registrarAuditoria({
     obraId,
     actorTipo: 'usuario',
     actorNombre: actor.email,
     accion: 'rubro_aprobado',
     targetRef: `computo_rubros:${rubro}`,
-    diff: { estado: { antes: previo?.estado ?? 'borrador', despues: 'aprobado' } },
+    diff: { estado: { antes: previo?.estado ?? 'borrador', despues: 'aprobado' }, ...porOrigen },
   });
 
   return { ok: true };
+}
+
+/** Cuántos ítems activos del rubro salieron `deducido` y cuántos `inferido`. */
+async function contarPorOrigen(
+  db: Db,
+  obraId: string,
+  rubro: RubroId,
+): Promise<{ deducidos: number; inferidos: number }> {
+  const filas = await db
+    .select({ origen: computoItems.origen })
+    .from(computoItems)
+    .where(
+      and(
+        eq(computoItems.obraId, obraId),
+        eq(computoItems.rubro, rubro),
+        eq(computoItems.estado, 'activo'),
+      ),
+    );
+  return {
+    deducidos: filas.filter((fila) => fila.origen === 'deducido').length,
+    inferidos: filas.filter((fila) => fila.origen === 'inferido').length,
+  };
 }

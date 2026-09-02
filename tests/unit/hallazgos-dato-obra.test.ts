@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import {
+  etiquetaDeDatoObra,
   hallazgoDatoObraFaltante,
   PREFIJO_DATO_OBRA,
   respaldoDeDatoObra,
@@ -124,5 +125,30 @@ describe('hallazgoDatoObraFaltante', () => {
       entidades: [tabique('id-1', 'T1')],
     });
     expect(sinUnidad.targetDato).toEqual({ clave: 'nivel.PB', entidades: ['id-1'] });
+  });
+});
+
+/**
+ * El nombre del dato en la tarjeta. La clave es nuestra convención, no el
+ * castellano de nadie: un input que dice `altura_local.PB` es un identificador
+ * de base de datos puesto adelante de una persona.
+ */
+describe('etiquetaDeDatoObra', () => {
+  it('nombra la familia y el sufijo', () => {
+    expect(etiquetaDeDatoObra('altura_local.PB')).toBe('Altura de local en PB');
+    expect(etiquetaDeDatoObra('altura_revestimiento.baño')).toBe(
+      'Altura de revestimiento en baño',
+    );
+    expect(etiquetaDeDatoObra('nivel.PA')).toBe('Nivel en PA');
+  });
+
+  it('`general` no se nombra: es el hecho que vale para toda la obra', () => {
+    expect(etiquetaDeDatoObra('altura_local.general')).toBe('Altura de local');
+    expect(etiquetaDeDatoObra('altura_revestimiento.general')).toBe('Altura de revestimiento');
+  });
+
+  it('una familia desconocida se muestra igual, con los guiones abiertos', () => {
+    expect(etiquetaDeDatoObra('espesor_carpeta.PB')).toBe('Espesor carpeta en PB');
+    expect(etiquetaDeDatoObra('solado')).toBe('Solado');
   });
 });

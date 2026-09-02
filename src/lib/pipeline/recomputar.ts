@@ -137,6 +137,12 @@ export interface ResumenRecompute {
   hallazgosInsertados: number;
   hallazgosActualizados: number;
   hallazgosDescartados: number;
+  /**
+   * Consultas que el recompute había cerrado él mismo y volvió a abrir porque
+   * el dato que las resolvía dejó de estar (se rechazó la deducción que lo
+   * sostenía, cambió la lámina). Las que cerró una persona no entran nunca.
+   */
+  hallazgosReabiertos: number;
   deduccionesPropuestas: number;
   /**
    * Deducciones que nacieron **validadas** y se aplicaron en esta misma corrida
@@ -161,6 +167,7 @@ function resumenVacio(): ResumenRecompute {
     hallazgosInsertados: 0,
     hallazgosActualizados: 0,
     hallazgosDescartados: 0,
+    hallazgosReabiertos: 0,
     deduccionesPropuestas: 0,
     deduccionesAutovalidadas: 0,
     deduccionesActualizadas: 0,
@@ -422,6 +429,20 @@ function diferenciasDeHallazgo(
   return Object.keys(diff).length > 0 ? diff : null;
 }
 
+/**
+ * `true` si esta consulta la cerró el recompute y no una persona.
+ *
+ * Dos marcas, y las dos tienen que estar: `resuelto_por` en `null` —`cerrar()`
+ * siempre escribe quién resolvió— y la respuesta automática que pone el barrido
+ * de acá abajo. Una fila que alguien tocó a mano en la base (sin respuesta y sin
+ * quién) **no** cuenta: ante la duda, la decisión es de la persona y no se
+ * revisa.
+ */
+export function cerradoPorElRecompute(fila: Hallazgo): boolean {
+  if (fila.estado === 'abierto' || fila.resueltoPor !== null) return false;
+  return fila.respuestaJson?.auto === RESPUESTA_AUTO_RESUELTO.auto;
+}
+
 async function sincronizarHallazgos(
   db: Db,
   obraId: string,
@@ -446,9 +467,33 @@ async function sincronizarHallazgos(
       continue;
     }
 
-    // Regla 3: lo que el arquitecto respondió o descartó no se reabre ni se
+    // Regla 3: lo que **una persona** respondió o descartó no se reabre ni se
     // reescribe — su respuesta es la última palabra sobre esa clave.
-    if (previo.estado !== 'abierto') continue;
+    //
+    // Lo que cerró el propio recompute es otra cosa, y confundirlas dejaba un
+    // agujero: se cerró porque el dato apareció, y si el dato se va —se rechaza
+    // la deducción que lo sostenía, cambia la lámina— el hueco vuelve a existir
+    // y tiene que volver a verse. Sin esto, rechazar una deducción validada
+    // dejaba el elemento sin computar, sin consulta y sin nada que lo dijera:
+    // justo lo que P4 prohíbe.
+    if (previo.estado !== 'abierto') {
+      if (!cerradoPorElRecompute(previo)) continue;
+      await db
+        .update(hallazgos)
+        .set({
+          ...valoresDeHallazgo(obraId, detectado, previo),
+          estado: 'abierto',
+          respuestaJson: null,
+          resueltoPor: null,
+        })
+        .where(eq(hallazgos.id, previo.id));
+      resumen.hallazgosReabiertos += 1;
+      await auditar(obraId, 'hallazgo_reabierto', `hallazgos:${detectado.clave}`, {
+        estado: { antes: previo.estado, despues: 'abierto' },
+        motivo: 'El dato que lo había resuelto ya no está.',
+      });
+      continue;
+    }
 
     const diff = diferenciasDeHallazgo(previo, detectado);
     if (!diff) continue;

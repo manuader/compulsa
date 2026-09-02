@@ -21,9 +21,13 @@
  *    provenance de la entidad (P1: el dato y de dónde salió son la misma cosa).
  *    Recién ahí el recompute puede emitir el ítem, y lo emite con
  *    `origen: 'deducido'` — el ítem nunca finge que el dato estaba escrito.
- * 2. **Rechazar no escribe nada.** La deducción queda `rechazada` —el motor no
- *    la vuelve a proponer— y el hueco sigue siendo un hallazgo `faltante`
- *    abierto en la bandeja de consultas, que es donde tiene que estar (P4).
+ * 2. **Rechazar deshace.** La deducción queda `rechazada` —el motor no la vuelve
+ *    a proponer— y el hueco vuelve a ser un hallazgo `faltante` abierto en la
+ *    bandeja, que es donde tiene que estar (P4). Sobre una `propuesta` no hay
+ *    nada que deshacer; sobre una `validada` sí, y es lo que habilita la solapa
+ *    «Para revisar» (§5.8): el atributo vuelve a lo que había si lo escribió
+ *    `validarDeduccion`, y en las auto-validadas alcanza con sacarla de
+ *    `validada` para que el overlay deje de aplicarla.
  * 3. **Un dato ya cargado no se pisa.** Si mientras la propuesta esperaba
  *    alguien respondió la consulta con otro número, validar no lo reemplaza:
  *    devuelve el conflicto y deja que una persona decida.
@@ -44,6 +48,7 @@ import { describirValor, enumerar, etiquetaCampo } from '@/lib/deduccion/motor';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
 import {
   estaContradicha,
+  mismoDato,
   recomputarObra,
   valorQueDocumenta,
 } from '@/lib/pipeline/recomputar';
@@ -225,10 +230,18 @@ function auditar(
   });
 }
 
-/** Los tres pasos que comparten validar y rechazar, antes de decidir nada. */
+/**
+ * Los tres pasos que comparten validar y rechazar, antes de decidir nada.
+ *
+ * `estados` es desde dónde se puede accionar, y es lo único que las diferencia:
+ * **validar** solo tiene sentido sobre una `propuesta`; **rechazar** también
+ * sobre una `validada`, que es lo que la solapa «Para revisar» ofrece deshacer
+ * (§5.8). Una `rechazada` no se acciona por ninguno de los dos caminos.
+ */
 async function preparar(
   entrada: EntradaDeduccion,
   actor: ActorDeduccion,
+  estados: readonly Deduccion['estado'][] = ['propuesta'],
 ): Promise<{ db: Db; deduccion: Deduccion } | { error: string }> {
   const parseo = zEntrada.safeParse(entrada);
   if (!parseo.success) {
@@ -245,7 +258,7 @@ async function preparar(
   const db = await getDb();
   const deduccion = await cargarDeduccion(db, parseo.data.obraId, parseo.data.deduccionId);
   if (!deduccion) return { error: NO_ENCONTRADA };
-  if (deduccion.estado !== 'propuesta') return { error: YA_DECIDIDA };
+  if (!estados.includes(deduccion.estado)) return { error: YA_DECIDIDA };
   return { db, deduccion };
 }
 
@@ -330,37 +343,130 @@ export async function validarDeduccion(
 }
 
 /**
- * Rechaza una deducción. No toca la entidad: el dato sigue faltando y su
- * consulta `faltante` sigue abierta en la bandeja, que es exactamente lo que el
- * PRD pide (§11: rechazar ⇒ hallazgo faltante normal).
+ * Deshace en la entidad lo que una deducción **validada a mano** había escrito.
  *
- * El recompute igual corre: la deducción rechazada deja de proponerse y la
- * pantalla tiene que quedar consistente sin depender de la próxima lámina.
+ * Es la mitad sucia de rechazar, y solo aplica a las que pasaron por
+ * `validarDeduccion`: esa función escribe el valor en `atributos_json`, así que
+ * rechazarla después tiene que dejar el campo como estaba. Las **auto-validadas**
+ * (`validado_por = null`) nunca escribieron ahí —el dato entra por la capa de
+ * `aplicarDeduccionesValidadas`, que se apaga sola cuando la fila deja de estar
+ * `validada`—, y borrarles el atributo sería borrar lo que dice el plano.
+ *
+ * Tres casos, en orden:
+ *
+ *  - la deducción quedó **superada por la documentación** (`_valorDocumentado`):
+ *    el campo ya tiene lo que dice la lámina y se lo deja escrito, que es lo
+ *    que se está computando;
+ *  - el campo tiene **exactamente** lo que la deducción propone: lo escribió
+ *    ella y se borra (antes no había nada — `validarDeduccion` se niega a pisar
+ *    un valor distinto);
+ *  - el campo tiene **otra cosa**: alguien lo cargó después. No se toca.
+ *
+ * Las fuentes que `validarDeduccion` sumó a la entidad **no** se sacan: son
+ * lámina + bbox de un dibujo que sigue existiendo, se deduplican con las de la
+ * entidad y no hay forma de saber cuál era de la entidad y cuál de la deducción
+ * sin volver a leer el análisis. Citar de más una lámina que muestra el elemento
+ * es barato; borrar provenance legítima, no (P1).
+ *
+ * Devuelve el diff de lo que cambió, o `null` si no tocó nada.
+ */
+async function revertirEnEntidad(
+  db: Db,
+  deduccion: Deduccion,
+): Promise<Record<string, unknown> | null> {
+  if (deduccion.validadoPor === null) return null; // el pipeline nunca escribió
+
+  const [entidad] = await db
+    .select()
+    .from(entidades)
+    .where(and(eq(entidades.id, deduccion.entidadId), eq(entidades.obraId, deduccion.obraId)));
+  if (!entidad) return null; // un reproceso se la llevó: no hay dónde revertir
+
+  const actual = entidad.atributosJson[deduccion.campo];
+  const documentado = valorQueDocumenta(deduccion);
+  const atributos = { ...entidad.atributosJson };
+
+  if (documentado !== null) {
+    if (igualValor(actual, documentado)) return null;
+    atributos[deduccion.campo] = documentado;
+  } else {
+    if (!igualValor(actual, valorDeDeduccion(deduccion))) return null;
+    delete atributos[deduccion.campo];
+  }
+
+  await db
+    .update(entidades)
+    .set({ atributosJson: atributos })
+    .where(eq(entidades.id, entidad.id));
+
+  return {
+    [deduccion.campo]: { antes: actual ?? null, despues: documentado },
+    via: 'deduccion_rechazada',
+    regla: deduccion.regla,
+  };
+}
+
+/** Mismo criterio numérico que el overlay: `"2,60"` y `2.6` son el mismo dato. */
+function igualValor(a: unknown, b: unknown): boolean {
+  if (a === undefined || a === null || a === '') return false;
+  return mismoDato(a, b);
+}
+
+/**
+ * Rechaza una deducción y **la deshace**.
+ *
+ * Dos caminos que terminan igual:
+ *
+ *  - una **propuesta** nunca se aplicó: rechazarla no toca ningún dato, la
+ *    deducción queda `rechazada` —el motor no la vuelve a proponer— y el hueco
+ *    sigue siendo un hallazgo `faltante` (§11: rechazar ⇒ faltante normal);
+ *  - una **validada** sí se aplicó, y rechazarla la revierte: el atributo vuelve
+ *    a lo que había (`revertirEnEntidad`, solo para las validadas a mano) y, en
+ *    las auto-validadas, alcanza con sacarla de `validada` para que la capa del
+ *    overlay deje de aplicarla en el próximo cómputo.
+ *
+ * En los dos casos el recompute corre al final y es el que **reabre el
+ * faltante**: sin el dato, el motor vuelve a emitir la consulta que había
+ * cerrado él mismo (`cerradoPorElRecompute`). Sin ese paso el elemento quedaba
+ * sin computar, sin consulta y sin nada que lo dijera.
  */
 export async function rechazarDeduccion(
   entrada: EntradaDeduccion,
   actor: ActorDeduccion,
 ): Promise<ResultadoAccion> {
-  const previo = await preparar(entrada, actor);
+  const previo = await preparar(entrada, actor, ['propuesta', 'validada']);
   if ('error' in previo) return { ok: false, error: previo.error };
   const { db, deduccion } = previo;
+  const objetivo = `deducciones:${deduccion.entidadId}.${deduccion.campo}`;
+
+  // Primero la entidad y después la deducción, igual que al validar: el
+  // recompute lee las dos y tiene que encontrarlas coherentes.
+  const revertido = await revertirEnEntidad(db, deduccion);
+  if (revertido) {
+    await auditar(
+      deduccion.obraId,
+      actor,
+      'deduccion_revertida',
+      `entidades:${deduccion.entidadId}`,
+      revertido,
+    );
+  }
 
   await db
     .update(deducciones)
     .set({ estado: 'rechazada', validadoPor: actor.usuarioId })
     .where(eq(deducciones.id, deduccion.id));
 
-  await auditar(
-    deduccion.obraId,
-    actor,
-    'deduccion_rechazada',
-    `deducciones:${deduccion.entidadId}.${deduccion.campo}`,
-    {
-      estado: { antes: 'propuesta', despues: 'rechazada' },
-      regla: deduccion.regla,
-      valor: valorDeDeduccion(deduccion),
-    },
-  );
+  await auditar(deduccion.obraId, actor, 'deduccion_rechazada', objetivo, {
+    estado: { antes: deduccion.estado, despues: 'rechazada' },
+    // Quién la había validado: `null` es el sistema (auto-validada, §5.4), y
+    // saber si se está deshaciendo una decisión propia o una del pipeline es la
+    // mitad de lo que este registro tiene que contar.
+    validadaPor: deduccion.validadoPor,
+    regla: deduccion.regla,
+    valor: valorDeDeduccion(deduccion),
+    revertida: revertido !== null,
+  });
 
   await recomputarObra(deduccion.obraId, { db });
   return { ok: true };
