@@ -25,6 +25,7 @@
  * envoltorios `*Action`: esos solo agregan sesión, `requireObra()` y
  * `revalidatePath()`. Lo que hay que proteger es qué queda escrito.
  */
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -163,6 +164,21 @@ async function deduccionDe(codigoLamina: string, nombre: string, campo: string):
  * No recomputa a propósito: `validarDeduccion` y `rechazarDeduccion` recomputan
  * ellos mismos, y lo que estos casos miran es qué queda escrito.
  */
+/**
+ * Le escribe el mismo `elemento_id` al T1 de la planta y al del corte: es
+ * **exactamente** lo que hace el cruce (§5.3) cuando reconoce que las dos
+ * láminas hablan de la misma pared. El fixture no lo trae porque el cruce corre
+ * en otra rama; el rail que se prueba acá es el del recompute.
+ */
+async function unificarT1(): Promise<void> {
+  const elementoId = randomUUID();
+  for (const codigo of ['A-01', 'A-02']) {
+    const entidad = await entidadEn(codigo, 'T1');
+    await db.update(entidades).set({ elementoId }).where(eq(entidades.id, entidad.id));
+  }
+  await recomputarObra(obraId);
+}
+
 async function volverAPropuesta(fila: Deduccion): Promise<Deduccion> {
   await db
     .update(deducciones)
@@ -407,19 +423,30 @@ describe('la deducción aplicada', () => {
   });
 
   it('la altura del corte deja seco.placas en origen deducido', async () => {
-    // 5 m × 2,60 m × 2 caras = 26 m² por tabique.
-    //
-    // Y salen 52, no 26: el T1 de la planta y el T1 del corte son la MISMA
-    // pared dicha dos veces, y el cómputo todavía no lo sabe. Antes esto no se
-    // veía porque para computar los dos había que validar a mano las cuatro
-    // deducciones; con la auto-validación (§5.4) el doble conteo planta↔corte
-    // queda a la vista. Lo cierra la unificación por `entidades.elemento_id`
-    // que aporta el cruce — hoy ninguna plantilla la mira. Está pinneado para
-    // que el día que se unifique, este número baje a 26 y se note.
+    // Sin cruce corrido, el T1 de la planta y el T1 del corte son dos tabiques
+    // para el sistema: 2 × (5 m × 2,60 m × 2 caras) = 52 m². Nadie le dijo
+    // todavía que son la misma pared.
     const placas = await itemPorClave('seco.placas');
     expect(placas?.origen).toBe('deducido');
     expect(placas?.cantNeta).toBe(52);
     expect((await hallazgoPorClave('dato_obra.altura_local.general'))?.estado).toBe('descartado');
+  });
+
+  it('con el elemento unificado se computa UNA vez, citando las dos láminas', async () => {
+    await unificarT1();
+
+    // La misma pared: 5 m × 2,60 m × 2 caras = 26 m²; +12 % ⇒ 11 placas de
+    // 2,88 m² = 31,68 m². El largo lo dice la planta y la altura el corte, así
+    // que el ítem tiene que citar las dos (P1).
+    const placas = await itemPorClave('seco.placas');
+    expect(placas?.cantNeta).toBe(26);
+    expect(placas?.cantCompra).toBe(31.68);
+    expect(placas?.origen).toBe('deducido');
+    expect(await laminasCitadas(placas!.fuentesJson)).toEqual(['A-01', 'A-02']);
+
+    // Y no queda ninguna consulta de unificación: las dos láminas dicen lo mismo.
+    const todos = await db.select().from(hallazgos).where(eq(hallazgos.obraId, obraId));
+    expect(todos.filter((fila) => fila.clave.startsWith('unificacion.'))).toEqual([]);
   });
 
   it('el dato deducido sobrevive a un reanálisis de la lámina', async () => {
@@ -446,8 +473,8 @@ describe('la deducción aplicada', () => {
     await procesarDocumento(documentoId, { db, storage, provider: plantaQueAcota(2.4) });
 
     // 1) Manda lo escrito: el T1 de la planta pasa a 5 × 2,40 × 2 = 24 m². El
-    //    del corte sigue en 26 (doble conteo planta↔corte, ver más arriba) y es
-    //    el que deja el ítem en `deducido`: su largo lo puso la continuidad.
+    //    del corte sigue en 26 —sin cruce corrido son dos tabiques distintos— y
+    //    es el que deja el ítem en `deducido`: su largo lo puso la continuidad.
     const placas = await itemPorClave('seco.placas');
     expect(placas?.cantNeta).toBe(50);
     expect(placas?.origen).toBe('deducido');

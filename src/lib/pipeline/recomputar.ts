@@ -77,11 +77,16 @@ import {
   type EntidadPersistida,
 } from '@/lib/computo/engine';
 import { fuenteDeEntidad, unirFuentes } from '@/lib/computo/presentacion';
+import {
+  unificarPorElemento,
+  type ConflictoUnificacion,
+} from '@/lib/computo/unificar';
 import { redondear2 } from '@/lib/computo/unidades';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
 import {
   deducir,
   describirValor,
+  enumerar,
   etiquetaCampo,
   UMBRAL_DEDUCCION,
   type DeduccionPropuesta,
@@ -202,6 +207,9 @@ export function comoEntidadPersistida(fila: typeof entidades.$inferSelect): Enti
     confianza: fila.confianza,
     estadoReforma: fila.estadoReforma,
     atributos: fila.atributosJson,
+    // Lo escribe el cruce cuando reconoce que dos láminas hablan de la misma
+    // cosa; `unificarPorElemento` lo usa para computarla una sola vez.
+    ...(fila.elementoId === null ? {} : { elementoId: fila.elementoId }),
   };
 }
 
@@ -772,6 +780,78 @@ function comoNumero(valor: unknown): number | null {
 }
 
 // ---------------------------------------------------------------------------
+// Unificación por elemento (§5.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mueve las marcas de origen por campo a la entidad que sobrevivió a la
+ * unificación.
+ *
+ * El mapa del §5.5 está indexado por id de entidad. Cuando la hermana aporta un
+ * `alturaM` que era deducido, ese id deja de existir para el motor y la marca se
+ * perdía: el ítem salía «explícito» apoyado en un dato que no está escrito.
+ *
+ * No hay colisión posible: `aportes` solo trae los campos que a la base le
+ * **faltaban**, y un campo ausente no puede tener marca previa.
+ */
+function mergearAportes(
+  camposDeducidos: CamposDeducidos,
+  aportes: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): CamposDeducidos {
+  if (aportes.size === 0) return camposDeducidos;
+
+  const merged = new Map<string, Map<string, Origen>>();
+  for (const [id, campos] of camposDeducidos) merged.set(id, new Map(campos));
+  for (const [idUnificado, porCampo] of aportes) {
+    for (const [campo, idOriginal] of porCampo) {
+      const origen = camposDeducidos.get(idOriginal)?.get(campo);
+      if (origen === undefined) continue;
+      const suyos = merged.get(idUnificado) ?? new Map<string, Origen>();
+      suyos.set(campo, origen);
+      merged.set(idUnificado, suyos);
+    }
+  }
+  return merged;
+}
+
+/**
+ * La consulta que avisa que dos láminas dicen cosas distintas del mismo elemento.
+ *
+ * `inconsistencia` y **no bloqueante**, igual que la contradicción de una
+ * deducción: el cómputo no está mal —usa la lectura más confiable y cuenta el
+ * elemento una sola vez— pero hay una diferencia real entre dos láminas que
+ * alguien tiene que mirar. La clave es estable por elemento y campo, así que el
+ * conciliador la abre una vez y, si el conflicto desaparece, la cierra sola.
+ */
+function hallazgoUnificacion(
+  conflicto: ConflictoUnificacion,
+  porId: ReadonlyMap<string, EntidadPersistida>,
+): HallazgoDetectado {
+  const lecturas = conflicto.valores.map((valor, i) => {
+    const entidad = porId.get(conflicto.entidadIds[i] ?? '');
+    const donde = entidad === undefined ? '' : ` (${entidad.nombre})`;
+    return `${comoTexto(conflicto.campo, valor)}${donde}`;
+  });
+  const gana = lecturas[0] ?? '';
+
+  return hallazgoInconsistencia({
+    rubro: null, // es coherencia del expediente, no de un rubro
+    clave: `unificacion.${conflicto.elementoId}.${conflicto.campo}`,
+    checklistItem: 'unificacion.conflicto',
+    descripcion:
+      `Dos láminas dicen cosas distintas sobre ${etiquetaCampo(conflicto.campo)} del mismo ` +
+      `elemento: ${enumerar(lecturas)}. Computo con ${gana}, que es la lectura más confiable, ` +
+      'y lo cuento una sola vez. Revisá cuál de las dos vale.',
+    fuentes: unirFuentes(
+      ...conflicto.entidadIds.map((id) => {
+        const entidad = porId.get(id);
+        return entidad === undefined ? [] : [fuenteDeEntidad(entidad)];
+      }),
+    ),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Deducciones superadas por la documentación
 // ---------------------------------------------------------------------------
 
@@ -1193,6 +1273,14 @@ export async function recomputarObra(
           ...nacenValidadas.map((propuesta) => comoFilaValidada(obraId, propuesta)),
         ]);
 
+  // El mismo tabique dibujado en la planta y cortado en el corte es UNO
+  // (§5.3): sin esto se computa dos veces en cuanto lo deducido entra solo. Va
+  // después del overlay —las deducciones siguen apuntando a las filas reales— y
+  // antes de computar. `deducir()` corre sobre las entidades **sin** unificar a
+  // propósito: sus reglas son las que cruzan una lámina con la otra.
+  const { entidades: unificadas, conflictos, aportes } = unificarPorElemento(persistidas);
+  const camposUnificados = mergearAportes(camposDeducidos, aportes);
+
   // Tres cosas que el motor no adivina y el pipeline sí sabe:
   //  - `plantillasConConfig(config)`: el desperdicio por rubro es configurable
   //    por estudio (P2 del PRD), y sin esto el formulario de configuración
@@ -1204,22 +1292,25 @@ export async function recomputarObra(
   //    respaldo de un campo que la entidad no trae — sin ellos, cuatro tabiques
   //    del mismo local abren cuatro consultas por la misma altura.
   const { items, hallazgos: detectados } = computarObraConPlantillas(
-    persistidas,
+    unificadas,
     obra.tipo,
     plantillasConConfig(config),
-    { camposDeducidos, laminas: planos, datosObra: datos },
+    { camposDeducidos: camposUnificados, laminas: planos, datosObra: datos },
   );
 
   // Las contradicciones son hallazgos como cualquier otro: se emiten en esta
-  // misma pasada, así que el conciliador las abre y las cierra solo.
+  // misma pasada, así que el conciliador las abre y las cierra solo. Lo mismo
+  // vale para lo que quedó en pugna al unificar.
   const superadas = contradichas.map(hallazgoContradiccion);
+  const porId = new Map(persistidas.map((entidad) => [entidad.id, entidad]));
+  const enPugna = conflictos.map((conflicto) => hallazgoUnificacion(conflicto, porId));
 
   const resumen = resumenVacio();
   await sincronizarItems(db, obraId, items, resumen);
   await sincronizarHallazgos(
     db,
     obraId,
-    [...detectados, ...inconsistencias, ...superadas],
+    [...detectados, ...inconsistencias, ...superadas, ...enPugna],
     resumen,
   );
   await sincronizarDeducciones(db, obraId, propuestas, resumen);
@@ -1233,7 +1324,8 @@ export async function recomputarObra(
     await auditar(obraId, 'computo_recalculado', `obras:${obraId}`, {
       entidades: filas.length,
       items: items.length,
-      hallazgos: detectados.length + inconsistencias.length + superadas.length,
+      hallazgos:
+        detectados.length + inconsistencias.length + superadas.length + enPugna.length,
       deducciones: propuestas.length,
       ...resumen,
     });

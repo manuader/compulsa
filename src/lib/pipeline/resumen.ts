@@ -33,6 +33,7 @@ import {
   type DatosObraResueltos,
   type EntidadPersistida,
 } from '@/lib/computo/engine';
+import { unificarPorElemento } from '@/lib/computo/unificar';
 import { igualJson } from '@/lib/pipeline/json';
 import {
   aplicarDeduccionesValidadas,
@@ -271,11 +272,13 @@ export function generarResumen(
   // Todo lo que el motor recibe acá tiene que ser lo MISMO que recibe en
   // `recomputarObra`: el alcance del resumen tiene que dar los mismos ítems que
   // la planilla. Las láminas por el tipo (aberturas cuenta distinto según de qué
-  // lámina salió cada carpintería), el origen por campo y los datos de obra —un
+  // lámina salió cada carpintería), el origen por campo, los datos de obra —un
   // rubro que solo computa por una altura de local declarada una vez tiene que
-  // estar en los dos lados—.
+  // estar en los dos lados— y los elementos ya unificados, para no contar dos
+  // veces el tabique que la planta y el corte dicen cada una por su lado.
+  const { entidades: unificadas } = unificarPorElemento(entidadesObra);
   const { items } = computarObra(
-    entidadesObra,
+    unificadas,
     obra.tipo,
     undefined,
     contexto.camposDeducidos,

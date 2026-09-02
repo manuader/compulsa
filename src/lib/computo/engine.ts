@@ -25,6 +25,7 @@ import { PLANTILLAS, type PlantillaRubro, type ResultadoComputo } from '@/lib/ru
 import type {
   DatoObraResuelto,
   EntidadDetectada,
+  Fuente,
   HallazgoDetectado,
   ItemComputo,
   Origen,
@@ -40,7 +41,23 @@ import { RUBROS } from '@/types/domain';
  * dos cosas: `laminaId` + `bbox` arman la `Fuente` de cada ítem (P1) e `id`
  * permite que un hallazgo apunte al campo exacto que hay que completar.
  */
-export type EntidadPersistida = EntidadDetectada & { id: string; laminaId: string };
+export type EntidadPersistida = EntidadDetectada & {
+  id: string;
+  laminaId: string;
+  /**
+   * El elemento físico al que pertenece, cuando el cruce reconoció que dos
+   * láminas hablan de la misma cosa (`entidades.elemento_id`). `undefined` ⇒
+   * todavía no se unificó, que es el caso de toda obra sin cruce corrido.
+   */
+  elementoId?: string | null;
+  /**
+   * Las fuentes de las **hermanas** con las que se unificó (§5.3). La entidad
+   * conserva su `laminaId` + `bbox` como fuente propia; estas se suman al ítem
+   * para que cite las dos láminas (P1). Las pone `unificarPorElemento` y las lee
+   * `fuentesDeEntidades`.
+   */
+  fuentesUnificadas?: Fuente[];
+};
 
 /**
  * Lo único que una plantilla necesita saber de una lámina: **de qué tipo es**.
