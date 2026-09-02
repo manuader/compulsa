@@ -25,6 +25,7 @@
 import ExcelJS from 'exceljs';
 
 import { DISCLAIMER, fechaIso, fechaLegible, slugObra, type ObraExport } from '@/lib/export/xlsx';
+import type { Origen } from '@/types/domain';
 
 // --- Contrato de datos -----------------------------------------------------
 
@@ -50,6 +51,31 @@ export interface FilaCarpinteria {
   origen: OrigenDato;
   /** Códigos de las láminas que sostienen la fila, ya legibles. */
   laminas: string;
+}
+
+/**
+ * Con qué origen sale una fila, a partir de lo que se sabe de sus medidas.
+ *
+ * Vive acá y no en la route para poder pinnearlo: es una decisión de producto
+ * —qué se le dice a quien va a mandar a fabricar— y no un detalle de un handler.
+ *
+ * El **peor** origen manda, igual que en el ítem de cómputo (§5.5): si el ancho
+ * está acotado y el alto se midió sobre el dibujo, la fila es `inferido`. Decir
+ * «deducido validado» de una medida sacada con la regla sería vender una
+ * medición gráfica como un cruce documental.
+ *
+ * @param faltaAlgunaMedida `true` si el ancho o el alto no están: sin medida no
+ *   hay fila que fabricar, y eso gana sobre todo lo demás.
+ * @param origenes El origen de cada medida que **no** salió de la documentación
+ *   escrita (las explícitas no aportan nada acá).
+ */
+export function origenDeCarpinteria(
+  faltaAlgunaMedida: boolean,
+  origenes: readonly Origen[],
+): OrigenDato {
+  if (faltaAlgunaMedida) return 'pendiente';
+  if (origenes.includes('inferido')) return 'inferido';
+  return origenes.some((origen) => origen !== 'explicito') ? 'deducido' : 'explicito';
 }
 
 export interface OpcionesPlanilla {

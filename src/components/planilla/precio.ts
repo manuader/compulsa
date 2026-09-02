@@ -15,7 +15,7 @@
  *  2. **Un total dice qué no está contando.** Sumar solo lo que tiene precio y
  *     no aclararlo es la forma más prolija de hacer comprar de menos.
  */
-import { formatearMonto } from '@/lib/compulsa/comparativa';
+import { formatearMonto } from '@/lib/format/dinero';
 import { redondear2 } from '@/lib/computo/unidades';
 import type { Origen, PrecioEstimado } from '@/types/domain';
 

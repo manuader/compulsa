@@ -23,8 +23,8 @@ import { getSession } from '@/lib/auth/session';
 import {
   generarPlanillaCarpinterias,
   nombreArchivoPlanilla,
+  origenDeCarpinteria,
   type FilaCarpinteria,
-  type OrigenDato,
 } from '@/lib/export/planilla-carpinterias';
 import { leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
 import { aplicarDeduccionesValidadas, comoEntidadPersistida } from '@/lib/pipeline/recomputar';
@@ -92,20 +92,12 @@ export async function GET(
     const altoM = leerMedida(abertura, 'altoM');
 
     const falta = MEDIDAS.some((campo) => leerMedida(abertura, campo) === null);
-    // El peor origen de las dos medidas manda, igual que en el ítem de cómputo
-    // (§5.5): si el ancho está acotado y el alto se midió sobre el dibujo, la
-    // fila es `inferido`. Decir «deducido» sería vender la medición gráfica
-    // como un cruce documental.
-    const origenes = MEDIDAS.map((campo) => deducidos.get(campo)).filter(
-      (origen): origen is Origen => origen !== undefined,
+    const origen = origenDeCarpinteria(
+      falta,
+      MEDIDAS.map((campo) => deducidos.get(campo)).filter(
+        (origen): origen is Origen => origen !== undefined,
+      ),
     );
-    const origen: OrigenDato = falta
-      ? 'pendiente'
-      : origenes.includes('inferido')
-        ? 'inferido'
-        : origenes.length > 0
-          ? 'deducido'
-          : 'explicito';
 
     // Las láminas: la de la entidad y, si la medida vino de una deducción, la
     // que la aportó (la deducción cita las dos, por eso alcanza con sus fuentes).
