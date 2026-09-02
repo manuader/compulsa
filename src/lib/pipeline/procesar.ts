@@ -716,6 +716,13 @@ export async function procesarDocumento(
 
   // El estado final dice la verdad: si una fase se cayó, la obra terminó con lo
   // que se pudo y la pantalla lo cuenta, en vez de un "listo" que tapa el hueco.
+  //
+  // **`fallos` lo lee el arquitecto**, así que cada entrada dice qué quedó sin
+  // hacer y qué puede hacer él — no el nombre interno de la fase ni el
+  // `error.message` del provider. El detalle técnico va a la fila de auditoría
+  // de cada fase (`errorDetalle`), que es donde se lo busca cuando hay que
+  // arreglarlo: "el inventario de rótulos no corrió (fetch failed)" no le sirve
+  // a nadie del otro lado de la pantalla.
   await marcarFase(
     fallos.length === 0 ? { fase: 'listo' } : { fase: 'error', detalle: fallos.join(' · ') },
   );
@@ -1149,7 +1156,10 @@ async function recomputarObraTolerante(
     await entorno.recomputar(obraId, { db: entorno.db, resumen: false });
   } catch (error) {
     const errorDetalle = detalleDeError(error);
-    fallos.push(`el cómputo no se pudo recalcular (${errorDetalle})`);
+    fallos.push(
+      'el cómputo de la obra quedó sin recalcular: las láminas están analizadas, ' +
+        'pero la planilla puede no estar al día. Reintentá el cruce del expediente y se recalcula',
+    );
     await auditarAgente(obraId, 'recomputo_fallido', `obras:${obraId}`, {
       errorDetalle,
       motivo: 'Las láminas quedaron analizadas; el cómputo de la obra quedó sin recalcular.',
@@ -1176,7 +1186,10 @@ async function anotarFallosDelLote(
     if (resultado.ok) continue;
     const pagina = paginas[indice] as PaginaDelDocumento;
     const errorDetalle = detalleDeError(resultado.error);
-    fallos.push(`la lámina ${pagina.numeroPagina} no se pudo analizar (${errorDetalle})`);
+    fallos.push(
+      `la lámina de la página ${pagina.numeroPagina} quedó sin analizar: lo que dibuja no entró ` +
+        'al cómputo. Reprocesala desde el expediente',
+    );
     await auditarAgente(obraId, ACCION_EXTRACCION_FALLIDA, `laminas:${pagina.laminaId}`, {
       errorDetalle,
       numeroPagina: pagina.numeroPagina,
@@ -1205,7 +1218,10 @@ async function inventariarTolerante(
     await inventariarDocumento(entorno, obra, documento, paginas, marcarFase);
   } catch (error) {
     const errorDetalle = detalleDeError(error);
-    fallos.push(`el inventario de rótulos no corrió (${errorDetalle})`);
+    fallos.push(
+      'el índice del expediente quedó sin armar: cada lámina se analizó leyendo su propio rótulo, ' +
+        'sin saber qué otras láminas hay. Lo que se computó vale igual',
+    );
     await auditarAgente(obra.id, ACCION_INVENTARIO_FALLIDO, `obras:${obra.id}`, {
       errorDetalle,
       motivo: 'El índice del expediente quedó sin armar; la extracción lee el rótulo igual.',
@@ -1224,7 +1240,10 @@ async function medirTolerante(
     await medirDibujo(entorno, obraId, paginas);
   } catch (error) {
     const errorDetalle = detalleDeError(error);
-    fallos.push(`la medición gráfica no corrió (${errorDetalle})`);
+    fallos.push(
+      'lo que el plano dibuja sin acotar quedó sin medir: puede faltar alguna cantidad en la ' +
+        'planilla. Reprocesá esas láminas desde el expediente',
+    );
     await auditarAgente(obraId, 'medicion_fallida', `obras:${obraId}`, {
       errorDetalle,
       motivo: 'Las láminas quedaron analizadas; lo que no tiene cota quedó sin medir.',
@@ -1250,7 +1269,10 @@ async function cruzarTolerante(
     return await cruzarObra(entorno, obra);
   } catch (error) {
     const errorDetalle = detalleDeError(error);
-    fallos.push(`el cruce del expediente no corrió (${errorDetalle})`);
+    fallos.push(
+      'el expediente no se cruzó: las láminas están analizadas y computadas, pero lo que una ' +
+        'lámina dice y a otra le falta quedó sin resolver. Reintentá el cruce del expediente',
+    );
     await auditarAgente(obra.id, ACCION_CRUCE_FALLIDO, `obras:${obra.id}`, {
       errorDetalle,
       motivo: 'Las láminas quedaron analizadas y computadas; el expediente no se cruzó.',

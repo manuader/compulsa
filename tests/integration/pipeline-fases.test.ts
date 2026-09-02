@@ -52,6 +52,7 @@ import {
   ACCION_IDENTIDAD,
   aplicarCruce,
   claveConflicto,
+  descripcionConflicto,
   expedienteDelCruce,
   RESPUESTA_CRUCE_RESUELTO,
 } from '@/lib/pipeline/cruce';
@@ -427,13 +428,19 @@ describe('una fase que se cae', () => {
     const documento = await subirDocumento(db, storage, obraId, usuarioId, archivo);
     await procesarDocumento(documento.id, { db, storage, cruce: revienta });
 
-    // La fase queda contada, con el detalle del error adentro.
+    // La fase queda contada, y el detalle está escrito para el arquitecto: qué
+    // quedó sin hacer y qué puede hacer él. Ni el nombre interno de la fase ni
+    // el `error.message` del provider.
     const fase = await faseDe(obraId);
     expect(fase?.fase).toBe('error');
-    expect(fase?.detalle).toContain('el cruce del expediente no corrió');
-    expect(fase?.detalle).toContain('el modelo no contestó a tiempo');
+    expect(fase?.detalle).toBe(
+      'el expediente no se cruzó: las láminas están analizadas y computadas, pero lo que una ' +
+        'lámina dice y a otra le falta quedó sin resolver. Reintentá el cruce del expediente',
+    );
+    expect(fase?.detalle).not.toContain('el modelo no contestó a tiempo');
 
-    // Y el fallo tiene su propia fila de auditoría, no solo el estado.
+    // Y el fallo tiene su propia fila de auditoría, que es donde SÍ va el
+    // detalle técnico: sacarlo de la pantalla no es perderlo.
     const [fallo] = await auditoriaDe(obraId, ACCION_CRUCE_FALLIDO);
     expect(fallo.diffJson).toMatchObject({ errorDetalle: 'el modelo no contestó a tiempo' });
 
@@ -515,6 +522,93 @@ function cruceQueDice(respuesta: Partial<RespuestaCruceCruda>): CruceProvider {
     },
   };
 }
+
+describe('el texto que lee el arquitecto', () => {
+  beforeEach(async () => {
+    await subirYProcesar(obraId);
+  });
+
+  /**
+   * Una lámina sin código de rótulo se nombra por su página, como en toda la app
+   * (`etiquetaDeLamina`, bandeja). Antes caía al uuid, y el uuid terminaba
+   * impreso adentro de la consulta: "…8f3a1c2e-… dice «2,60 m»…".
+   */
+  it('una lámina sin código se cita por su página, nunca por su uuid', async () => {
+    const planos = await laminasDe(obraId);
+    const corte = planos[1] as Lamina;
+    await db.update(laminas).set({ codigo: null }).where(eq(laminas.id, corte.id));
+
+    const { ctx, refs } = await expedienteDelCruce(db, obraId);
+    expect(refs.get(corte.id)).toBe('Página 2');
+    // Y no entra al índice por código: el modelo no podría citarla, así que
+    // resolver algo contra ella sería adivinar.
+    expect([...ctx.laminasPorCodigo.values()]).not.toContain(corte.id);
+  });
+
+  /**
+   * `descripcion` y `causaPosible` los escribe el modelo y se empalman en el
+   * medio de una frase nuestra. Sin normalizar se leían "la altura no coincide
+   * A-01 dice «2,60 m»" y "Puede ser Revisión vieja contra nueva..".
+   */
+  it('empalma lo que escribió el modelo sin puntos dobles ni minúsculas colgadas', () => {
+    const refs = new Map([
+      ['lam-a', 'A-01'],
+      ['lam-b', 'Página 2'],
+    ]);
+
+    expect(
+      descripcionConflicto(
+        {
+          descripcion: 'la altura de local no coincide entre láminas',
+          datoA: '2,60 m',
+          laminaIdA: 'lam-a',
+          datoB: '2,80 m',
+          laminaIdB: 'lam-b',
+          causaPosible: 'Revisión vieja contra nueva.',
+        },
+        refs,
+      ),
+    ).toBe(
+      'La altura de local no coincide entre láminas. A-01 dice «2,60 m» y Página 2 dice «2,80 m». ' +
+        'Puede ser revisión vieja contra nueva.',
+    );
+  });
+
+  it('no le baja la mayúscula a una sigla ni al código de una lámina', () => {
+    const refs = new Map([['lam-a', 'A-01'], ['lam-b', 'DET00']]);
+    const base = {
+      descripcion: 'El vidrio de FP01 no coincide.',
+      datoA: 'DVH 4/9/4',
+      laminaIdA: 'lam-a',
+      datoB: 'simple 4 mm',
+      laminaIdB: 'lam-b',
+    };
+
+    expect(descripcionConflicto({ ...base, causaPosible: 'DVH contra vidrio simple' }, refs)).toContain(
+      'Puede ser DVH contra vidrio simple.',
+    );
+    expect(descripcionConflicto({ ...base, causaPosible: 'PL01 quedó desactualizada' }, refs)).toContain(
+      'Puede ser PL01 quedó desactualizada.',
+    );
+  });
+
+  it('una causa vacía no deja la frase colgada de un «Puede ser»', () => {
+    const refs = new Map([['lam-a', 'A-01'], ['lam-b', 'A-02']]);
+    expect(
+      descripcionConflicto(
+        {
+          descripcion: 'La altura no coincide.',
+          datoA: '2,60 m',
+          laminaIdA: 'lam-a',
+          datoB: '2,80 m',
+          laminaIdB: 'lam-b',
+          causaPosible: '   ',
+        },
+        refs,
+      ),
+    ).toBe('La altura no coincide. A-01 dice «2,60 m» y A-02 dice «2,80 m».');
+  });
+});
 
 describe('aplicarCruce', () => {
   beforeEach(async () => {

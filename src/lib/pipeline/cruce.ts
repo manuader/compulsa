@@ -143,11 +143,17 @@ export interface ExpedienteDelCruce {
  * para fallar: gana la primera por número de página y la segunda queda
  * inalcanzable por código (el saneo la va a descartar si el modelo la cita, que
  * es lo honesto — no hay manera de saber a cuál se refería).
+ *
+ * `refs` es cómo se **nombra** cada lámina en un texto que va a leer el
+ * arquitecto, y por eso incluye a las que no tienen código: su número de
+ * página. `laminasPorCodigo` es otra cosa —cómo se **resuelve** lo que el
+ * modelo citó— y ahí una lámina sin código no entra, porque el modelo no
+ * podría citarla.
  */
 export async function expedienteDelCruce(db: Db, obraId: string): Promise<ExpedienteDelCruce> {
   const [planos, elementos] = await Promise.all([
     db
-      .select({ id: laminas.id, codigo: laminas.codigo })
+      .select({ id: laminas.id, codigo: laminas.codigo, numeroPagina: laminas.numeroPagina })
       .from(laminas)
       .where(eq(laminas.obraId, obraId))
       .orderBy(laminas.numeroPagina),
@@ -165,7 +171,10 @@ export async function expedienteDelCruce(db: Db, obraId: string): Promise<Expedi
   const laminasPorCodigo = new Map<string, string>();
   const refs = new Map<string, string>();
   for (const plano of planos) {
-    refs.set(plano.id, plano.codigo ?? plano.id);
+    // Sin código de rótulo se la nombra por su página, como en toda la app
+    // (`etiquetaDeLamina` de la bandeja). El uuid no: terminaba impreso adentro
+    // de una consulta —"…8f3a1c2e-… dice «2,60»…"— que el arquitecto lee.
+    refs.set(plano.id, plano.codigo ?? `Página ${plano.numeroPagina}`);
     if (plano.codigo !== null && !laminasPorCodigo.has(plano.codigo)) {
       laminasPorCodigo.set(plano.codigo, plano.id);
     }
@@ -211,15 +220,61 @@ export function claveConflicto(conflicto: ConflictoCruce): string {
   return claveConflictoCruce(huella);
 }
 
+/**
+ * Cómo se nombra una lámina que el modelo citó, para el arquitecto.
+ *
+ * `refs` mapea toda lámina de la obra (`expedienteDelCruce`) y `sanearCruce()`
+ * solo devuelve ids que salieron de ese mismo mapa, así que la caída es
+ * inalcanzable por construcción — y está igual porque lo que NO puede pasar es
+ * que un uuid termine dentro de una consulta de la bandeja.
+ */
+function refDeLamina(refs: ReadonlyMap<string, string>, laminaId: string): string {
+  return refs.get(laminaId) ?? 'una lámina del expediente';
+}
+
+/**
+ * Un texto del modelo puesto a arrancar una oración: mayúscula inicial y un
+ * punto final, uno solo.
+ *
+ * El modelo escribe la descripción del conflicto como se le da la gana —con
+ * punto o sin punto, en mayúscula o en minúscula— y acá se la empalma con el
+ * resto de la frase. Sin esto se leen cosas como "la altura no coincide A-02
+ * dice «2,60»" en la bandeja.
+ */
+function comoOracion(texto: string): string {
+  const limpio = texto.trim().replace(/[.\s]+$/u, '');
+  if (limpio === '') return '';
+  return `${limpio.charAt(0).toLocaleUpperCase('es-AR')}${limpio.slice(1)}.`;
+}
+
+/**
+ * Un texto del modelo puesto a seguir «Puede ser …»: minúscula inicial y sin
+ * punto, porque el punto lo pone la frase que lo envuelve.
+ *
+ * La minúscula se aplica **solo si la palabra parece una palabra común** —una
+ * mayúscula seguida de minúscula—: así "Revisión vieja" baja a "revisión vieja"
+ * y "DVH contra vidrio simple" o "PL01 está desactualizada" quedan como están.
+ */
+function comoFrase(texto: string): string {
+  const limpio = texto.trim().replace(/[.\s]+$/u, '');
+  if (limpio === '') return '';
+  const inicial = limpio.charAt(0);
+  const sigue = limpio.charAt(1);
+  const esPalabraComun =
+    inicial === inicial.toLocaleUpperCase('es-AR') && sigue === sigue.toLocaleLowerCase('es-AR');
+  return esPalabraComun ? `${inicial.toLocaleLowerCase('es-AR')}${limpio.slice(1)}` : limpio;
+}
+
 /** El texto de la consulta: qué dice cada lámina, y la causa si el modelo la arriesgó. */
 export function descripcionConflicto(
   conflicto: ConflictoCruce,
   refs: ReadonlyMap<string, string>,
 ): string {
-  const refA = refs.get(conflicto.laminaIdA) ?? conflicto.laminaIdA;
-  const refB = refs.get(conflicto.laminaIdB) ?? conflicto.laminaIdB;
-  const causa = conflicto.causaPosible === undefined ? '' : ` Puede ser ${conflicto.causaPosible}.`;
-  return `${conflicto.descripcion} ${refA} dice «${conflicto.datoA}» y ${refB} dice «${conflicto.datoB}».${causa}`;
+  const refA = refDeLamina(refs, conflicto.laminaIdA);
+  const refB = refDeLamina(refs, conflicto.laminaIdB);
+  const causa = comoFrase(conflicto.causaPosible ?? '');
+  const cierre = causa === '' ? '' : ` Puede ser ${causa}.`;
+  return `${comoOracion(conflicto.descripcion)} ${refA} dice «${conflicto.datoA}» y ${refB} dice «${conflicto.datoB}».${cierre}`;
 }
 
 /** La lámina entera como fuente: es lo que cita el cruce cuando no hay bbox. */
