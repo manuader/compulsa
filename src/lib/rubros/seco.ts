@@ -14,13 +14,16 @@
  * tabique, si no está el dato de obra del local (`altura_local.<nivel>`) y, si
  * tampoco, UNA consulta para todos los tabiques que la esperan — la altura de
  * un local se dibuja en el corte una vez, y preguntarla por tabique era
- * preguntar lo mismo cuatro veces.
+ * preguntar lo mismo cuatro veces. Esa consulta **frena la aprobación cuando
+ * dejó ítems cortos**: si de cuatro tabiques computaron tres, `seco.placas` sale
+ * con un 25% menos de placa que la que la obra necesita.
  */
 import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import { armarItem, type Presentacion } from '@/lib/computo/presentacion';
 import { redondear2, redondearEntero } from '@/lib/computo/unidades';
 import {
   alcanceDeReforma,
+  datoEnFrase,
   hallazgoDatoFaltante,
   leerMedida,
   leerNumero,
@@ -28,11 +31,10 @@ import {
 } from '@/lib/hallazgos/taxonomia';
 import type { PlantillaRubro, ResultadoComputo } from '@/lib/rubros/index';
 import {
+  ALTURA_LOCAL,
   cadenaDeRespaldo,
-  clavesAlturaLocal,
   conFuentesDeDato,
   conOrigenes,
-  sufijoDeClave,
   type DatosObra,
 } from '@/lib/rubros/respaldo';
 import type { HallazgoDetectado, ItemComputo, TipoObra } from '@/types/domain';
@@ -97,7 +99,7 @@ export const plantillaSeco = {
         continue;
       }
 
-      const altura = cadena.medida(entidad, 'alturaM', clavesAlturaLocal(entidad));
+      const altura = cadena.medida(entidad, 'alturaM', ALTURA_LOCAL);
       if (altura === null) continue; // la consulta agrupada sale al final, una sola vez
 
       const largo = leerMedida(entidad, 'largoM');
@@ -124,19 +126,24 @@ export const plantillaSeco = {
       usadas.push(entidad);
     }
 
-    // Una sola consulta por dato de obra que falta, con todos los tabiques que
-    // la esperan adentro.
-    hallazgos.push(
-      ...cadena.hallazgosFaltantes({
+    /**
+     * Una sola consulta por dato de obra que falta, con todos los tabiques que
+     * la esperan adentro. Se arma con los ítems ya emitidos porque de eso
+     * depende que bloquee: lo que quedó afuera de un `seco.placas` que igual
+     * salió lo dejó corto, y aprobarlo es comprar de menos.
+     */
+    const consultas = (emitidos: readonly ItemComputo[]): HallazgoDetectado[] =>
+      cadena.hallazgosFaltantes({
         rubro: RUBRO,
         unidad: 'm',
+        computados: emitidos,
         descripcion: (clave) =>
-          `No encontré la altura de estos tabiques ni una altura de local declarada para «${sufijoDeClave(clave)}». ` +
+          `No encontré la altura de estos tabiques y en el expediente tampoco hay ${datoEnFrase(clave)}. ` +
           'Cargá la altura del local una sola vez y la aplico a todos, o indicá el corte donde está acotada.',
-      }),
-    );
+      });
 
     if (usadas.length === 0) {
+      hallazgos.push(...consultas([]));
       return { items: [], hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
     }
 
@@ -218,6 +225,7 @@ export const plantillaSeco = {
       ),
     ];
 
+    hallazgos.push(...consultas(items));
     return { items, hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
   },
 } satisfies PlantillaRubro;

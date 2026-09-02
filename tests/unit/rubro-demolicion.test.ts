@@ -181,3 +181,33 @@ describe('plantilla demolición: huecos', () => {
     expect(origenPorEntidad!.get('m8')!.get('alturaM')).toBe('deducido');
   });
 });
+
+/**
+ * Retirar una carpintería no necesita medidas, así que el rubro emite su ítem
+ * igual mientras los m² de muro a demoler están cortos. Un rubro con ítems y
+ * con un muro sin computar es una planilla corta con cara de completa.
+ */
+describe('plantilla demolición: el muro que falta frena, aunque la carpintería salga', () => {
+  const sinAltura = entidad({
+    id: 'm2',
+    nombre: 'M2',
+    atributos: { tipo: 'mamposteria', largoM: 3 },
+  });
+  const carpinteria = entidad({
+    id: 'p1',
+    nombre: 'P1',
+    tipo: 'abertura',
+    atributos: {},
+  });
+  const { items, hallazgos } = plantillaDemolicion.computar([sinAltura, carpinteria], 'reforma');
+
+  it('el rubro tiene ítems: la carpintería a retirar', () => {
+    expect(items.map((i) => i.claveItem)).toEqual(['demolicion.carpinterias']);
+  });
+
+  it('y la consulta por la altura del muro bloquea la aprobación', () => {
+    const consulta = hallazgos.find((h) => h.clave.startsWith('dato_obra.'))!;
+    expect(consulta.bloqueante).toBe(true);
+    expect(consulta.targetDato?.entidades).toEqual(['m2']);
+  });
+});

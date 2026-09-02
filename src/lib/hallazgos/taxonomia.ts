@@ -288,6 +288,20 @@ export function etiquetaDeDatoObra(clave: string): string {
 }
 
 /**
+ * La misma etiqueta, pero para meterla adentro de una frase: «no encontré la
+ * altura de estos tabiques y en el expediente tampoco hay **altura de local en
+ * PB**».
+ *
+ * Baja **solo la primera letra**: un `toLowerCase()` entero dejaría «altura de
+ * local en pb», y el sufijo es el nombre del nivel tal como lo escribió el
+ * arquitecto.
+ */
+export function datoEnFrase(clave: string): string {
+  const etiqueta = etiquetaDeDatoObra(clave);
+  return etiqueta.charAt(0).toLowerCase() + etiqueta.slice(1);
+}
+
+/**
  * El dato de obra que respalda un campo, o `null` si no está.
  *
  * Es el **único lector válido** del mapa de datos de obra: una plantilla no
@@ -313,7 +327,7 @@ export function respaldoDeDatoObra(
  * evaluación no acompaña. Tres líneas repetidas valen menos que ese riesgo
  * (mismo criterio que `normalizarTag` en `computo/tags.ts`).
  */
-function enumerar(partes: readonly string[]): string {
+export function enumerar(partes: readonly string[]): string {
   if (partes.length === 0) return '';
   if (partes.length === 1) return partes[0]!;
   return `${partes.slice(0, -1).join(', ')} y ${partes[partes.length - 1]}`;
@@ -328,6 +342,13 @@ export interface EntradaDatoObraFaltante {
   descripcion: string;
   /** Las entidades a las que les falta el dato. De acá salen los ids y los nombres. */
   entidades: readonly EntidadPersistida[];
+  /**
+   * ¿Estas entidades quedaron afuera de un ítem que el rubro **sí** computó?
+   *
+   * No lo decide este constructor: lo sabe quien computó. Ver el docstring de
+   * abajo — es la diferencia entre una planilla corta y un rubro vacío.
+   */
+  bloqueante: boolean;
 }
 
 /**
@@ -341,27 +362,30 @@ export interface EntradaDatoObraFaltante {
  * —la clave del dato más a quiénes afecta, que es lo que la tarjeta muestra— y
  * responderlo escribe `datos_obra` una vez: el recompute lo propaga solo.
  *
- * **No bloquea.** Un faltante de entidad frena la aprobación del rubro porque
- * hay algo roto en un elemento concreto; un hecho global que falta es otra
- * cosa, y frenar el rubro entero por él dejaría la obra sin salida hasta que
- * alguien conteste. Y sale **sin fuentes**: el dato no se leyó en ninguna
- * lámina, así que no hay bbox honesto que citar (P1 no se cumple citando
- * cualquier cosa).
+ * ## Cuándo bloquea (RF-404, y es la parte que cuesta plata)
  *
- * ## Ojo: el texto subcuenta a los afectados, y el número no
+ * Bloquea **cuando dejó ítems cortos**, y lo dice el que computó: si el rubro
+ * emitió `seco.placas` con tres de los cuatro tabiques del local porque al
+ * cuarto le falta la altura, el número que sale a compulsa es corto —46,80 m²
+ * donde van 62,40— y aprobarlo es comprar un 25% menos de placa, con la
+ * planilla diciendo `explícito` porque los tres que computaron leyeron su
+ * altura de la lámina.
  *
- * La misma clave la emiten varios rubros —a `dato_obra.altura_local.PB` la
- * abren seco (por los tabiques), gruesa (por el muro) y pintura (por los
- * ambientes)—, y el conciliador de hallazgos se queda con **la primera**. O
- * sea: la tarjeta dice «Afecta a T1, T2, T3 y T4» aunque responderla también
- * compute el muro y los dos ambientes.
+ * No bloquea cuando el rubro **no computó nada**: ahí no hay ítem corto que
+ * frenar, y lo que impide aprobar es no tener ítems (`aprobarRubroCore`).
+ * Deduplicar las **preguntas** —una sola para las N entidades que esperan el
+ * mismo hecho— nunca quiso decir sacar la **compuerta**.
  *
- * El comportamiento es el correcto (una pregunta, una respuesta, todo se
- * computa); lo que queda corto es el **texto**, y por eso está anotado acá y no
- * arreglado: juntar los afectados de todos los rubros en una descripción exige
- * que las plantillas se vean entre sí, que es exactamente lo que la cadena de
- * respaldo evita. Si algún día se arregla, se arregla del lado del que
- * concilia, no acá.
+ * Sale **sin fuentes**: el dato no se leyó en ninguna lámina, así que no hay
+ * bbox honesto que citar (P1 no se cumple citando cualquier cosa).
+ *
+ * ## La misma clave la emiten varios rubros
+ *
+ * A `dato_obra.altura_local.PB` la abren seco (por los tabiques), gruesa (por
+ * el muro) y pintura (por los ambientes). El conciliador de hallazgos no puede
+ * quedarse con la primera y tirar el resto —la tarjeta diría «Afecta a T1 y T2»
+ * y responderla también computa el muro—: tiene que **fusionarlas** con
+ * `fusionarDatoObraFaltante()`.
  */
 export function hallazgoDatoObraFaltante(entrada: EntradaDatoObraFaltante): HallazgoDetectado {
   const nombres = entrada.entidades.map((entidad) => entidad.nombre);
@@ -373,12 +397,78 @@ export function hallazgoDatoObraFaltante(entrada: EntradaDatoObraFaltante): Hall
         ? entrada.descripcion
         : `${entrada.descripcion} Afecta a ${enumerar(nombres)}.`,
     clave: `${PREFIJO_DATO_OBRA}${entrada.claveDato}`,
-    bloqueante: false,
+    bloqueante: entrada.bloqueante,
     fuentes: [],
     targetDato: {
       clave: entrada.claveDato,
       ...(entrada.unidad ? { unidad: entrada.unidad } : {}),
       entidades: entrada.entidades.map((entidad) => entidad.id),
+    },
+  };
+}
+
+/** ¿Es una consulta de dato de obra, o sea de las que se fusionan por clave? */
+export function esDatoObraFaltante(hallazgo: HallazgoDetectado): boolean {
+  return hallazgo.targetDato !== undefined && hallazgo.clave.startsWith(PREFIJO_DATO_OBRA);
+}
+
+/** El texto del fusionado: nombra el dato, nunca la lista de afectados. */
+function descripcionFusionada(claveDato: string): string {
+  return (
+    `Falta «${etiquetaDeDatoObra(claveDato)}»: no está en ninguna lámina y sin ese dato quedan ` +
+    'elementos sin computar. Cargalo una sola vez y lo aplico a todos los que lo esperan, o ' +
+    'indicá la lámina donde está.'
+  );
+}
+
+/**
+ * Dos consultas por el **mismo** dato, hechas una sola.
+ *
+ * Es lo que el conciliador de hallazgos tiene que llamar cuando dos rubros
+ * abren la misma clave, en vez de quedarse con la primera. Tres cosas se
+ * juntan, y las tres importan:
+ *
+ *  - **Los afectados**, sin repetir. Es el número que la tarjeta muestra: con
+ *    la primera lista sola, la tarjeta promete menos de lo que hace.
+ *  - **El bloqueo**, por o lógico. Si a alguno le dejó ítems cortos, la
+ *    consulta frena: una sola de las dos alcanza para que la planilla esté
+ *    corta.
+ *  - **El rubro**. El gate mira `rubro` y nada más, así que un fusionado que se
+ *    quedara con «seco» dejaría a gruesa aprobar el cómputo al que le falta el
+ *    mismo muro que la consulta está pidiendo. Cuando cruza rubros pasa a ser
+ *    de obra (`rubro: null`) — que es lo que un dato de obra **es**— y frena a
+ *    todos. Dos del mismo rubro conservan el rubro.
+ *
+ * La descripción se rearma desde la clave: la del primero enumera a los suyos y
+ * repetirla sería volver a prometer de menos.
+ */
+export function fusionarDatoObraFaltante(
+  a: HallazgoDetectado,
+  b: HallazgoDetectado,
+): HallazgoDetectado {
+  if (a.clave !== b.clave) {
+    throw new Error(
+      `fusionarDatoObraFaltante: son hechos distintos, no se fusionan (${a.clave} vs ${b.clave}).`,
+    );
+  }
+  const targetA = a.targetDato;
+  const targetB = b.targetDato;
+  if (targetA === undefined || targetB === undefined) {
+    throw new Error(`fusionarDatoObraFaltante: ${a.clave} no es una consulta de dato de obra.`);
+  }
+
+  const unidad = targetA.unidad ?? targetB.unidad;
+  return {
+    tipo: 'faltante',
+    rubro: a.rubro === b.rubro ? a.rubro : null,
+    descripcion: descripcionFusionada(targetA.clave),
+    clave: a.clave,
+    bloqueante: a.bloqueante || b.bloqueante,
+    fuentes: [],
+    targetDato: {
+      clave: targetA.clave,
+      ...(unidad ? { unidad } : {}),
+      entidades: [...new Set([...targetA.entidades, ...targetB.entidades])],
     },
   };
 }

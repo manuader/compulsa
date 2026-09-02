@@ -20,14 +20,19 @@
 import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import { armarItem, type Presentacion } from '@/lib/computo/presentacion';
 import { redondear2 } from '@/lib/computo/unidades';
-import { alcanceDeReforma, hallazgoDatoFaltante, leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
+import {
+  alcanceDeReforma,
+  datoEnFrase,
+  hallazgoDatoFaltante,
+  leerMedida,
+  leerTexto,
+} from '@/lib/hallazgos/taxonomia';
 import type { PlantillaRubro, ResultadoComputo } from '@/lib/rubros/index';
 import {
+  ALTURA_LOCAL,
   cadenaDeRespaldo,
-  clavesAlturaLocal,
   conFuentesDeDato,
   conOrigenes,
-  sufijoDeClave,
   type DatosObra,
 } from '@/lib/rubros/respaldo';
 import type { HallazgoDetectado, ItemComputo, TipoObra } from '@/types/domain';
@@ -93,7 +98,7 @@ export const plantillaGruesa = {
         continue;
       }
 
-      const altura = cadena.medida(entidad, 'alturaM', clavesAlturaLocal(entidad));
+      const altura = cadena.medida(entidad, 'alturaM', ALTURA_LOCAL);
       if (altura === null) continue; // la consulta agrupada sale al final
 
       const largo = leerMedida(entidad, 'largoM');
@@ -116,16 +121,6 @@ export const plantillaGruesa = {
       m2Nuevos += largo * altura;
       nuevos.push(entidad);
     }
-
-    hallazgos.push(
-      ...cadena.hallazgosFaltantes({
-        rubro: RUBRO,
-        unidad: 'm',
-        descripcion: (clave) =>
-          `No encontré la altura de estos muros ni una altura de local declarada para «${sufijoDeClave(clave)}». ` +
-          'Cargá la altura del local una sola vez y la aplico a todos, o indicá el corte donde está acotada.',
-      }),
-    );
 
     const items: ItemComputo[] = [];
 
@@ -186,6 +181,19 @@ export const plantillaGruesa = {
         ),
       );
     }
+
+    // Va al final porque bloquea según lo que el rubro haya emitido: un muro
+    // que quedó afuera de un `gruesa.ladrillos` que igual salió lo dejó corto.
+    hallazgos.push(
+      ...cadena.hallazgosFaltantes({
+        rubro: RUBRO,
+        unidad: 'm',
+        computados: items,
+        descripcion: (clave) =>
+          `No encontré la altura de estos muros y en el expediente tampoco hay ${datoEnFrase(clave)}. ` +
+          'Cargá la altura del local una sola vez y la aplico a todos, o indicá el corte donde está acotada.',
+      }),
+    );
 
     return { items, hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
   },

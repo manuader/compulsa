@@ -14,10 +14,18 @@
  *    ítem tiene que citarlo) y el campo queda anotado en `origenPorEntidad` con
  *    **el origen del dato** — un `alturaM` que salió de un dato deducido no es
  *    `explicito`, y el engine (T4) le pone al ítem el peor origen de sus campos.
+ *  - Si la entidad no dice a cuál pertenece —un tabique sin `nivel`, que es lo
+ *    normal en una planta de verdad— y la obra declaró **una sola** altura de
+ *    la familia, esa es. Preguntar `altura_local.general` cuando el cruce ya
+ *    anotó `altura_local.PB` es pedirle al arquitecto un número que el sistema
+ *    tiene escrito dos renglones más abajo.
  *  - Si tampoco hay dato, la pregunta se hace **una sola vez por clave de dato**:
  *    todas las entidades a las que les falta el mismo hecho entran a un único
  *    `hallazgoDatoObraFaltante`, que apunta a `targetDato` en vez de a una
- *    entidad. Responderlo escribe `datos_obra` y el recompute lo propaga.
+ *    entidad. Responderlo escribe `datos_obra` y el recompute lo propaga. Esa
+ *    consulta **bloquea la aprobación si el rubro emitió ítems sin las
+ *    entidades que la esperan**: agrupar las preguntas era el punto; dejar
+ *    aprobar una planilla corta, no.
  *
  * El valor del dato **no se escribe en la entidad**: entra al cálculo y queda
  * declarado de dónde salió. Copiar el atributo a la entidad no cambiaría ningún
@@ -29,6 +37,8 @@
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { unirFuentes } from '@/lib/computo/presentacion';
 import {
+  datoEnFrase,
+  enumerar,
   hallazgoDatoObraFaltante,
   leerMedida,
   leerTexto,
@@ -51,23 +61,89 @@ export type DatosObra = ReadonlyMap<string, DatoObraResuelto> | undefined;
 export const CLAVE_GENERAL = 'general';
 
 /**
- * Claves candidatas para la altura de un local, de la más específica a la más
- * general: `altura_local.PB` (el `nivel` de la entidad) y `altura_local.general`.
- * La pregunta, si hay que hacerla, usa la primera.
+ * Una familia de datos de obra: cómo se llama y qué distingue a sus claves.
+ *
+ * `altura_local` se parte por `nivel` (`altura_local.PB`) y
+ * `altura_revestimiento` por ambiente (`altura_revestimiento.Baño`). La cadena
+ * necesita las dos cosas: la clave, para buscar el dato, y el nombre de lo que
+ * distingue, para poder decirle al arquitecto **por qué** le pregunta.
  */
-export function clavesAlturaLocal(entidad: EntidadPersistida): string[] {
-  return clavesDe('altura_local', leerTexto(entidad, 'nivel'));
+export interface FamiliaDeDato {
+  /** El prefijo de la clave: `altura_local`. */
+  familia: string;
+  /** Cómo se llama, en es-AR, lo que separa una clave de otra: «nivel». */
+  queDistingue: string;
+  /** Qué dice la entidad sobre a cuál pertenece, o `null` si no lo dice. */
+  especifica(entidad: EntidadPersistida): string | null;
 }
 
-/** Ídem para el revestimiento: `altura_revestimiento.<ambiente>` y `…general`. */
-export function clavesAlturaRevestimiento(entidad: EntidadPersistida): string[] {
-  return clavesDe('altura_revestimiento', leerTexto(entidad, 'ambiente') ?? entidad.nombre);
+/** La altura del local, por nivel. */
+export const ALTURA_LOCAL: FamiliaDeDato = {
+  familia: 'altura_local',
+  queDistingue: 'nivel',
+  especifica: (entidad) => leerTexto(entidad, 'nivel'),
+};
+
+/** Hasta dónde sube el revestimiento, por ambiente. */
+export const ALTURA_REVESTIMIENTO: FamiliaDeDato = {
+  familia: 'altura_revestimiento',
+  queDistingue: 'ambiente',
+  especifica: (entidad) => leerTexto(entidad, 'ambiente') ?? entidad.nombre,
+};
+
+/** Las claves candidatas para una entidad, más por qué quedaron así. */
+interface Candidatas {
+  /** De la que más manda a la que menos; `claves[0]` es por la que se pregunta. */
+  claves: string[];
+  /**
+   * Los sufijos entre los que no se pudo elegir. Vacío salvo que la obra
+   * declare varias claves de la familia y la entidad no diga a cuál pertenece.
+   */
+  ambiguas: string[];
 }
 
-function clavesDe(familia: string, especifica: string | null): string[] {
-  const general = `${familia}.${CLAVE_GENERAL}`;
-  if (especifica === null || especifica === CLAVE_GENERAL) return [general];
-  return [`${familia}.${especifica}`, general];
+/** El sufijo de una clave: `altura_local.PB` ⇒ `PB`. */
+function sufijoDeClave(claveDato: string): string {
+  const punto = claveDato.indexOf('.');
+  return punto === -1 ? claveDato : claveDato.slice(punto + 1);
+}
+
+/**
+ * Las claves a probar, en orden.
+ *
+ * Si la entidad dice a cuál pertenece —un tabique con `nivel: 'PB'`—, es la
+ * específica y después la general, como siempre.
+ *
+ * Si **no** lo dice, que es lo que pasa en una obra de verdad (la planta no
+ * repite el nivel tabique por tabique, y el prompt tampoco lo pedía), la cadena
+ * mira qué declaró la obra antes de preguntar:
+ *
+ *  - una sola altura específica ⇒ es esa, no hay ambigüedad posible;
+ *  - varias ⇒ el sistema no puede elegir por el arquitecto (§P4: deducir no es
+ *    inventar), así que pregunta por la general **diciendo cuáles hay**;
+ *  - ninguna ⇒ la general, que es la pregunta de siempre.
+ *
+ * La general, cuando está, gana igual: es el hecho que vale para toda la obra.
+ */
+function candidatas(
+  familia: FamiliaDeDato,
+  entidad: EntidadPersistida,
+  datosObra: DatosObra,
+): Candidatas {
+  const general = `${familia.familia}.${CLAVE_GENERAL}`;
+  const especifica = familia.especifica(entidad);
+  if (especifica !== null && especifica !== CLAVE_GENERAL) {
+    return { claves: [`${familia.familia}.${especifica}`, general], ambiguas: [] };
+  }
+
+  const declaradas = [...(datosObra?.keys() ?? [])].filter(
+    (clave) => clave.startsWith(`${familia.familia}.`) && clave !== general,
+  );
+  if (declaradas.length === 1) return { claves: [general, declaradas[0] as string], ambiguas: [] };
+  if (declaradas.length > 1) {
+    return { claves: [general], ambiguas: declaradas.map(sufijoDeClave) };
+  }
+  return { claves: [general], ambiguas: [] };
 }
 
 /** El valor del dato como medida física: número positivo, o `null` si no lo es. */
@@ -84,6 +160,16 @@ export interface EntradaHallazgosFaltantes {
   unidad?: Unidad;
   /** El texto de la consulta, armado por la plantilla a partir de la clave del dato. */
   descripcion: (claveDato: string) => string;
+  /**
+   * Los ítems que el rubro **sí** emitió, que es lo que decide si la consulta
+   * bloquea (RF-404).
+   *
+   * Con ítems emitidos, las entidades que quedaron afuera dejaron la planilla
+   * corta —tres tabiques de cuatro son 46,80 m² donde van 62,40— y aprobar el
+   * rubro es comprar de menos. Sin ítems no hay nada corto que frenar: lo que
+   * impide aprobar un rubro vacío es `aprobarRubroCore`, no esta consulta.
+   */
+  computados: readonly ItemComputo[];
 }
 
 /** La cadena, con la memoria de lo que resolvió y de lo que quedó faltando. */
@@ -93,7 +179,7 @@ export interface CadenaRespaldo {
    * entidad queda anotada para la consulta agrupada, y la plantilla no la
    * computa.
    */
-  medida(entidad: EntidadPersistida, campo: string, claves: readonly string[]): number | null;
+  medida(entidad: EntidadPersistida, campo: string, familia: FamiliaDeDato): number | null;
   /** `entidadId → campo → origen`, solo para los campos que resolvió un dato de obra. */
   origenPorEntidad(): Map<string, Map<string, Origen>> | undefined;
   /** Las fuentes de los datos que resolvieron ese campo en esas entidades. */
@@ -102,17 +188,40 @@ export interface CadenaRespaldo {
   hallazgosFaltantes(entrada: EntradaHallazgosFaltantes): HallazgoDetectado[];
 }
 
+/** Lo que la cadena recuerda de una clave que nadie pudo resolver. */
+interface Faltante {
+  entidades: EntidadPersistida[];
+  ambiguas: string[];
+  familia: FamiliaDeDato;
+}
+
+/**
+ * La parte honesta de la pregunta: cuando la obra declara varias alturas y la
+ * entidad no dice a cuál pertenece, la consulta lo dice en vez de hacer como si
+ * no hubiera ninguna. Elegir una por el arquitecto sería inventar (P4).
+ */
+function notaDeAmbiguedad(falta: Faltante): string {
+  if (falta.ambiguas.length === 0) return '';
+  const general = `${falta.familia.familia}.${CLAVE_GENERAL}`;
+  return (
+    ` En el expediente hay ${datoEnFrase(general)} para ${enumerar(falta.ambiguas)}, ` +
+    `pero estos elementos no dicen a qué ${falta.familia.queDistingue} pertenecen: ` +
+    `completá el ${falta.familia.queDistingue} de cada uno, o cargá un valor que valga para toda la obra.`
+  );
+}
+
 export function cadenaDeRespaldo(datosObra: DatosObra): CadenaRespaldo {
   const origenes = new Map<string, Map<string, Origen>>();
   const usados = new Map<string, DatoObraResuelto>();
-  const faltantes = new Map<string, EntidadPersistida[]>();
+  const faltantes = new Map<string, Faltante>();
   const usoDe = (entidadId: string, campo: string): string => `${entidadId}|${campo}`;
 
   return {
-    medida(entidad, campo, claves) {
+    medida(entidad, campo, familia) {
       const propio = leerMedida(entidad, campo);
       if (propio !== null) return propio; // explícito: la cadena no interviene
 
+      const { claves, ambiguas } = candidatas(familia, entidad, datosObra);
       for (const clave of claves) {
         const dato = respaldoDeDatoObra(datosObra, clave);
         if (dato === null) continue;
@@ -126,12 +235,13 @@ export function cadenaDeRespaldo(datosObra: DatosObra): CadenaRespaldo {
         return valor;
       }
 
-      // Se pregunta por la clave más específica: es la que el arquitecto
-      // reconoce ("la altura de PB"), y la general se responde igual de una vez.
+      // Se pregunta por la clave que la entidad reconoce: la de su nivel si lo
+      // declara ("la altura de PB"), y si no la general, que se responde una
+      // vez para toda la obra.
       const clave = claves[0] as string;
-      const afectadas = faltantes.get(clave) ?? [];
-      afectadas.push(entidad);
-      faltantes.set(clave, afectadas);
+      const falta = faltantes.get(clave) ?? { entidades: [], ambiguas, familia };
+      falta.entidades.push(entidad);
+      faltantes.set(clave, falta);
       return null;
     },
 
@@ -149,13 +259,16 @@ export function cadenaDeRespaldo(datosObra: DatosObra): CadenaRespaldo {
     },
 
     hallazgosFaltantes(entrada) {
-      return [...faltantes].map(([claveDato, afectadas]) =>
+      // Un solo ítem emitido alcanza: lo que falta lo dejó corto.
+      const bloqueante = entrada.computados.length > 0;
+      return [...faltantes].map(([claveDato, falta]) =>
         hallazgoDatoObraFaltante({
           rubro: entrada.rubro,
           claveDato,
           ...(entrada.unidad ? { unidad: entrada.unidad } : {}),
-          descripcion: entrada.descripcion(claveDato),
-          entidades: afectadas,
+          descripcion: entrada.descripcion(claveDato) + notaDeAmbiguedad(falta),
+          entidades: falta.entidades,
+          bloqueante,
         }),
       );
     },
@@ -185,10 +298,4 @@ export function conOrigenes(
   origenes: Map<string, Map<string, Origen>> | undefined,
 ): { origenPorEntidad?: Map<string, Map<string, Origen>> } {
   return origenes === undefined ? {} : { origenPorEntidad: origenes };
-}
-
-/** El sufijo de una clave de dato: `altura_local.PB` ⇒ `PB`. */
-export function sufijoDeClave(claveDato: string): string {
-  const punto = claveDato.indexOf('.');
-  return punto === -1 ? claveDato : claveDato.slice(punto + 1);
 }

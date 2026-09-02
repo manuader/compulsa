@@ -14,7 +14,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import {
+  datoEnFrase,
+  esDatoObraFaltante,
   etiquetaDeDatoObra,
+  fusionarDatoObraFaltante,
   hallazgoDatoObraFaltante,
   PREFIJO_DATO_OBRA,
   respaldoDeDatoObra,
@@ -73,16 +76,34 @@ describe('hallazgoDatoObraFaltante', () => {
     unidad: 'm',
     descripcion: 'No encontré la altura de local de planta baja.',
     entidades: cuatro,
+    bloqueante: true,
   });
 
-  it('es UNO solo para las cuatro entidades, y no bloquea', () => {
+  it('es UNO solo para las cuatro entidades', () => {
     expect(hallazgo.clave).toBe('dato_obra.altura_local.PB');
     expect(hallazgo.clave.startsWith(PREFIJO_DATO_OBRA)).toBe(true);
     expect(hallazgo.tipo).toBe('faltante');
     expect(hallazgo.rubro).toBe('seco');
-    // No bloquea: el dato falta para toda la obra, y frenar la aprobación del
-    // rubro por un hecho global es distinto de frenarla por una entidad rota.
-    expect(hallazgo.bloqueante).toBe(false);
+  });
+
+  /**
+   * El bloqueo lo decide **quien computa**, no el constructor: el rubro que
+   * emitió ítems sin estas entidades está mandando a compulsa un número corto,
+   * y aprobarlo es comprar de menos. El rubro que no computó nada no tiene
+   * ningún ítem corto que frenar (lo que impide aprobarlo es no tener ítems).
+   */
+  it('bloquea o no según se lo pidan: el que dejó ítems cortos, sí', () => {
+    expect(hallazgo.bloqueante).toBe(true);
+
+    const sinItems = hallazgoDatoObraFaltante({
+      rubro: 'seco',
+      claveDato: 'altura_local.PB',
+      unidad: 'm',
+      descripcion: 'No encontré la altura de local de planta baja.',
+      entidades: cuatro,
+      bloqueante: false,
+    });
+    expect(sinItems.bloqueante).toBe(false);
   });
 
   it('apunta al dato de obra, no a una entidad', () => {
@@ -110,6 +131,7 @@ describe('hallazgoDatoObraFaltante', () => {
       unidad: 'm',
       descripcion: 'No encontré la altura de local del primer piso.',
       entidades: [tabique('id-9', 'M7')],
+      bloqueante: true,
     });
     expect(uno.descripcion).toBe(
       'No encontré la altura de local del primer piso. Afecta a M7.',
@@ -123,6 +145,7 @@ describe('hallazgoDatoObraFaltante', () => {
       claveDato: 'nivel.PB',
       descripcion: 'No encontré el nivel de planta baja.',
       entidades: [tabique('id-1', 'T1')],
+      bloqueante: false,
     });
     expect(sinUnidad.targetDato).toEqual({ clave: 'nivel.PB', entidades: ['id-1'] });
   });
@@ -150,5 +173,130 @@ describe('etiquetaDeDatoObra', () => {
   it('una familia desconocida se muestra igual, con los guiones abiertos', () => {
     expect(etiquetaDeDatoObra('espesor_carpeta.PB')).toBe('Espesor carpeta en PB');
     expect(etiquetaDeDatoObra('solado')).toBe('Solado');
+  });
+});
+
+/**
+ * El mismo hecho lo pide más de un rubro: a `altura_local.PB` la abren seco
+ * (por los tabiques), gruesa (por el muro) y pintura (por los ambientes). Una
+ * consulta sola es lo correcto —el arquitecto contesta una vez y se computa
+ * todo—, pero quedarse con **la primera** hace que la tarjeta prometa menos de
+ * lo que hace: dice «Afecta a T1 y T2» y responderla también computa el muro.
+ *
+ * `fusionarDatoObraFaltante` es lo que el conciliador de hallazgos tiene que
+ * llamar en vez de descartar la segunda.
+ */
+describe('fusionarDatoObraFaltante', () => {
+  const deSeco = hallazgoDatoObraFaltante({
+    rubro: 'seco',
+    claveDato: 'altura_local.PB',
+    unidad: 'm',
+    descripcion: 'No encontré la altura de estos tabiques.',
+    entidades: [tabique('t1', 'T1'), tabique('t2', 'T2')],
+    bloqueante: true,
+  });
+  const deGruesa = hallazgoDatoObraFaltante({
+    rubro: 'gruesa',
+    claveDato: 'altura_local.PB',
+    unidad: 'm',
+    descripcion: 'No encontré la altura de estos muros.',
+    entidades: [tabique('m1', 'M1'), tabique('t2', 'T2')],
+    bloqueante: false,
+  });
+
+  const fusionado = fusionarDatoObraFaltante(deSeco, deGruesa);
+
+  it('une los afectados sin repetirlos: el número de la tarjeta deja de mentir', () => {
+    expect(fusionado.targetDato).toEqual({
+      clave: 'altura_local.PB',
+      unidad: 'm',
+      entidades: ['t1', 't2', 'm1'],
+    });
+  });
+
+  it('la descripción fusionada no clava una lista que quedó corta', () => {
+    expect(fusionado.descripcion).not.toContain('T1');
+    expect(fusionado.descripcion).not.toContain('M1');
+    expect(fusionado.descripcion).toContain('Altura de local en PB');
+  });
+
+  /**
+   * El gate mira `rubro` y nada más. Si el fusionado se quedara con «seco»,
+   * gruesa aprobaría un cómputo al que le falta el mismo muro que la consulta
+   * está pidiendo. Un dato de obra es, por definición, un hecho de la obra: el
+   * que dejó ítems cortos en más de un rubro los frena a todos.
+   */
+  it('si bloquea y cruza rubros, pasa a ser de obra', () => {
+    expect(fusionado.bloqueante).toBe(true);
+    expect(fusionado.rubro).toBeNull();
+  });
+
+  it('dos del mismo rubro conservan el rubro', () => {
+    const otroDeSeco = hallazgoDatoObraFaltante({
+      rubro: 'seco',
+      claveDato: 'altura_local.PB',
+      unidad: 'm',
+      descripcion: 'No encontré la altura de estos tabiques.',
+      entidades: [tabique('t9', 'T9')],
+      bloqueante: false,
+    });
+    expect(fusionarDatoObraFaltante(deSeco, otroDeSeco).rubro).toBe('seco');
+  });
+
+  it('ninguno bloqueante: el fusionado tampoco', () => {
+    const a = hallazgoDatoObraFaltante({
+      rubro: 'seco',
+      claveDato: 'altura_local.PB',
+      descripcion: 'a',
+      entidades: [tabique('t1', 'T1')],
+      bloqueante: false,
+    });
+    const b = hallazgoDatoObraFaltante({
+      rubro: 'pintura',
+      claveDato: 'altura_local.PB',
+      descripcion: 'b',
+      entidades: [tabique('a1', 'A1')],
+      bloqueante: false,
+    });
+    expect(fusionarDatoObraFaltante(a, b).bloqueante).toBe(false);
+  });
+
+  it('fusionar dos claves distintas es un bug, y avisa', () => {
+    const otraClave = hallazgoDatoObraFaltante({
+      rubro: 'seco',
+      claveDato: 'altura_local.P1',
+      descripcion: 'otra',
+      entidades: [tabique('t5', 'T5')],
+      bloqueante: true,
+    });
+    expect(() => fusionarDatoObraFaltante(deSeco, otraClave)).toThrow();
+  });
+
+  it('`esDatoObraFaltante` reconoce a los fusionables y a nadie más', () => {
+    expect(esDatoObraFaltante(deSeco)).toBe(true);
+    expect(esDatoObraFaltante(fusionado)).toBe(true);
+    expect(
+      esDatoObraFaltante({
+        tipo: 'faltante',
+        rubro: 'seco',
+        descripcion: 'falta el largo',
+        clave: 'seco.largo_tabiques.T1',
+        bloqueante: true,
+        fuentes: [],
+      }),
+    ).toBe(false);
+  });
+});
+
+/**
+ * La misma etiqueta, pero adentro de una frase: «no encontré … ni **altura de
+ * local en PB**». Lo único que cambia es la primera letra — bajarle el tono a
+ * la clave entera dejaría «altura de local en pb».
+ */
+describe('datoEnFrase', () => {
+  it('arranca en minúscula y no toca el sufijo', () => {
+    expect(datoEnFrase('altura_local.PB')).toBe('altura de local en PB');
+    expect(datoEnFrase('altura_local.general')).toBe('altura de local');
+    expect(datoEnFrase('altura_revestimiento.Baño')).toBe('altura de revestimiento en Baño');
   });
 });

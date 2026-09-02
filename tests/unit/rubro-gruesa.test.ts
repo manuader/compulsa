@@ -190,3 +190,24 @@ describe('plantilla gruesa: reforma y huecos', () => {
     expect(item['gruesa.ladrillos']!.confianza).toBe(0.71);
   });
 });
+
+/**
+ * Lo mismo que en seco, con ladrillos: tres muros acotados y uno sin altura
+ * dejan los cuatro ítems del rubro cortos, y el rubro no se puede aprobar así.
+ */
+describe('plantilla gruesa: el muro sin altura deja los ítems cortos y frena', () => {
+  const { items, hallazgos } = plantillaGruesa.computar(
+    [
+      muro({ id: 'm1', nombre: 'M1' }),
+      muro({ id: 'm2', nombre: 'M2', atributos: { tipo: 'mamposteria', largoM: 4 } }),
+    ],
+    'nueva',
+  );
+
+  it('la consulta agrupada bloquea cuando el rubro emitió ítems', () => {
+    expect(items.length).toBeGreaterThan(0);
+    const consulta = hallazgos.find((h) => h.clave.startsWith('dato_obra.'))!;
+    expect(consulta.bloqueante).toBe(true);
+    expect(consulta.targetDato?.entidades).toEqual(['m2']);
+  });
+});

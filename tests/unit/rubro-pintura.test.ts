@@ -191,3 +191,31 @@ describe('plantilla pintura: la altura la pone el dato de obra', () => {
     expect(consultas[0]!.descripcion).toContain('Living y Cocina');
   });
 });
+
+/**
+ * El cielorraso no usa la altura, así que sale igual. O sea: el rubro tiene
+ * ítems, la planilla se ve completa y a los m² de pared les falta un ambiente
+ * entero. Aprobarlo así es cotizar menos látex del que la obra consume.
+ */
+describe('plantilla pintura: la pared corta frena, aunque el cielorraso salga', () => {
+  const conAltura = ambiente({ id: 'a1', nombre: 'Living' });
+  const sinAltura = ambiente({
+    id: 'a2',
+    nombre: 'Comedor',
+    atributos: { superficieM2: 10, perimetroM: 12, vanosM2: 2 },
+  });
+  const { items, hallazgos } = plantillaPintura.computar([conAltura, sinAltura], 'nueva');
+
+  it('las paredes salen con un solo ambiente y el cielorraso con los dos', () => {
+    // Paredes: solo el Living (14 × 2,60 − 3,5 = 32,9 m² ⇒ 6,58 L).
+    expect(porClave(items)['pintura.latex_paredes']!.cantNeta).toBe(6.58);
+    // Cielorrasos: 12 + 10 = 22 m² ⇒ 4,4 L.
+    expect(porClave(items)['pintura.latex_cielorrasos']!.cantNeta).toBe(4.4);
+  });
+
+  it('y la consulta por la altura que falta bloquea', () => {
+    const consulta = hallazgos.find((h) => h.clave.startsWith('dato_obra.'))!;
+    expect(consulta.bloqueante).toBe(true);
+    expect(consulta.targetDato?.entidades).toEqual(['a2']);
+  });
+});

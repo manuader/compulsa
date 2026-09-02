@@ -35,17 +35,17 @@ import { armarItem } from '@/lib/computo/presentacion';
 import { redondear2 } from '@/lib/computo/unidades';
 import {
   alcanceDeReforma,
+  datoEnFrase,
   hallazgoDatoFaltante,
   leerMedida,
   leerTexto,
 } from '@/lib/hallazgos/taxonomia';
 import type { PlantillaRubro, ResultadoComputo } from '@/lib/rubros/index';
 import {
+  ALTURA_REVESTIMIENTO,
   cadenaDeRespaldo,
-  clavesAlturaRevestimiento,
   conFuentesDeDato,
   conOrigenes,
-  sufijoDeClave,
   type DatosObra,
 } from '@/lib/rubros/respaldo';
 import type { HallazgoDetectado, ItemComputo, TipoObra, Unidad } from '@/types/domain';
@@ -218,11 +218,7 @@ export const plantillaTerminaciones = {
       if (revestimiento !== null && perimetro !== null) {
         // Perímetro × la altura hasta donde llega el revestimiento, que suele
         // estar declarada una vez para toda la obra (`altura_revestimiento`).
-        const altura = cadena.medida(
-          entidad,
-          'alturaRevestimientoM',
-          clavesAlturaRevestimiento(entidad),
-        );
+        const altura = cadena.medida(entidad, 'alturaRevestimientoM', ALTURA_REVESTIMIENTO);
         if (altura !== null) {
           acumular(acumulados, 'revestimiento', revestimiento, perimetro * altura, entidad);
         }
@@ -255,16 +251,6 @@ export const plantillaTerminaciones = {
       if (entidad.tipo === 'ambiente') leerAmbiente(entidad);
       else if (entidad.tipo === 'terminacion') leerTerminacion(entidad);
     }
-
-    hallazgos.push(
-      ...cadena.hallazgosFaltantes({
-        rubro: RUBRO,
-        unidad: 'm',
-        descripcion: (clave) =>
-          `No encontré hasta qué altura llega el revestimiento de «${sufijoDeClave(clave)}» ni una altura general de revestimiento. ` +
-          'Cargá la altura una sola vez y la aplico a todos los ambientes que la esperan.',
-      }),
-    );
 
     const items: ItemComputo[] = [];
 
@@ -321,6 +307,20 @@ export const plantillaTerminaciones = {
         }),
       );
     }
+
+    // Al final, porque bloquea según lo emitido: el solado y el cielorraso del
+    // mismo ambiente no usan la altura y salen igual, así que el rubro puede
+    // tener ítems con los m² de revestimiento cortos o directamente ausentes.
+    hallazgos.push(
+      ...cadena.hallazgosFaltantes({
+        rubro: RUBRO,
+        unidad: 'm',
+        computados: items,
+        descripcion: (clave) =>
+          `No encontré hasta qué altura llega el revestimiento y en el expediente tampoco hay ${datoEnFrase(clave)}. ` +
+          'Cargá la altura una sola vez y la aplico a todos los ambientes que la esperan.',
+      }),
+    );
 
     return { items, hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
   },

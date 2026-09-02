@@ -29,16 +29,16 @@ import { armarItem } from '@/lib/computo/presentacion';
 import { redondear2 } from '@/lib/computo/unidades';
 import {
   alcanceDeReforma,
+  datoEnFrase,
   hallazgoDatoFaltante,
   leerMedida,
 } from '@/lib/hallazgos/taxonomia';
 import type { PlantillaRubro, ResultadoComputo } from '@/lib/rubros/index';
 import {
+  ALTURA_LOCAL,
   cadenaDeRespaldo,
-  clavesAlturaLocal,
   conFuentesDeDato,
   conOrigenes,
-  sufijoDeClave,
   type DatosObra,
 } from '@/lib/rubros/respaldo';
 import type { HallazgoDetectado, ItemComputo, TipoObra } from '@/types/domain';
@@ -76,7 +76,7 @@ export const plantillaDemolicion = {
       if (alcanceDeReforma(entidad.estadoReforma) !== 'demolicion') continue;
 
       if (TIPOS_MUROS.has(entidad.tipo)) {
-        const altura = cadena.medida(entidad, 'alturaM', clavesAlturaLocal(entidad));
+        const altura = cadena.medida(entidad, 'alturaM', ALTURA_LOCAL);
         if (altura === null) continue; // la consulta agrupada sale al final
 
         const largo = leerMedida(entidad, 'largoM');
@@ -130,16 +130,6 @@ export const plantillaDemolicion = {
       }
     }
 
-    hallazgos.push(
-      ...cadena.hallazgosFaltantes({
-        rubro: RUBRO,
-        unidad: 'm',
-        descripcion: (clave) =>
-          `No encontré la altura de lo que hay que demoler ni una altura de local declarada para «${sufijoDeClave(clave)}». ` +
-          'Cargá la altura del local una sola vez y la aplico a todo, o indicá el corte donde está acotada.',
-      }),
-    );
-
     const items: ItemComputo[] = [];
 
     if (deMuros.length > 0 && m2Muros > 0) {
@@ -189,6 +179,20 @@ export const plantillaDemolicion = {
         }),
       );
     }
+
+    // Al final, porque bloquea según lo emitido: el retiro de carpinterías no
+    // necesita altura y sale igual, así que el rubro puede tener ítems mientras
+    // los m² de muro a demoler están cortos.
+    hallazgos.push(
+      ...cadena.hallazgosFaltantes({
+        rubro: RUBRO,
+        unidad: 'm',
+        computados: items,
+        descripcion: (clave) =>
+          `No encontré la altura de lo que hay que demoler y en el expediente tampoco hay ${datoEnFrase(clave)}. ` +
+          'Cargá la altura del local una sola vez y la aplico a todo, o indicá el corte donde está acotada.',
+      }),
+    );
 
     return { items, hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
   },
