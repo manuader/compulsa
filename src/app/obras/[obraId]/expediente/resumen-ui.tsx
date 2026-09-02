@@ -180,6 +180,28 @@ export function ResumenEjecutivo({ obraId, resumen }: ResumenEjecutivoProps) {
           )}
         </Bloque>
       </CardContent>
+
+      {/* La memoria de obra (§27) existía y no se llegaba a ella desde ningún
+          lado: había que escribir la URL. Es el único lugar donde se ve la
+          tabla «Datos de obra» —los hechos que valen para todo el expediente y
+          con los que el sistema está computando—, así que va acá, abajo del
+          resumen, que es la versión corta de lo mismo.
+
+          `<a>` y no `<Link>`: es una descarga de la API, no navegación del App
+          Router (nada que prefetchear). */}
+      <CardContent className="border-t border-neutral-200 pt-3">
+        <a
+          href={`/api/obras/${obraId}/memoria`}
+          className="text-sm font-medium text-neutral-900 underline"
+        >
+          Bajar la memoria de obra (.md)
+        </a>
+        <p className="mt-1 text-xs text-neutral-500">
+          Todo lo que el sistema entendió del expediente, para leer o adjuntar: qué documentación se
+          analizó, qué hechos valen para toda la obra, qué elementos se leyeron y en qué lámina, qué
+          se contradice, qué falta y qué números salieron de medir el dibujo.
+        </p>
+      </CardContent>
     </Card>
   );
 }

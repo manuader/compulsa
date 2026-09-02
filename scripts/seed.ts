@@ -213,7 +213,7 @@ const LISTA_PRECIOS: readonly {
   unidad: Unidad;
   precio: number;
 }[] = [
-  { claveItem: 'seco.placas', descripcion: 'Placa de yeso 12,5 mm', unidad: 'm2', precio: 9800 },
+  { claveItem: 'seco.placas', descripcion: 'Placa de roca de yeso (1,20 × 2,40 m)', unidad: 'm2', precio: 9800 },
   { claveItem: 'seco.soleras', descripcion: 'Solera de 70 mm', unidad: 'ml', precio: 3900 },
   { claveItem: 'seco.montantes', descripcion: 'Montante de 70 mm', unidad: 'u', precio: 5200 },
   { claveItem: 'pintura.latex_paredes', descripcion: 'Látex interior para paredes', unidad: 'l', precio: 4300 },

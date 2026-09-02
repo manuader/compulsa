@@ -74,7 +74,17 @@ export interface EntradaMemoria {
   obra: { nombre: string; tipo: TipoObra };
   laminas: Pick<
     Lamina,
-    'id' | 'codigo' | 'titulo' | 'tipo' | 'escala' | 'escalaConfiable' | 'estadoAnalisis'
+    | 'id'
+    | 'codigo'
+    | 'titulo'
+    | 'tipo'
+    | 'escala'
+    | 'escalaConfiable'
+    | 'estadoAnalisis'
+    // El número de página es lo que hace legible a una lámina sin código: es el
+    // respaldo que usa toda la app («Página 7») y sin él el `.md` que baja el
+    // arquitecto imprimía un uuid en la columna «Lámina».
+    | 'numeroPagina'
   >[];
   entidades: EntidadPersistida[];
   datosObra: DatoObraResuelto[];
@@ -85,15 +95,38 @@ export interface EntradaMemoria {
 /** Una lámina de la entrada, tal como la mira cualquiera de las dos memorias. */
 export type LaminaDeMemoria = EntradaMemoria['laminas'][number];
 
-/** Las entidades de una lámina, con el nombre por el que esa lámina se cita. */
+/** Las entidades de una lámina, con los dos nombres por los que esa lámina se cita. */
 export interface GrupoDeLamina {
+  /** El nombre-máquina (`refDeLamina`): lo usa la compacta, que lee un modelo. */
   ref: string;
+  /** El nombre-persona (`etiquetaDeLamina`): lo usa el `.md`. */
+  etiqueta: string;
   entidades: EntidadPersistida[];
 }
 
-/** Cómo se llama una lámina en el texto: su código, o su id si no leyó código. */
+/**
+ * Cómo se llama una lámina **para el modelo**: su código, o su id si el rótulo
+ * no dejó ninguno.
+ *
+ * El uuid es feo y es a propósito (ver la regla 2 de la cabecera): el saneo del
+ * cruce resuelve código → id, y una etiqueta inventada sería una referencia que
+ * después nadie puede resolver. Para el documento que lee una persona está
+ * `etiquetaDeLamina`, que es otra cosa.
+ */
 export function refDeLamina(lamina: LaminaDeMemoria): string {
   return lamina.codigo ?? lamina.id;
+}
+
+/**
+ * Cómo se llama una lámina **para una persona**: su código, o «Página 7».
+ *
+ * Es el mismo respaldo que usan la bandeja, el expediente y la planilla. El
+ * `.md` de la memoria usaba `refDeLamina` y por eso una lámina sin código
+ * salía con su uuid en la columna «Lámina» y en los títulos `###` — en un
+ * documento que el arquitecto puede llegar a mandarle a un cliente.
+ */
+export function etiquetaDeLamina(lamina: LaminaDeMemoria): string {
+  return lamina.codigo ?? `Página ${lamina.numeroPagina}`;
 }
 
 /**
@@ -116,18 +149,24 @@ export function agruparPorLamina(entrada: EntradaMemoria): GrupoDeLamina[] {
   }
 
   const orden = [
-    ...entrada.laminas.map((lamina) => [lamina.id, refDeLamina(lamina)] as const),
-    ...[...porLamina.keys()].map((id) => [id, id] as const),
+    ...entrada.laminas.map(
+      (lamina) => [lamina.id, refDeLamina(lamina), etiquetaDeLamina(lamina)] as const,
+    ),
+    // Una entidad cuya lámina no vino en la entrada no se tira: sale en un grupo
+    // propio nombrado por su id. Es el único uuid que queda en el `.md`, y no
+    // hay con qué reemplazarlo — sin la fila de la lámina no hay número de
+    // página que poner.
+    ...[...porLamina.keys()].map((id) => [id, id, id] as const),
   ];
 
   const grupos: GrupoDeLamina[] = [];
   const vistas = new Set<string>();
-  for (const [id, ref] of orden) {
+  for (const [id, ref, etiqueta] of orden) {
     if (vistas.has(id)) continue;
     vistas.add(id);
     const entidades = porLamina.get(id);
     if (entidades === undefined || entidades.length === 0) continue;
-    grupos.push({ ref, entidades });
+    grupos.push({ ref, etiqueta, entidades });
   }
   return grupos;
 }
@@ -137,8 +176,24 @@ export function refsDeFuentes(
   fuentes: readonly { laminaId: string }[],
   laminas: readonly LaminaDeMemoria[],
 ): string[] {
-  const refs = new Map(laminas.map((lamina) => [lamina.id, refDeLamina(lamina)]));
-  return [...new Set(fuentes.map((fuente) => refs.get(fuente.laminaId) ?? fuente.laminaId))];
+  return citar(fuentes, laminas, refDeLamina);
+}
+
+/** Lo mismo, con el nombre que lee una persona: para el `.md`, no para el prompt. */
+export function etiquetasDeFuentes(
+  fuentes: readonly { laminaId: string }[],
+  laminas: readonly LaminaDeMemoria[],
+): string[] {
+  return citar(fuentes, laminas, etiquetaDeLamina);
+}
+
+function citar(
+  fuentes: readonly { laminaId: string }[],
+  laminas: readonly LaminaDeMemoria[],
+  nombrar: (lamina: LaminaDeMemoria) => string,
+): string[] {
+  const nombres = new Map(laminas.map((lamina) => [lamina.id, nombrar(lamina)]));
+  return [...new Set(fuentes.map((fuente) => nombres.get(fuente.laminaId) ?? fuente.laminaId))];
 }
 
 /**

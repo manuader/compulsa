@@ -166,6 +166,12 @@ export interface DatoObraVista {
 
 export interface ConsultaVista {
   id: string;
+  /**
+   * La clave técnica (`dato_obra.altura_local.PB`). Es el identificador
+   * estable de la consulta y sirve para reconocer una fila entre gente que
+   * conoce el sistema; **no** es un nombre para leer. Todo lo que se muestra o
+   * se lee en voz alta usa `nombreDeConsulta()`.
+   */
   clave: string;
   tipo: TipoHallazgo;
   rubro: RubroId | null;
@@ -416,6 +422,26 @@ export function destacadosDeConsulta(consulta: ConsultaVista, laminaId: string):
 }
 
 /**
+ * Cómo se llama una consulta cuando hay que nombrarla: en el título del panel,
+ * en el `aria-label` de su checkbox, al lado del recuadro que se está mirando.
+ *
+ * Nunca la clave cruda. `dato_obra.altura_local.PB` es un identificador de base
+ * de datos, y en el `aria-label` era peor todavía: un lector de pantalla leía
+ * «Seleccionar la consulta dato obra punto altura guion bajo local punto PB».
+ * El nombre de la entidad manda —«V5»—, después el del hecho de obra
+ * («Altura de local en PB»), y la clave queda de último recurso para cuando la
+ * consulta no apunta a ninguno de los dos.
+ */
+export function nombreDeConsulta(consulta: ConsultaVista): string {
+  if (consulta.entidad !== null) return consulta.entidad;
+  if (consulta.datoObra !== null) return consulta.datoObra.etiqueta;
+  // La de escala no apunta a ninguna de las dos y su clave es `escala.<uuid>`,
+  // que en el título del panel se leía «A-01 · escala.9f3c…».
+  if (consulta.esEscala) return 'la escala de la lámina';
+  return consulta.clave;
+}
+
+/**
  * Lo que hay que cargar en el panel para ver una consulta en una lámina, o
  * `null` si esa lámina no es una de las que la consulta puede abrir.
  *
@@ -432,7 +458,7 @@ export function armarMirada(consulta: ConsultaVista, laminaId: string): Mirada |
     consultaId: consulta.id,
     laminaId: elegida.laminaId,
     destacados: destacadosDeConsulta(consulta, elegida.laminaId),
-    etiqueta: `${elegida.etiqueta} · ${consulta.entidad ?? consulta.clave}`,
+    etiqueta: `${elegida.etiqueta} · ${nombreDeConsulta(consulta)}`,
   };
 }
 
@@ -600,7 +626,7 @@ function TarjetaConsulta({
               type="checkbox"
               checked={seleccionada}
               onChange={(evento) => onSeleccion(consulta.id, evento.target.checked)}
-              aria-label={`Seleccionar la consulta ${consulta.clave}`}
+              aria-label={`Seleccionar la consulta sobre ${nombreDeConsulta(consulta)}`}
               className="size-4 rounded border-neutral-300"
             />
           ) : null}
@@ -627,7 +653,22 @@ function TarjetaConsulta({
           {abierta ? null : (
             <Badge tone={TONO_ESTADO[consulta.estado]}>{ETIQUETA_ESTADO[consulta.estado]}</Badge>
           )}
-          <span className="ml-auto font-mono text-xs text-neutral-400">{consulta.clave}</span>
+          {/* La clave técnica queda —sirve para hablar de una fila con
+              nosotros— pero deja de ser lo único que nombra a la consulta. El
+              nombre legible se agrega solo cuando aporta algo: la entidad ya
+              sale abajo en «Sobre:», así que acá el que faltaba era el del
+              hecho de obra, que no tiene otro lugar donde aparecer. */}
+          <span className="ml-auto flex flex-wrap items-baseline gap-2">
+            {consulta.datoObra ? (
+              <span className="text-xs text-neutral-500">{consulta.datoObra.etiqueta}</span>
+            ) : null}
+            <span
+              className="font-mono text-xs text-neutral-400"
+              title="Identificador de la consulta"
+            >
+              {consulta.clave}
+            </span>
+          </span>
         </div>
 
         <p className="text-sm text-neutral-800">{consulta.descripcion}</p>

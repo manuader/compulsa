@@ -199,6 +199,23 @@ export default async function ComputoPage({
     ...new Set(fuentes.map((fuente) => escalaPorLamina.get(fuente.laminaId)?.etiqueta ?? '')),
   ].filter((etiqueta) => etiqueta !== '');
 
+  /**
+   * Las láminas del ítem como botones del split view: sin repetir y en el orden
+   * en que el ítem las cita. Una lámina que ya no está —un reproceso se la
+   * llevó— no se ofrece: el panel pediría un 404.
+   */
+  const laminasDelItem = (fuentes: readonly Fuente[]): { laminaId: string; etiqueta: string }[] => {
+    const citadas: { laminaId: string; etiqueta: string }[] = [];
+    const vistas = new Set<string>();
+    for (const fuente of fuentes) {
+      if (vistas.has(fuente.laminaId)) continue;
+      vistas.add(fuente.laminaId);
+      const etiqueta = escalaPorLamina.get(fuente.laminaId)?.etiqueta;
+      if (etiqueta !== undefined) citadas.push({ laminaId: fuente.laminaId, etiqueta });
+    }
+    return citadas;
+  };
+
   const items: ItemPlanilla[] = delRubro
     .filter((fila) => (verAnulados ? true : fila.estado === 'activo'))
     .filter((fila) => (origen === null ? true : fila.origen === origen))
@@ -217,7 +234,11 @@ export default async function ComputoPage({
         confianza: fila.confianza,
         anulado: fila.estado === 'anulado',
         editado: fila.editadoPor !== null,
-        laminaId: fila.fuentesJson[0]?.laminaId ?? null,
+        laminas: laminasDelItem(fila.fuentesJson),
+        fuentes: fila.fuentesJson.map((fuente) => ({
+          laminaId: fuente.laminaId,
+          bbox: fuente.bbox,
+        })),
         escalaAsumida: escalaAsumidaDelItem(fila.fuentesJson, escalaPorLamina),
         precio: precioDeFila(fila),
         precioEditable: precio === null ? '' : precioEditable(precio.unitario),
@@ -312,6 +333,9 @@ export default async function ComputoPage({
         items={items}
         subtotal={subtotalRubro}
         bloqueantes={gate.bloqueantes}
+        consultasAbiertas={
+          consultas.filter((fila) => fila.estado === 'abierto' && fila.rubro === rubro).length
+        }
         puedeEditar={esRolSuficiente(usuario, 'colaborador')}
         puedeAprobar={esRolSuficiente(usuario, 'titular')}
       />
@@ -331,7 +355,9 @@ export default async function ComputoPage({
             ? 'Ningún ítem tiene precio: cargá la lista del estudio en Precios, o registrá cotizaciones para que el índice tenga muestras.'
             : totalObra.sinPrecio === 0
               ? 'Suma todos los ítems activos del cómputo, con el precio de la lista del estudio o del índice.'
-              : `Suma solo los ítems con precio: ${totalObra.sinPrecio === 1 ? 'queda 1 ítem sin precio' : `quedan ${totalObra.sinPrecio} ítems sin precio`} y no está contado acá.`}
+              : totalObra.sinPrecio === 1
+                ? 'Suma solo los ítems con precio: queda 1 ítem sin precio y no está contado acá.'
+                : `Suma solo los ítems con precio: quedan ${totalObra.sinPrecio} ítems sin precio y no están contados acá.`}
         </p>
       </section>
     </div>

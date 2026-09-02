@@ -19,10 +19,14 @@
  *    Se muestran en su propia tarjeta de aviso, arriba.
  *  - **propuestas**: `estado = 'propuesta'` — lo que no llegó al umbral y por eso
  *    **no** entró al cómputo. Estas se validan.
+ *  - **datos de obra**: las filas de `datos_obra` con `definido_por IS NULL`, o
+ *    sea las que escribió el cruce (§5.2). Se rechazan igual que una deducción
+ *    auto-validada, y con más razón: una deducción toca UN elemento y un dato
+ *    de obra corre los metros de todos los rubros del nivel.
  *  - **inferidos**: los ítems activos con `origen = 'inferido'`, que son el
  *    resultado de una medición gráfica (§5.5), no una fila que decidir.
  */
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import Link from 'next/link';
 
 import { Badge } from '@/components/ui/badge';
@@ -30,13 +34,15 @@ import { Card, CardContent } from '@/components/ui/card';
 import { getDb } from '@/db/client';
 import {
   computoItems,
+  datosObra,
   deducciones,
   entidades,
   hallazgos,
   laminas,
   type Deduccion,
+  type DatoObra,
 } from '@/db/schema';
-import { formatearCantidad } from '@/lib/computo/unidades';
+import { ETIQUETA_UNIDAD, formatearCantidad, formatearNumero } from '@/lib/computo/unidades';
 import { describirValor, etiquetaCampo } from '@/lib/deduccion/motor';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
 import {
@@ -45,12 +51,14 @@ import {
   valorDeDeduccion,
   valorQueDocumenta,
 } from '@/lib/deduccion/persistencia';
+import { etiquetaDeDatoObra } from '@/lib/hallazgos/taxonomia';
 import { esClaveDeDeduccion } from '@/lib/pipeline/claves';
 import { MARCA_METODO } from '@/lib/pipeline/procesar';
 import { REGLAS_DEDUCCION, type ReglaDeduccion } from '@/types/domain';
 
 import {
   ParaRevisar,
+  type DatoObraVista,
   type DeduccionVista,
   type GrupoElemento,
   type ItemInferidoVista,
@@ -110,6 +118,36 @@ function citar(
 function metodoDe(fila: Deduccion): string | null {
   const metodo = fila.valorJson[MARCA_METODO];
   return typeof metodo === 'string' ? metodo : null;
+}
+
+/**
+ * El valor de un dato de obra escrito para leer: `2,60 m`, `PB`.
+ *
+ * No usa `describirValor` porque un dato de obra no tiene campo de entidad del
+ * que sacar la unidad: la unidad viaja en el propio `valor_json` (§5.2).
+ */
+function valorDeDato(dato: DatoObra): string {
+  const { valor, unidad } = dato.valorJson;
+  const escrito = typeof valor === 'number' ? formatearNumero(valor) : valor;
+  return unidad === undefined ? escrito : `${escrito} ${ETIQUETA_UNIDAD[unidad]}`;
+}
+
+/**
+ * Lo que la documentación dice hoy para el campo de una deducción superada.
+ *
+ * Los tres casos, y los tres se veían mal: un valor ausente caía en
+ * `String(null)` y la pantalla decía literalmente «y la documentación dice
+ * null»; un booleano salía en inglés; y solo el número estaba bien escrito. El
+ * lado deducido de la misma frase ya resolvía el vacío con un guion — esto es
+ * ponerlos a decir lo mismo.
+ */
+export function describirDocumentado(
+  campo: string,
+  documentado: number | string | boolean | null,
+): string {
+  if (documentado === null) return '—';
+  if (typeof documentado === 'boolean') return documentado ? 'sí' : 'no';
+  return describirValor(campo, documentado);
 }
 
 /** En qué lista de la solapa cae cada deducción decidida. */
@@ -250,7 +288,7 @@ export interface SolapaRevisarProps {
 export async function SolapaRevisar({ obraId, regla, enlace }: SolapaRevisarProps) {
   const db = await getDb();
 
-  const [decididas, planos, elementos, inconsistencias, items] = await Promise.all([
+  const [decididas, planos, elementos, inconsistencias, items, hechos] = await Promise.all([
     db
       .select()
       .from(deducciones)
@@ -289,6 +327,15 @@ export async function SolapaRevisar({ obraId, regla, enlace }: SolapaRevisarProp
         ),
       )
       .orderBy(computoItems.claveItem),
+    // Los hechos que el cruce escribió para toda la obra (§5.2). `definido_por`
+    // en `null` es la línea: lo que cargó una persona respondiendo la consulta
+    // no se "rechaza" —se vuelve a contestar—, y es la misma línea que el cruce
+    // no cruza al escribir.
+    db
+      .select()
+      .from(datosObra)
+      .where(and(eq(datosObra.obraId, obraId), isNull(datosObra.definidoPor)))
+      .orderBy(datosObra.clave),
   ]);
 
   const etiquetaLamina = new Map(planos.map((fila) => [fila.id, etiquetaDeLamina(fila)]));
@@ -329,11 +376,31 @@ export async function SolapaRevisar({ obraId, regla, enlace }: SolapaRevisarProp
     metodo: item.entidadId === null ? null : (mediciones.get(item.entidadId) ?? null),
   }));
 
+  // Los hechos de obra los escribió el cruce, así que siguen al chip «Cruce de
+  // información del expediente»: verlos abajo mientras el filtro dice otra
+  // regla haría creer que salieron de ella.
+  const muestraHechos = regla === null || regla === 'cruce';
+  const datosDeObra: DatoObraVista[] = (muestraHechos ? hechos : []).map((dato) => ({
+    id: dato.id,
+    clave: dato.clave,
+    etiqueta: etiquetaDeDatoObra(dato.clave),
+    valor: valorDeDato(dato),
+    origen: dato.origen,
+    confianza: dato.confianza,
+    metodo: dato.metodo,
+    laminas: citar(dato.fuentesJson, etiquetaLamina),
+    fuentes: dato.fuentesJson.map((fuente) => ({ laminaId: fuente.laminaId, bbox: fuente.bbox })),
+  }));
+
   const porRegla = new Map<ReglaDeduccion, number>();
   for (const fila of [...aplicadas, ...propuestas]) {
     porRegla.set(fila.regla, (porRegla.get(fila.regla) ?? 0) + 1);
   }
-  const total = aplicadas.length + propuestas.length;
+  // Los datos de obra no son filas de `deducciones` pero salen de la misma
+  // pasada y se rechazan igual: cuentan en el chip del cruce, si no el número
+  // del chip no coincide con lo que la solapa muestra al abrirlo.
+  if (hechos.length > 0) porRegla.set('cruce', (porRegla.get('cruce') ?? 0) + hechos.length);
+  const total = aplicadas.length + propuestas.length + hechos.length;
   const contradicciones = inconsistencias.filter((fila) => esClaveDeDeduccion(fila.clave)).length;
 
   return (
@@ -342,8 +409,11 @@ export async function SolapaRevisar({ obraId, regla, enlace }: SolapaRevisarProp
         Lo que el sistema completó solo, con su fuente y su método a la vista. Un dato que dos
         láminas dicen entre las dos entra al cómputo marcado{' '}
         <strong className="font-medium">deducido</strong>; una medida sacada del dibujo, marcada{' '}
-        <strong className="font-medium">inferido</strong>. Nada de esto frena la aprobación de un
-        rubro: si algo no te cierra, rechazalo y la consulta vuelve a «Preguntas».
+        <strong className="font-medium">inferido</strong>. Y los hechos que valen para toda la
+        obra —la altura de local que el corte acota una vez— están acá con el mismo botón: un
+        número mal leído ahí corre los metros de todos los rubros de ese nivel. Nada de esto frena
+        la aprobación de un rubro: si algo no te cierra, rechazalo y la consulta vuelve a
+        «Preguntas».
       </p>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -413,9 +483,7 @@ export async function SolapaRevisar({ obraId, regla, enlace }: SolapaRevisarProp
                     · {etiquetaCampo(fila.campo)}: se dedujo{' '}
                     {validado === null ? '—' : describirValor(fila.campo, validado)} y la
                     documentación dice{' '}
-                    {documentado === null || typeof documentado === 'boolean'
-                      ? String(documentado)
-                      : describirValor(fila.campo, documentado)}
+                    {describirDocumentado(fila.campo, documentado)}
                     .{' '}
                     {entidad ? (
                       <Link
@@ -437,6 +505,7 @@ export async function SolapaRevisar({ obraId, regla, enlace }: SolapaRevisarProp
         obraId={obraId}
         autovalidadas={autovalidadas}
         propuestas={enEspera}
+        datosDeObra={datosDeObra}
         inferidos={inferidos}
         filtrada={regla !== null}
       />

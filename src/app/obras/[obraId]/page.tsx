@@ -120,7 +120,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
     itemsPorRubro,
     estadosFilas,
     consultasAbiertas,
-    [deduccionesPropuestas],
+    [deducidas],
     compulsas,
     checklist,
   ] = await Promise.all([
@@ -167,10 +167,23 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
         })
         .from(hallazgos)
         .where(and(eq(hallazgos.obraId, obra.id), eq(hallazgos.estado, 'abierto'))),
+      // Las dos mitades de «Para revisar», y son distintas: la que el sistema
+      // aplicó solo (§5.4: `validada` con `validado_por` en `null`) ya está en
+      // el cómputo y lo único que ofrece es deshacerla; la `propuesta` no llegó
+      // al umbral y todavía no escribió nada. Contarlas juntas —o contar solo
+      // una— era lo que dejaba al tablero prometiendo un contrato que la ola
+      // reemplazó.
       db
-        .select({ total: count() })
+        .select({
+          aplicadas: sql<number>`count(*) filter (where ${deducciones.estado} = 'validada' and ${deducciones.validadoPor} is null)`.mapWith(
+            Number,
+          ),
+          propuestas: sql<number>`count(*) filter (where ${deducciones.estado} = 'propuesta')`.mapWith(
+            Number,
+          ),
+        })
         .from(deducciones)
-        .where(and(eq(deducciones.obraId, obra.id), eq(deducciones.estado, 'propuesta'))),
+        .where(eq(deducciones.obraId, obra.id)),
       // El ahorro no está guardado en ninguna tabla: se recalcula al leer desde
       // adjudicaciones + cotizaciones + negociaciones (ver el encabezado de
       // `@/lib/compulsa/adjudicar`). Con el orden de magnitud de una obra son
@@ -271,18 +284,27 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
           </div>
         </Metrica>
 
+        {/* Lo que dice acá tiene que ser lo que pasó, no lo que prometía el
+            contrato anterior: desde §5.4 una deducción con fuentes y confianza
+            suficiente **entra sola** al cómputo y se puede rechazar después.
+            El badge decía «Ningún dato se escribe sin tu visto bueno», que es
+            justo lo contrario de lo que hace el sistema. */}
         <Metrica
           titulo="Deducciones"
-          valor={hayAnalisis ? (deduccionesPropuestas?.total ?? 0) : null}
+          valor={hayAnalisis ? deducidas.aplicadas + deducidas.propuestas : null}
           detalle={
-            hayAnalisis
-              ? 'Propuestas esperando que las valides o las rechaces.'
-              : 'Salen de cruzar láminas: todavía no hay ninguna analizada.'
+            !hayAnalisis
+              ? 'Salen de cruzar láminas: todavía no hay ninguna analizada.'
+              : deducidas.aplicadas + deducidas.propuestas === 0
+                ? 'Cruzando las láminas no salió ningún dato para completar.'
+                : `${plural(deducidas.aplicadas, 'ya está aplicada', 'ya están aplicadas')} en el cómputo; ${plural(deducidas.propuestas, 'espera', 'esperan')} tu visto bueno.`
           }
         >
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            {(deduccionesPropuestas?.total ?? 0) > 0 ? (
-              <Badge tone="info">Ningún dato se escribe sin tu visto bueno</Badge>
+            {deducidas.aplicadas > 0 ? (
+              <Badge tone="info">Entraron solas: podés rechazarlas</Badge>
+            ) : deducidas.propuestas > 0 ? (
+              <Badge tone="warn">Ninguna entró al cómputo todavía</Badge>
             ) : hayAnalisis ? (
               <Badge tone="ok">Nada pendiente</Badge>
             ) : null}
@@ -290,7 +312,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
               href={`${base}/bandeja?solapa=revisar`}
               className="text-xs font-medium text-neutral-900 underline"
             >
-              Ver para revisar
+              Ver «Para revisar»
             </Link>
           </div>
         </Metrica>
@@ -312,7 +334,7 @@ export default async function TableroPage({ params }: { params: Promise<{ obraId
                 href={`/api/obras/${obra.id}/export?rubro=todos`}
                 className="text-xs font-medium text-neutral-900 underline"
               >
-                Bajar XLSX de los 4 rubros
+                Bajar el XLSX de los ocho rubros
               </a>
             )}
             <p className="text-[11px] leading-snug text-neutral-500">{`${DISCLAIMER}.`}</p>

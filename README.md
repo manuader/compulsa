@@ -59,10 +59,10 @@ mail:       demo@compulsa.ar
 contraseña: demo1234
 ```
 
-Entrás y encontrás **dos obras**, una para cada mitad del producto:
+Entrás y encontrás **tres obras**, una por cada cosa que el producto sabe hacer:
 
 - **«Casa Belgrano — reforma demo»** — la del cómputo: tres documentos subidos, cinco láminas
-  (cuatro analizadas y una bloqueada por falta de escala), quince ítems en los cuatro rubros, un
+  (cuatro analizadas y una bloqueada por falta de escala), quince ítems repartidos en los rubros, un
   ítem corregido a mano y la bandeja con una consulta respondida y otra abierta.
 - **«Casa Reforma — demo»** — la de la compulsa: un muro a demoler, un tabique existente que no
   computa y una ventana sin acotar en la planta que la planilla de carpinterías sí acota. De ahí
@@ -71,6 +71,16 @@ Entrás y encontrás **dos obras**, una para cada mitad del producto:
   dos presupuestos conciliados —uno con una sustitución de especificación y un ítem sin cotizar,
   que deja una repregunta en borrador—, el índice de precios del mes poblado y una ronda de
   negociación propuesta.
+- **«Casa Conjunta — demo»** — la del expediente como conjunto: seis láminas donde la planta no
+  acota una sola altura y el corte la declara una vez. La bandeja abre **una** consulta de dato de
+  obra por los siete elementos que la esperan; el seed la responde como lo haría el arquitecto y el
+  recompute propaga los 2,60 m a todos. Trae poblados los rubros nuevos (terminaciones, sanitaria,
+  eléctrica) y deja abierta la otra consulta agrupada —hasta dónde llega el revestimiento del
+  baño—.
+
+El estudio arranca además con la **lista de precios** sembrada: diez renglones que cubren rubros
+viejos y nuevos, para que la planilla salga con la columna de precio llena y con su fuente
+(«lista») a la vista.
 
 Además queda un **código de invitación de colaborador vigente** (el seed lo imprime al terminar):
 con ese código, desde `/register`, das de alta a un segundo usuario y ves la diferencia de roles en
@@ -113,8 +123,12 @@ Next.js 15 (App Router) + React 19 + TypeScript estricto + Tailwind v4, en cuatr
   (Claude API / Supabase Storage). El core no importa SDKs de servicios externos. Drizzle sobre
   PGlite o Postgres según `DATABASE_URL`.
 - **Pipeline** (`src/lib/pdf`, `src/lib/pipeline`): sube el documento, lo separa en láminas de una
-  página, extrae texto, pide rótulo y entidades al provider, guarda con provenance y recomputa la
-  obra. Idempotente y con estados visibles por lámina; toda escritura queda en `auditoria`.
+  página y corre **cinco fases sobre la obra entera**, no lámina por lámina — inventario de rótulos,
+  extracción en paralelo (cap configurable), **cruce del expediente** (una lectura del conjunto que
+  escribe los hechos que valen para toda la obra y levanta las contradicciones entre láminas),
+  relectura de lo que el cruce pidió mirar de nuevo, y recompute con precios. La fase en curso se
+  escribe en `obras.analisis_json` y la pantalla del expediente la muestra mientras corre.
+  Idempotente y con estados visibles por lámina; toda escritura queda en `auditoria`.
 - **UI** (`src/app`, `src/components`): Server Components por defecto, `"use client"` solo donde
   hay interactividad real (visor, grilla editable, formularios). Las pantallas de la obra —tablero,
   expediente, visor, planilla, bandeja, deducciones, compulsas, conversaciones, comparativa— más
@@ -136,8 +150,9 @@ Lo que hay hoy, punta a punta.
   y no dispara un re-análisis (corregirla a otro valor sí, porque todo se midió con la anterior).
   Solo una lámina **sin ninguna escala** queda bloqueada, con una consulta que pide una medida de
   referencia.
-- Cómputo en cuatro rubros: **aberturas, construcción en seco, pintura y obra gruesa**, con
-  cantidad neta, desperdicio, cantidad de compra y presentación comercial.
+- Cómputo en ocho rubros: **aberturas, construcción en seco, pintura, obra gruesa, terminaciones,
+  instalación sanitaria, instalación eléctrica y demolición**, con cantidad neta, desperdicio,
+  cantidad de compra y presentación comercial.
 - Visor de láminas con overlay de entidades y consultas sobre el plano, capas conmutables y
   resaltado en rojo del ítem que venés a mirar desde la planilla.
 - Planilla editable por rubro: edición inline con recálculo server-side, alta y anulación de ítems,

@@ -118,7 +118,16 @@ export default async function ExpedientePage({
       {/* Arriba de todo: mientras el pipeline corre, es lo único que el
           arquitecto quiere saber. El resumen y la lista de láminas de abajo
           están a medio hacer hasta que la fase dice «listo». */}
-      <ProgresoAnalisis fase={obra.analisisJson} />
+      {/* La ruta de reintento la expone el pipeline (`POST /api/obras/[obraId]/cruce`,
+          que rehace cruce, relectura y cómputo final y se niega con 409 si hay
+          una corrida viva encima). Se pasa desde acá y no desde el componente
+          para que la pantalla no ofrezca un botón contra una ruta que no exista.
+          Si alguna vez se saca esa ruta, este prop vuelve a `null` y el botón
+          desaparece solo. */}
+      <ProgresoAnalisis
+        fase={obra.analisisJson}
+        reintentoDeCruce={`/api/obras/${obra.id}/cruce`}
+      />
 
       <ResumenEjecutivo obraId={obra.id} resumen={leerResumen(obra)} />
 

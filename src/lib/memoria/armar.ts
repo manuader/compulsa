@@ -27,7 +27,7 @@ import { and, asc, eq } from 'drizzle-orm';
 
 import type { Db } from '@/db/client';
 import { datosObra, deducciones, entidades, hallazgos, laminas } from '@/db/schema';
-import type { EntradaMemoria } from '@/lib/memoria/compacta';
+import { etiquetaDeLamina, type EntradaMemoria } from '@/lib/memoria/compacta';
 import { comoEntidadPersistida } from '@/lib/pipeline/recomputar';
 import type { TipoObra } from '@/types/domain';
 
@@ -52,6 +52,10 @@ export async function armarEntradaMemoria(
         escala: laminas.escala,
         escalaConfiable: laminas.escalaConfiable,
         estadoAnalisis: laminas.estadoAnalisis,
+        // Sin esto, una lámina sin código leído se imprimía con su uuid en el
+        // `.md` que baja el arquitecto: la memoria no seleccionaba la única
+        // columna con la que se la puede nombrar.
+        numeroPagina: laminas.numeroPagina,
       })
       .from(laminas)
       .where(eq(laminas.obraId, obra.id))
@@ -88,9 +92,10 @@ export async function armarEntradaMemoria(
       .orderBy(asc(hallazgos.createdAt), asc(hallazgos.id)),
   ]);
 
-  // Cómo se cita una lámina en el documento: por código, y por id si el rótulo
-  // no dejó ninguno (`refDeLamina` hace lo mismo del otro lado).
-  const codigos = new Map(planos.map((plano) => [plano.id, plano.codigo ?? plano.id]));
+  // Cómo se cita una lámina en el documento: por código, y por su página si el
+  // rótulo no dejó ninguno. Es el mismo respaldo que `etiquetaDeLamina` del
+  // otro lado, y el mismo que usa el resto de la app.
+  const codigos = new Map(planos.map((plano) => [plano.id, etiquetaDeLamina(plano)]));
 
   return {
     obra: { nombre: obra.nombre, tipo: obra.tipo },
@@ -110,7 +115,10 @@ export async function armarEntradaMemoria(
       regla: deduccion.regla,
       confianza: deduccion.confianza,
       estado: deduccion.estado,
-      entidadNombre: entidad?.nombre ?? deduccion.entidadId,
+      // Un uuid no le dice nada a nadie —ni al arquitecto que lee el `.md` ni
+      // al modelo que lee la compacta—: si la entidad se fue con un reproceso,
+      // lo honesto es decir eso.
+      entidadNombre: entidad?.nombre ?? 'elemento que ya no está en la documentación',
       // La lámina donde se leyó el dato, no la de la entidad: es la que hay que
       // abrir para verificarlo.
       laminaCodigo: laminaDeLaDeduccion(deduccion.fuentesJson, entidad?.laminaId, codigos),
@@ -126,5 +134,7 @@ function laminaDeLaDeduccion(
 ): string {
   const laminaId = fuentes[0]?.laminaId ?? laminaDeLaEntidad;
   if (laminaId === undefined) return '—';
-  return codigos.get(laminaId) ?? laminaId;
+  // El `??` es para una lámina que ya no está en la obra: el guion dice lo
+  // mismo que el uuid y no ensucia el documento.
+  return codigos.get(laminaId) ?? '—';
 }

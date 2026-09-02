@@ -59,7 +59,7 @@ El engine ganó el **origen por campo** (`Map<entidadId, Map<campo, Origen>>`) y
 
 ### 1.5. Medir el dibujo, cuando no queda otra
 
-`src/lib/computo/medicion.ts`: `metros = pts/72 × 0,0254 × N` para una escala `1:N`. Es la inferencia más débil del sistema y el código la trata como tal. Dos reglas la sostienen: **sin escala no se mide**, y en planta el bbox **no dice qué lado es el largo** — un tabique dibujado en vertical tiene un rectángulo angosto y alto, y leer su ancho daría el espesor (0,30 m en vez de 6 m), un número plausible que entra al cómputo y nadie mira dos veces. Por eso `largoDelDibujo` exige una relación de aspecto ≥ 3 y, si no la hay, no mide: la cota sigue faltando y la consulta sigue abierta.
+`src/lib/computo/medicion.ts`: `metros = pts/72 × 0,0254 × N` para una escala `1:N`. Es la inferencia más débil del sistema y el código la trata como tal. Dos reglas la sostienen: **sin escala no se mide**, y en planta el bbox **no dice qué lado es el largo** — un tabique dibujado en vertical tiene un rectángulo angosto y alto, y leer su ancho daría el espesor (0,30 m en vez de 6 m), un número plausible que entra al cómputo y nadie mira dos veces. Por eso `largoDelDibujo` —que vive en `src/lib/pipeline/procesar.ts`, no en `medicion.ts`: es una decisión sobre la entidad, no una cuenta de unidades— exige una relación de aspecto ≥ 3 y, si no la hay, no mide: la cota sigue faltando y la consulta sigue abierta.
 
 ### 1.6. Cuatro rubros nuevos: ocho en total
 
@@ -112,7 +112,7 @@ Lo que un módulo `'use client'` exporta **hacia el server** no es la función: 
 Es la misma familia que la regla 9 del CLAUDE.md (Next valida exports que `tsc` no ve) y que §7.21 del HANDOFF (el `import()` ignorado). El arreglo tiene dos mitades:
 
 1. la pieza pura se mudó a `bandeja/plano.ts`, un módulo hoja sin directiva;
-2. `tests/unit/exports-de-next.test.ts` ganó un **cuarto chequeo**: recorre `src/`, resuelve los imports relativos y marca a todo módulo **sin** `'use client'` que **llame** a un nombre exportado por uno que sí la tiene. La distinción entre **llamar** (`ayuda()`) y **renderizar** (`<Comp />`) es la que lo hace útil: importar un componente de un `'use client'` es exactamente para lo que la directiva existe. El chequeo se verificó poniéndole el caso delante antes de dejarlo verde.
+2. `tests/unit/exports-de-next.test.ts` ganó un **cuarto chequeo**: recorre `src/`, resuelve los imports —los relativos y, desde un commit posterior de la misma ola, también los del alias `@/`, que es por donde se cruza la frontera casi siempre— y marca a todo módulo **sin** `'use client'` que **llame** a un nombre exportado por uno que sí la tiene. La distinción entre **llamar** (`ayuda()`) y **renderizar** (`<Comp />`) es la que lo hace útil: importar un componente de un `'use client'` es exactamente para lo que la directiva existe. El chequeo se verificó poniéndole el caso delante antes de dejarlo verde.
 
 ---
 

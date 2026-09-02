@@ -19,7 +19,12 @@
  *  2. **Lo que espera tu visto bueno** — deducciones `propuesta`: las que no
  *     llegaron al umbral (§5.4) y por eso **no** se aplicaron. Estas sí se
  *     validan; es la bandeja de deducciones de siempre, mudada acá.
- *  3. **Los ítems inferidos** — los que el motor computó con una medida sacada
+ *  3. **Los hechos que valen para toda la obra** — las filas de `datos_obra`
+ *     que escribió el cruce (§5.2). Son las de mayor radio de daño de la
+ *     pantalla: no cuelgan de un elemento, así que un número mal leído corre
+ *     los metros de todos los rubros del nivel. Se rechazan, y rechazar borra
+ *     la fila para que la consulta agrupada vuelva a «Preguntas».
+ *  4. **Los ítems inferidos** — los que el motor computó con una medida sacada
  *     del dibujo (§5.5). No son una fila que decidir sino el resultado de una,
  *     y por eso van como lista: lo que se rechaza es la medición, arriba.
  *
@@ -40,6 +45,7 @@
 import Link from 'next/link';
 import { useState, useTransition } from 'react';
 
+import { rechazarDatoDeObraAction } from '@/app/obras/[obraId]/bandeja/actions';
 import {
   rechazarDeduccionAction,
   validarDeduccionAction,
@@ -48,7 +54,7 @@ import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { PanelVisor } from '@/components/viewer/panel-visor';
-import type { BBox, ReglaDeduccion } from '@/types/domain';
+import type { BBox, Origen, ReglaDeduccion } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Datos que baja el server (todo serializable)
@@ -106,6 +112,33 @@ export interface GrupoElemento {
   vistas: VistaEnLamina[];
 }
 
+/**
+ * Un hecho que el cruce escribió para **toda la obra** (§5.2).
+ *
+ * No cuelga de una entidad y por eso no entra en `GrupoElemento`: la altura de
+ * local de PB no es de un tabique, es del nivel. Su radio de daño es el mayor
+ * de la solapa —si está mal, están mal los m² de seco, pintura, gruesa y
+ * demolición de ese nivel— y hasta esta corrección era lo único aplicado solo
+ * que no se podía deshacer.
+ */
+export interface DatoObraVista {
+  id: string;
+  /** `altura_local.PB` — la clave técnica, secundaria en pantalla. */
+  clave: string;
+  /** «Altura de local en PB»: cómo se llama el hecho para una persona. */
+  etiqueta: string;
+  /** «2,60 m» — ya escrito en es-AR por el server. */
+  valor: string;
+  origen: Origen;
+  /** 0–1. */
+  confianza: number;
+  /** Cómo se llegó al dato, cuando el sistema lo registró. */
+  metodo: string | null;
+  laminas: LaminaCitada[];
+  /** Las zonas que lo sostienen, para resaltarlas en el panel de al lado. */
+  fuentes: FuenteDeduccion[];
+}
+
 /** Un ítem que el motor computó con una medida sacada del dibujo (§5.5). */
 export interface ItemInferidoVista {
   id: string;
@@ -139,7 +172,14 @@ function porcentaje(confianza: number): string {
  */
 const SIN_DESTACADOS: readonly BBox[] = [];
 
-/** Lo que el panel de la derecha está mostrando. */
+/**
+ * Lo que el panel de la derecha está mostrando.
+ *
+ * `deduccionId` es el id de **lo elegido**, que puede ser una deducción o un
+ * dato de obra: el nombre quedó del día en que la solapa solo mostraba
+ * deducciones y renombrarlo rompería `tests/unit/deducciones-plano.test.ts` sin
+ * que nada mejore.
+ */
 export interface Seleccion {
   deduccionId: string;
   laminaId: string;
@@ -160,8 +200,14 @@ export interface Seleccion {
 export function seleccionVigente(
   seleccion: Seleccion | null,
   grupos: readonly GrupoElemento[],
+  datosDeObra: readonly DatoObraVista[] = [],
 ): Seleccion | null {
   if (seleccion === null) return null;
+  // Los hechos de obra son la otra cosa que el panel puede estar mirando: sin
+  // esto, rechazar una deducción cerraba también el plano de un dato que sigue
+  // en la lista. El parámetro tiene default para no tocar a los llamadores que
+  // solo miran deducciones (`tests/unit/deducciones-plano.test.ts`).
+  if (datosDeObra.some((dato) => dato.id === seleccion.deduccionId)) return seleccion;
   const sigue = grupos.some((grupo) =>
     grupo.vistas.some((vista) =>
       vista.deducciones.some((deduccion) => deduccion.id === seleccion.deduccionId),
@@ -267,8 +313,12 @@ function FilaDeduccion({ obraId, deduccion, laminaActiva, onVer }: FilaProps) {
             vez no significaría nada. Lo único que ofrece es deshacerla. */}
         {aplicada ? null : confirmando === 'validar' ? (
           <span className="flex flex-wrap items-center gap-1">
+            {/* Qué pasa con la obra, no qué escribe el sistema: su gemelo de
+                rechazo («se saca del cómputo y el dato vuelve a faltar») ya lo
+                decía bien. «Se escribe en el elemento» es nuestra plomería. */}
             <span className="text-xs text-neutral-600">
-              Se escribe {deduccion.etiqueta} = {deduccion.valor} en el elemento. ¿Va?
+              El cómputo pasa a usar {deduccion.etiqueta} = {deduccion.valor} y la consulta que lo
+              pedía se cierra. ¿Va?
             </span>
             <Button
               size="sm"
@@ -335,6 +385,155 @@ function FilaDeduccion({ obraId, deduccion, laminaActiva, onVer }: FilaProps) {
             Rechazar
           </Button>
         )}
+      </div>
+
+      {error ? <p className="text-sm text-red-700">{error}</p> : null}
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Los hechos que valen para toda la obra
+// ---------------------------------------------------------------------------
+
+const ETIQUETA_ORIGEN: Record<Origen, string> = {
+  explicito: 'Explícito',
+  deducido: 'Deducido',
+  supuesto: 'Supuesto',
+  inferido: 'Inferido',
+};
+
+const TONO_ORIGEN: Record<Origen, BadgeTone> = {
+  explicito: 'ok',
+  deducido: 'info',
+  supuesto: 'warn',
+  inferido: 'warn',
+};
+
+interface FilaDatoProps {
+  obraId: string;
+  dato: DatoObraVista;
+  laminaActiva: string | null;
+  onVer: (dato: DatoObraVista, lamina: LaminaCitada) => void;
+}
+
+/**
+ * Un hecho de obra, con el botón que lo saca.
+ *
+ * Rechazar acá **borra la fila**: `datos_obra` no tiene estado, la clave es
+ * única por obra y lo que el recompute lee es lo que hay. Sin la fila, la
+ * cadena de respaldo vuelve a no encontrar el hecho y la consulta agrupada
+ * reaparece en «Preguntas» para todas las entidades que lo esperaban. Por eso
+ * se confirma: cambia números en varios rubros a la vez.
+ */
+function FilaDato({ obraId, dato, laminaActiva, onVer }: FilaDatoProps) {
+  const [confirmando, setConfirmando] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pendiente, iniciar] = useTransition();
+
+  function rechazar(): void {
+    setError(null);
+    setConfirmando(false);
+    iniciar(async () => {
+      const resultado = await rechazarDatoDeObraAction({ obraId, datoId: dato.id });
+      if (!resultado.ok) setError(resultado.error);
+    });
+  }
+
+  return (
+    <li
+      className={[
+        'flex flex-col gap-2 border-t border-neutral-200 py-3 first:border-t-0 first:pt-0',
+        laminaActiva === null ? '' : '-mx-2 rounded-md bg-neutral-50 px-2',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium text-neutral-900">
+          {dato.etiqueta} = {dato.valor}
+        </span>
+        <Badge tone={TONO_ORIGEN[dato.origen]}>{ETIQUETA_ORIGEN[dato.origen]}</Badge>
+        <Badge tone={tonoConfianza(dato.confianza)} title="Confianza del dato">
+          {porcentaje(dato.confianza)}
+        </Badge>
+        <Badge tone="neutral" title="Ya está aplicado: lo escribió el cruce del expediente">
+          En el cómputo
+        </Badge>
+      </div>
+
+      <p className="text-sm text-neutral-700">
+        Vale para toda la obra: los rubros que necesitan este dato y no lo tienen en el elemento se
+        computan con él.
+      </p>
+
+      {dato.metodo ? <p className="text-xs text-neutral-500">Método: {dato.metodo}</p> : null}
+
+      {dato.laminas.length > 0 ? (
+        <p className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-neutral-500">Se leyó en:</span>
+          {dato.laminas.map((lamina) => {
+            const activa = laminaActiva === lamina.laminaId;
+            return (
+              <button
+                key={lamina.laminaId}
+                type="button"
+                aria-pressed={activa}
+                onClick={() => onVer(dato, lamina)}
+                className={[
+                  'rounded-full border px-2 py-0.5 font-medium transition-colors',
+                  activa
+                    ? 'border-neutral-900 bg-neutral-900 text-white'
+                    : 'border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-100',
+                ].join(' ')}
+              >
+                {lamina.etiqueta}
+              </button>
+            );
+          })}
+          <Link
+            href={`/obras/${obraId}/laminas/${dato.laminas[0]!.laminaId}?highlight=${dato.id}`}
+            className="text-neutral-600 underline hover:text-neutral-900"
+          >
+            Abrir en página completa
+          </Link>
+        </p>
+      ) : (
+        <p className="text-xs text-neutral-500">
+          El cruce no dejó ninguna lámina citada para este dato.
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        {confirmando ? (
+          <span className="flex flex-wrap items-center gap-1">
+            <span className="text-xs text-neutral-600">
+              Se saca {dato.etiqueta} = {dato.valor} de toda la obra y vuelve a faltar en cada rubro
+              que lo usaba. ¿Va?
+            </span>
+            <Button size="sm" variant="danger" onClick={rechazar} disabled={pendiente}>
+              Sí, rechazar
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setConfirmando(false)}
+              disabled={pendiente}
+            >
+              No
+            </Button>
+          </span>
+        ) : (
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => setConfirmando(true)}
+            disabled={pendiente}
+          >
+            Rechazar
+          </Button>
+        )}
+        <span className="font-mono text-xs text-neutral-400">{dato.clave}</span>
       </div>
 
       {error ? <p className="text-sm text-red-700">{error}</p> : null}
@@ -430,6 +629,8 @@ export interface ParaRevisarProps {
   autovalidadas: GrupoElemento[];
   /** Las que no llegaron al umbral y esperan una decisión. */
   propuestas: GrupoElemento[];
+  /** Los hechos que el cruce escribió para toda la obra (§5.2). */
+  datosDeObra: DatoObraVista[];
   /** Los ítems computados con una medida sacada del dibujo. */
   inferidos: ItemInferidoVista[];
   /** `true` si el filtro por regla está activo: cambia el texto del vacío. */
@@ -440,14 +641,15 @@ export function ParaRevisar({
   obraId,
   autovalidadas,
   propuestas,
+  datosDeObra,
   inferidos,
   filtrada,
 }: ParaRevisarProps) {
   const [seleccion, setSeleccion] = useState<Seleccion | null>(null);
 
-  // La deducción que el panel muestra tiene que seguir estando en la lista
+  // Lo que el panel muestra tiene que seguir estando en la lista
   // (`seleccionVigente`, pinneada en `tests/unit/deducciones-plano.test.ts`).
-  const enPanel = seleccionVigente(seleccion, [...autovalidadas, ...propuestas]);
+  const enPanel = seleccionVigente(seleccion, [...autovalidadas, ...propuestas], datosDeObra);
 
   /**
    * Elegir una lámina citada. Los destacados son los bbox de **esa** lámina: una
@@ -464,7 +666,24 @@ export function ParaRevisar({
     });
   }
 
-  if (autovalidadas.length === 0 && propuestas.length === 0 && inferidos.length === 0) {
+  /** Elegir la lámina donde se leyó un hecho de obra. Misma mecánica que arriba. */
+  function verDato(dato: DatoObraVista, lamina: LaminaCitada): void {
+    setSeleccion({
+      deduccionId: dato.id,
+      laminaId: lamina.laminaId,
+      destacados: dato.fuentes
+        .filter((fuente) => fuente.laminaId === lamina.laminaId)
+        .map((fuente) => fuente.bbox),
+      etiqueta: `${lamina.etiqueta} · ${dato.etiqueta} = ${dato.valor}`,
+    });
+  }
+
+  if (
+    autovalidadas.length === 0 &&
+    propuestas.length === 0 &&
+    datosDeObra.length === 0 &&
+    inferidos.length === 0
+  ) {
     return (
       <div className="rounded-lg border border-neutral-200 bg-white px-4 py-10 text-center">
         <p className="text-sm font-medium text-neutral-900">
@@ -473,7 +692,7 @@ export function ParaRevisar({
         <p className="mt-1 text-sm text-neutral-600">
           {filtrada
             ? 'Probá con otra regla o mirá todas.'
-            : 'Acá aparece lo que el sistema completó solo: un dato que dos láminas dicen entre las dos, o una medida sacada del dibujo. Se puede rechazar, y no frena nada.'}
+            : 'Acá aparece lo que el sistema completó solo: un dato que dos láminas dicen entre las dos, un hecho que vale para toda la obra, o una medida sacada del dibujo. Se puede rechazar, y no frena nada.'}
         </p>
       </div>
     );
@@ -502,6 +721,39 @@ export function ParaRevisar({
           enPanel={enPanel}
           onVer={ver}
         />
+
+        {datosDeObra.length > 0 ? (
+          <section className="flex flex-col gap-2">
+            <div className="flex flex-col gap-0.5">
+              <h2 className="text-sm font-semibold text-neutral-900">
+                Hechos que valen para toda la obra
+                <span className="ml-2 text-xs font-normal text-neutral-500 tabular-nums">
+                  {datosDeObra.length}
+                </span>
+              </h2>
+              <p className="text-xs text-neutral-600">
+                Los escribió el cruce leyendo el expediente entero, y los usa cualquier rubro al
+                que le falte el dato en el elemento. Rechazar uno lo saca de toda la obra y devuelve
+                la pregunta a «Preguntas», una sola vez para todos los elementos que lo esperaban.
+              </p>
+            </div>
+            <Card>
+              <CardContent>
+                <ul className="flex flex-col">
+                  {datosDeObra.map((dato) => (
+                    <FilaDato
+                      key={dato.id}
+                      obraId={obraId}
+                      dato={dato}
+                      laminaActiva={enPanel?.deduccionId === dato.id ? enPanel.laminaId : null}
+                      onVer={verDato}
+                    />
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          </section>
+        ) : null}
 
         {inferidos.length > 0 ? (
           <section className="flex flex-col gap-2">

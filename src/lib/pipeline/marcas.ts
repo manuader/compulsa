@@ -19,15 +19,16 @@
  * pero tampoco confía: con un `obraId` que no es el de la lámina devuelve
  * `null`, no las marcas de otra obra.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import type { MarcaDeduccion, MarcaEntidad, MarcaHallazgo } from '@/components/viewer/overlay';
 import type { Db } from '@/db/client';
-import { computoItems, deducciones, entidades, hallazgos, laminas } from '@/db/schema';
+import { computoItems, datosObra, deducciones, entidades, hallazgos, laminas } from '@/db/schema';
 import { TITULO_REGLA } from '@/lib/deduccion/memoria';
 import { describirValor, etiquetaCampo } from '@/lib/deduccion/motor';
 import { valorDeDeduccion } from '@/lib/deduccion/persistencia';
-import type { Fuente, ValorPropuesto } from '@/types/domain';
+import { etiquetaDeDatoObra } from '@/lib/hallazgos/taxonomia';
+import type { Fuente, TargetDato, ValorPropuesto } from '@/types/domain';
 
 /** Forma canónica 8-4-4-4-12: un id de la URL es texto arbitrario hasta que se valida. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -189,7 +190,50 @@ function fuentesDeConsulta(citadas: readonly Fuente[], propuesta: ValorPropuesto
 }
 
 /**
- * Resuelve `?highlight=<id>` contra las cuatro tablas que llevan provenance
+ * Dónde están dibujadas las entidades a las que les falta un dato de obra.
+ *
+ * Una consulta de dato de obra nace **sin fuentes** y con razón: el hecho no se
+ * leyó en ninguna lámina (P1 no se cumple citando cualquier cosa). El panel
+ * embebido de la bandeja resuelve eso resaltando a **los afectados**
+ * (`fuentesDeAfectadas` de `bandeja/plano.ts`), pero «Abrir en página completa»
+ * no lo hacía: el mismo hallazgo que en el panel resaltaba los cuatro tabiques
+ * abría la lámina con **nada** marcado. Las dos vistas tienen que dibujar lo
+ * mismo (ver la cabecera de este archivo), así que acá se hace la misma
+ * resolución, contra la base y no contra un mapa ya armado.
+ *
+ * Sin `targetDato` no hay consulta que hacer: es el caso de casi todos los
+ * hallazgos.
+ */
+async function fuentesDeAfectadas(
+  db: Db,
+  obraId: string,
+  dato: TargetDato | null,
+): Promise<Fuente[]> {
+  if (dato === null || dato.entidades.length === 0) return [];
+
+  const filas = await db
+    .select({ id: entidades.id, fuentes: entidades.fuentesJson })
+    .from(entidades)
+    .where(and(eq(entidades.obraId, obraId), inArray(entidades.id, dato.entidades)));
+
+  // En el orden en que el hallazgo los enumera —no el que devuelva la base—:
+  // es el mismo criterio del panel, y el overlay scrollea al primero.
+  const porId = new Map(filas.map((fila) => [fila.id, fila.fuentes]));
+  const fuentes: Fuente[] = [];
+  const vistas = new Set<string>();
+  for (const id of dato.entidades) {
+    for (const fuente of porId.get(id) ?? []) {
+      const clave = `${fuente.laminaId}:${fuente.bbox.join(',')}`;
+      if (vistas.has(clave)) continue;
+      vistas.add(clave);
+      fuentes.push(fuente);
+    }
+  }
+  return fuentes;
+}
+
+/**
+ * Resuelve `?highlight=<id>` contra las cinco tablas que llevan provenance
  * (`src/app/CLAUDE.md` §4). Siempre con `obra_id` en el `where`: un id de otra
  * obra no existe (RNF-4).
  *
@@ -222,13 +266,32 @@ export async function resolverDestacado(
       nombre: hallazgos.descripcion,
       fuentes: hallazgos.laminasJson,
       propuesta: hallazgos.valorPropuestoJson,
+      dato: hallazgos.targetDato,
     })
     .from(hallazgos)
     .where(and(eq(hallazgos.id, highlight), eq(hallazgos.obraId, obraId)));
   if (hallazgo) {
     return {
       nombre: hallazgo.nombre,
-      fuentes: fuentesDeConsulta(hallazgo.fuentes, hallazgo.propuesta),
+      fuentes: [
+        ...fuentesDeConsulta(hallazgo.fuentes, hallazgo.propuesta),
+        ...(await fuentesDeAfectadas(db, obraId, hallazgo.dato)),
+      ],
+    };
+  }
+
+  const [dato] = await db
+    .select({
+      clave: datosObra.clave,
+      valorJson: datosObra.valorJson,
+      fuentes: datosObra.fuentesJson,
+    })
+    .from(datosObra)
+    .where(and(eq(datosObra.id, highlight), eq(datosObra.obraId, obraId)));
+  if (dato) {
+    return {
+      nombre: `${etiquetaDeDatoObra(dato.clave)}: ${dato.valorJson.valor}${dato.valorJson.unidad === undefined ? '' : ` ${dato.valorJson.unidad}`}`,
+      fuentes: dato.fuentes,
     };
   }
 

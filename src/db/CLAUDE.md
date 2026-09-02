@@ -14,7 +14,7 @@ Esquema y acceso a datos. El modelo canónico es el §10 del [PRD](../../doc/PRD
    - `computo_items.precio_json` + `hallazgos.target_dato` + `entidades.elemento_id` + `obras.analisis_json` — las columnas que acompañan: el precio resuelto por la cascada, la consulta que apunta a un dato de obra en vez de a una entidad, el agrupador que escribe el cruce y consume `unificarPorElemento`, y la fase del análisis en curso.
 4. **`fuentes_json` es jsonb** con shape `Fuente[]` de `src/types/domain.ts` (`{ laminaId, bbox: [x, y, w, h] }`, bbox normalizado 0–1 sobre la lámina). Toda tabla generada por agentes la lleva (entidades, computo_items, hallazgos).
 5. **Multi-tenant desde el día uno:** toda tabla de negocio referencia `obra_id` y las obras referencian `estudio_id`. Toda query de la app filtra por el estudio de la sesión — el aislamiento (RNF-4) hoy se garantiza en la capa de queries; al migrar a Supabase se agrega RLS con policies por `estudio_id` (las policies SQL viven en `drizzle/rls/` cuando llegue F4, no antes).
-6. **Timestamps:** `created_at` con default `now()` en todas las tablas; `updated_at` solo donde hay edición (computo_items).
+6. **Timestamps:** `created_at` con default `now()` en todas las tablas; `updated_at` solo donde hay edición — hoy `computo_items` y `datos_obra` (el cruce reescribe un hecho de obra cuando lee algo mejor, y hay que poder saber cuándo).
 7. **Nada de deletes físicos** en datos de negocio: `computo_items.estado = 'anulado'`, `hallazgos.estado = 'descartado'`. La auditoría (`auditoria`) referencia registros que tienen que seguir existiendo.
 
 ## Trampas ya pagadas

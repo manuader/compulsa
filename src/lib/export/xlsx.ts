@@ -20,6 +20,7 @@
 import ExcelJS from 'exceljs';
 
 import { ETIQUETA_UNIDAD, redondear2 } from '@/lib/computo/unidades';
+import { formatearMonto } from '@/lib/format/dinero';
 import { PLANTILLAS } from '@/lib/rubros';
 import type {
   EstadoRubro,
@@ -383,8 +384,13 @@ function agregarTotal(
   celdas[0] = etiqueta;
   celdas[COLUMNA_SUBTOTAL - 1 + desplazamiento] = total;
   if (sinPrecio > 0) {
+    // Misma frase que la fila de subtotal de la pantalla
+    // (`components/planilla/planilla-rubro.tsx`): una oración, con mayúscula y
+    // punto. El XLSX es el mismo cómputo en otro soporte, no otro producto.
     celdas[COLUMNA_SUBTOTAL + 1 + desplazamiento] =
-      sinPrecio === 1 ? 'no incluye 1 ítem sin precio' : `no incluye ${sinPrecio} ítems sin precio`;
+      sinPrecio === 1
+        ? 'No incluye 1 ítem sin precio.'
+        : `No incluye ${sinPrecio} ítems sin precio.`;
   }
 
   const fila = hoja.addRow(celdas);
@@ -456,10 +462,16 @@ function hojaReferencias(
   hoja.addRow(['Total estimado']).getCell(1).font = { bold: true };
   const { total, sinPrecio } = totalizar(items);
   hoja.addRow([
-    `${obra.moneda} ${total.toFixed(2)}`,
+    // `formatearMonto` y no `toFixed(2)`: eso escribía `ARS 1234500.00` —punto
+    // decimal, sin separador de miles, la moneda en código— en el único lugar
+    // del libro donde se lee el total de la obra. La app entera escribe
+    // `$ 1.234.500,00`.
+    formatearMonto(obra.moneda, total),
     sinPrecio === 0
       ? 'Suma de los subtotales de todos los ítems exportados.'
-      : `Suma de los subtotales. ${sinPrecio === 1 ? 'Queda 1 ítem sin precio' : `Quedan ${sinPrecio} ítems sin precio`} y no está contado acá.`,
+      : sinPrecio === 1
+        ? 'Suma de los subtotales. Queda 1 ítem sin precio y no está contado acá.'
+        : `Suma de los subtotales. Quedan ${sinPrecio} ítems sin precio y no están contados acá.`,
   ]);
 }
 
@@ -521,7 +533,9 @@ export async function generarXlsx(
       // es la lectura que hace el arquitecto antes de pedir cotizaciones.
       agregarTotal(hoja, COLUMNAS_CONSOLIDADO, `Total ${PLANTILLAS[rubro].nombre.toLowerCase()}`, delRubro, 1);
     }
-    agregarTotal(hoja, COLUMNAS_CONSOLIDADO, 'TOTAL GENERAL', activos, 1);
+    // Sentence case como sus hermanas de arriba («Total seco», «Total pintura»):
+    // la mayúscula sostenida era la única de todo el libro.
+    agregarTotal(hoja, COLUMNAS_CONSOLIDADO, 'Total general', activos, 1);
   }
 
   hojaReferencias(wb, obra, activos, fecha, rubroPedido);
