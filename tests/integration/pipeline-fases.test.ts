@@ -58,16 +58,21 @@ import {
 } from '@/lib/pipeline/cruce';
 import {
   ACCION_CRUCE_FALLIDO,
+  ACCION_CRUCE_REINTENTADO,
   ACCION_FASE,
+  AnalisisEnCursoError,
   CONFIANZA_MEDICION,
   MARCA_METODO,
+  marcarAnalisisFallido,
+  ObraInexistenteError,
   procesarDocumento,
+  reintentarCruce,
   subirDocumento,
 } from '@/lib/pipeline/procesar';
 import { recomputarObra } from '@/lib/pipeline/recomputar';
 import type { StorageAdapter } from '@/lib/storage/index';
 import { crearStorageLocal } from '@/lib/storage/local';
-import type { FaseAnalisis } from '@/types/domain';
+import { TTL_FASE_ANALISIS_MS, type FaseAnalisis } from '@/types/domain';
 
 import { createTestDb } from '../helpers/test-db';
 
@@ -183,7 +188,7 @@ describe('las cinco fases', () => {
 
     const fases = (await auditoriaDe(obraId, ACCION_FASE)).map((fila) => fila.diffJson?.fase);
     expect(fases).toEqual(['inventario', 'extraccion', 'cruce', 'relectura', 'listo']);
-    expect(await faseDe(obraId)).toEqual({ fase: 'listo' });
+    expect(await faseDe(obraId)).toMatchObject({ fase: 'listo' });
   });
 
   it('la fase de inventario deja el índice completo antes de extraer', async () => {
@@ -295,7 +300,7 @@ describe('el cruce del expediente', () => {
     const otra = await crearObra('Obra Sin Cruce');
     await subirYProcesar(otra);
 
-    expect(await faseDe(otra)).toEqual({ fase: 'listo' });
+    expect(await faseDe(otra)).toMatchObject({ fase: 'listo' });
     expect((await deduccionesDe(otra)).map((fila) => fila.regla)).toEqual([
       'medicion_grafica',
       'medicion_grafica',
@@ -522,6 +527,137 @@ function cruceQueDice(respuesta: Partial<RespuestaCruceCruda>): CruceProvider {
     },
   };
 }
+
+describe('la fase con reloj y el reintento del cruce', () => {
+  /**
+   * `procesarDocumento` corre ADENTRO del POST del upload, con
+   * `maxDuration = 300`: un expediente grande sobre el provider real se pasa de
+   * ahí y el proceso muere en el medio de una fase. Sin `desde`, la columna
+   * queda diciendo «Analizando las láminas · 12 de 25» para siempre y la
+   * pantalla pide un refresh cada cuatro segundos, también para siempre.
+   */
+  it('cada marca de fase deja su hora, también la final', async () => {
+    const antes = Date.now();
+    await subirYProcesar(obraId);
+
+    const fase = await faseDe(obraId);
+    expect(fase?.fase).toBe('listo');
+    expect(Date.parse(fase?.desde ?? '')).toBeGreaterThanOrEqual(antes - 1000);
+
+    // Y la línea de tiempo de la corrida también, que es donde se ve cuánto
+    // tardó cada parte.
+    const marcas = await auditoriaDe(obraId, ACCION_FASE);
+    expect(marcas.length).toBeGreaterThan(0);
+    for (const marca of marcas) {
+      expect(typeof (marca.diffJson as { desde?: unknown }).desde).toBe('string');
+    }
+  });
+
+  it('marcarAnalisisFallido deja el error escrito, que es lo que el upload no hacía', async () => {
+    await marcarAnalisisFallido(obraId, 'el documento se guardó pero no se pudo analizar', { db });
+
+    const fase = await faseDe(obraId);
+    expect(fase?.fase).toBe('error');
+    expect(fase?.detalle).toBe('el documento se guardó pero no se pudo analizar');
+    expect(typeof fase?.desde).toBe('string');
+  });
+
+  /**
+   * El cruce es la fase cara y la única que sale a la red con el expediente
+   * entero, así que es la más probable de caerse — y era la única sin reintento:
+   * el único llamador de `cruzarObra` era `procesarDocumento`, o sea que
+   * reintentar exigía volver a subir el PDF.
+   */
+  it('reintenta el cruce de una obra que quedó en error, sin volver a subir nada', async () => {
+    const revienta: CruceProvider = {
+      nombre: 'cruce-que-revienta',
+      async cruzar() {
+        throw new Error('el modelo no contestó a tiempo');
+      },
+    };
+
+    const bytes = await readFile(new URL('obra-fases.pdf', PDFS));
+    const archivo = new File([new Uint8Array(bytes)], 'obra-fases.pdf', {
+      type: 'application/pdf',
+    });
+    const documento = await subirDocumento(db, storage, obraId, usuarioId, archivo);
+    await procesarDocumento(documento.id, { db, storage, cruce: revienta });
+
+    expect((await faseDe(obraId))?.fase).toBe('error');
+    expect(await db.select().from(datosObra).where(eq(datosObra.obraId, obraId))).toEqual([]);
+
+    const { fase, relecturas } = await reintentarCruce(obraId, { db, storage });
+
+    expect(fase.fase).toBe('listo');
+    expect(relecturas).toBe(1);
+    expect((await faseDe(obraId))?.fase).toBe('listo');
+    // El cruce corrió de verdad: escribió el dato de obra del fixture y
+    // completó la altura de T1.
+    const datos = await db.select().from(datosObra).where(eq(datosObra.obraId, obraId));
+    expect(datos.map((dato) => dato.clave)).toEqual(['nivel.PB']);
+    const delCruce = (await deduccionesDe(obraId)).filter((fila) => fila.regla === 'cruce');
+    expect(delCruce.map((fila) => fila.campo)).toEqual(['alturaM']);
+
+    const [reintento] = await auditoriaDe(obraId, ACCION_CRUCE_REINTENTADO);
+    expect(reintento.diffJson).toMatchObject({ resultado: 'listo', relecturas: 1 });
+  });
+
+  it('reintentar sobre una obra quieta no escribe ni audita nada', async () => {
+    await subirYProcesar(obraId);
+    const previas = new Set((await db.select().from(auditoria)).map((fila) => fila.id));
+
+    await reintentarCruce(obraId, { db, storage });
+
+    const nuevas = (await db.select().from(auditoria)).filter((fila) => !previas.has(fila.id));
+    expect(previas.size).toBeGreaterThan(0);
+    expect(
+      nuevas
+        .filter((fila) => ESCRITURAS_DE_DATOS.has(fila.accion))
+        .map((fila) => `${fila.accion} ${fila.targetRef}`),
+    ).toEqual([]);
+  });
+
+  /**
+   * Dos cruces encimados sobre la misma obra corren dos recomputes que leen la
+   * misma foto de `computo_items`: los dos insertan la clave que no vieron y la
+   * planilla termina con ítems duplicados en silencio. Es el mismo motivo por
+   * el que la extracción en paralelo difiere su recompute.
+   */
+  it('no arranca encima de un análisis que todavía está corriendo', async () => {
+    await subirYProcesar(obraId);
+    await db
+      .update(obras)
+      .set({ analisisJson: { fase: 'extraccion', total: 25, completadas: 12, desde: new Date().toISOString() } })
+      .where(eq(obras.id, obraId));
+
+    await expect(reintentarCruce(obraId, { db, storage })).rejects.toBeInstanceOf(
+      AnalisisEnCursoError,
+    );
+  });
+
+  /**
+   * La otra mitad del reloj: una fase que dice que trabaja y hace rato que no
+   * se mueve no bloquea nada. Sin esto, un proceso muerto dejaba la obra sin
+   * reintento posible para siempre.
+   */
+  it('una fase vencida no bloquea el reintento', async () => {
+    await subirYProcesar(obraId);
+    const rancia = new Date(Date.now() - TTL_FASE_ANALISIS_MS - 1000).toISOString();
+    await db
+      .update(obras)
+      .set({ analisisJson: { fase: 'extraccion', total: 25, completadas: 12, desde: rancia } })
+      .where(eq(obras.id, obraId));
+
+    const { fase } = await reintentarCruce(obraId, { db, storage });
+    expect(fase.fase).toBe('listo');
+  });
+
+  it('una obra que no existe no es un 500', async () => {
+    await expect(
+      reintentarCruce('00000000-0000-4000-8000-000000000000', { db, storage }),
+    ).rejects.toBeInstanceOf(ObraInexistenteError);
+  });
+});
 
 describe('el texto que lee el arquitecto', () => {
   beforeEach(async () => {

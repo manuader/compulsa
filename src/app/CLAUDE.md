@@ -79,6 +79,10 @@ El workspace del arquitecto (PRD §8), completo: nueve pantallas por obra, más 
                                                     pide rol, pero sí sesión y estudio)
 /api/laminas/[laminaId]/procesar                    reproceso de una lámina
 /api/obras/[obraId]/documentos                      upload y borrado de documentos
+/api/obras/[obraId]/cruce                           POST: reintento del cruce del expediente
+                                                    (cruce + relectura + cómputo final).
+                                                    Idempotente; 409 si ya hay un análisis
+                                                    corriendo y todavía no venció
 /api/obras/[obraId]/export                          XLSX del cómputo (consolidado o por rubro)
 /api/obras/[obraId]/planilla-carpinterias           XLSX de la planilla derivada
 /api/obras/[obraId]/memoria                         memoria de obra (.md, §27): documentación

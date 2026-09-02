@@ -14,6 +14,7 @@ import { documentos, laminas } from '@/db/schema';
 import { ErrorHttp, json, requireObraApi, responder } from '@/lib/pipeline/http';
 import {
   ArchivoInvalidoError,
+  marcarAnalisisFallido,
   procesarDocumento,
   subirDocumento,
 } from '@/lib/pipeline/procesar';
@@ -101,6 +102,17 @@ export async function POST(request: Request, { params }: Params): Promise<Respon
       await procesarDocumento(documento.id);
     } catch (error) {
       console.error('[api] no pude separar el documento en láminas:', error);
+      // Sin esto, `obras.analisis_json` quedaba clavado en la fase que estuviera
+      // en curso cuando la corrida se cortó, y el expediente decía «Analizando
+      // las láminas · 12 de 25» para siempre, pidiendo un refresh cada cuatro
+      // segundos. El detalle técnico va al log del server; acá va lo que el
+      // arquitecto necesita saber.
+      await marcarAnalisisFallido(
+        obra.id,
+        'el documento se guardó pero no se pudo analizar. Probá subirlo de nuevo; ' +
+          'si vuelve a fallar, revisá que sea un PDF válido',
+        { db },
+      );
       return json(
         {
           documento,
