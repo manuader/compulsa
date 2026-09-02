@@ -12,8 +12,12 @@
  *    escala y no acotados: sus medidas solo pueden salir de **medir el
  *    dibujo**, y sus ítems tienen que salir `inferido`;
  *  - **T2** queda sin altura después del cruce, así que la consulta agrupada
- *    `dato_obra.altura_local.PB` sigue abierta y la **búsqueda dirigida** tiene
- *    adónde ir: al corte, que es donde está acotada.
+ *    `dato_obra.altura_local.general` sigue abierta y la **búsqueda dirigida**
+ *    tiene adónde ir: al corte, que es donde está acotada. La clave es
+ *    `general` y no `PB` a propósito: los tabiques de la planta **no** declaran
+ *    `nivel` —que es lo más común en una planta real, y lo que el prompt
+ *    produce cuando la lámina no lo dice—, así que la cadena de respaldo
+ *    pregunta por el hecho que vale para toda la obra.
  *
  * Los providers son SIEMPRE los mocks (`NODE_ENV=test`), con los fixtures de
  * `tests/fixtures/analysis/` — el del cruce es el único cuya clave es la obra
@@ -68,8 +72,8 @@ import { createTestDb } from '../helpers/test-db';
 
 const PDFS = new URL('../fixtures/pdfs/', import.meta.url);
 
-/** La consulta agrupada por el dato de obra que le falta a los tabiques de PB. */
-const CLAVE_ALTURA = 'dato_obra.altura_local.PB';
+/** La consulta agrupada por el dato de obra que les falta a los tabiques. */
+const CLAVE_ALTURA = 'dato_obra.altura_local.general';
 
 let db: Db;
 let raizStorage: string;
@@ -256,7 +260,7 @@ describe('el cruce del expediente', () => {
     const consulta = await hallazgoPorClave(obraId, CLAVE_ALTURA);
     expect(consulta?.estado).toBe('abierto');
     expect(consulta?.bloqueante).toBe(false);
-    expect(consulta?.targetDato?.clave).toBe('altura_local.PB');
+    expect(consulta?.targetDato?.clave).toBe('altura_local.general');
     expect(consulta?.descripcion).toContain('T2');
     expect(consulta?.descripcion).not.toContain('T1');
   });
@@ -371,7 +375,7 @@ describe('la relectura dirigida', () => {
     // Y **no** se escribió el dato: P4 sigue en pie, la propuesta espera el
     // click del arquitecto.
     expect(
-      await db.select().from(datosObra).where(eq(datosObra.clave, 'altura_local.PB')),
+      await db.select().from(datosObra).where(eq(datosObra.clave, 'altura_local.general')),
     ).toEqual([]);
   });
 });
