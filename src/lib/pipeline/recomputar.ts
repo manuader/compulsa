@@ -1043,6 +1043,12 @@ function comoTexto(campo: string, valor: number | string | boolean): string {
  * ya no se sostiene y alguien tiene que mirarla. La clave es estable por entidad
  * y campo, así que el conciliador la abre una sola vez y **no la reabre** si el
  * arquitecto la descarta (mismo patrón que el resto de la bandeja).
+ *
+ * La clave va por **id de entidad**, no por nombre: `hallazgos.clave` es única
+ * por obra, y dos entidades llamadas `T1` en dos láminas distintas —el caso
+ * normal antes de que el cruce las una— armaban la misma clave. La segunda
+ * contradicción la tiraba `deduplicarPorClave` y el arquitecto no la veía nunca.
+ * Es la misma decisión que ya tomaba `hallazgoUnificacion` con el `elemento_id`.
  */
 function hallazgoContradiccion(superada: DeduccionSuperada): HallazgoDetectado {
   const { campo, regla } = superada.deduccion;
@@ -1052,7 +1058,7 @@ function hallazgoContradiccion(superada: DeduccionSuperada): HallazgoDetectado {
 
   return hallazgoInconsistencia({
     rubro: null, // es coherencia del expediente, no de un rubro
-    clave: `deduccion.contradicha.${nombre}.${campo}`,
+    clave: `deduccion.contradicha.${superada.entidad.id}.${campo}`,
     checklistItem: 'deduccion.contradicha',
     descripcion:
       `${etiquetaCampo(campo)} de ${nombre} se validó en ${deducido} por la regla ` +
