@@ -1006,6 +1006,61 @@ describe('aprobarRubroCore: el aislamiento va adentro del núcleo (RNF-4)', () =
     // Y tampoco deja rastro: el guard corta antes de escribir.
     expect(await acciones()).not.toContain('rubro_aprobado');
   });
+
+  /**
+   * RF-404 con lo que agregó §5.4: el gate no cambió —cero bloqueantes—, pero
+   * ahora un rubro puede aprobarse apoyado en datos que el sistema dedujo o
+   * midió sobre el dibujo. Cuántos eran queda en la aprobación: sin eso,
+   * «aprobé seco» no dice si lo aprobó sobre cotas escritas o sobre un
+   * rectángulo medido a escala.
+   */
+  it('la aprobación audita cuántos ítems deducidos e inferidos incluía', async () => {
+    const base = {
+      obraId: obraPropiaId,
+      rubro: 'seco' as const,
+      unidad: 'm2' as const,
+      descripcion: 'Placas de durlock',
+      desperdicioPct: 12,
+      presentacion: 'placa 1,20 × 2,40',
+      fuentesJson: [],
+      confianza: 0.9,
+    };
+    await db.insert(computoItems).values([
+      { ...base, claveItem: 'seco.placas', cantNeta: 10, cantCompra: 12, origen: 'deducido' },
+      { ...base, claveItem: 'seco.perfiles', cantNeta: 8, cantCompra: 9, origen: 'inferido' },
+      { ...base, claveItem: 'seco.tornillos', cantNeta: 5, cantCompra: 6, origen: 'explicito' },
+      // Un anulado no cuenta: la aprobación es sobre lo que quedó en la planilla.
+      {
+        ...base,
+        claveItem: 'seco.masilla',
+        cantNeta: 2,
+        cantCompra: 3,
+        origen: 'deducido',
+        estado: 'anulado' as const,
+      },
+      // Y otro rubro tampoco: se aprueba seco, no aberturas.
+      {
+        ...base,
+        rubro: 'aberturas' as const,
+        claveItem: 'aberturas.V1',
+        cantNeta: 1,
+        cantCompra: 1,
+        origen: 'inferido',
+      },
+    ]);
+
+    expect(await aprobarRubroCore(db, actor(), obraPropiaId, 'seco')).toEqual({ ok: true });
+
+    const [fila] = await db
+      .select()
+      .from(auditoria)
+      .where(and(eq(auditoria.obraId, obraPropiaId), eq(auditoria.accion, 'rubro_aprobado')));
+    expect(fila?.diffJson).toEqual({
+      estado: { antes: 'borrador', despues: 'aprobado' },
+      deducidos: 1,
+      inferidos: 1,
+    });
+  });
 });
 
 /**
