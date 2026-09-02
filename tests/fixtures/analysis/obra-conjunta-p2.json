@@ -1,0 +1,31 @@
+{
+  "rotulo": {
+    "titulo": "CORTE A-A",
+    "codigo": "A-02",
+    "disciplina": "arquitectura",
+    "tipoLamina": "corte",
+    "escala": "1:50",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.93
+  },
+  "entidades": [
+    {
+      "tipo": "cota",
+      "nombre": "H local PB",
+      "bbox": [
+        0.62,
+        0.3,
+        0.04,
+        0.26
+      ],
+      "confianza": 0.92,
+      "estadoReforma": "na",
+      "atributos": {
+        "valorM": 2.6,
+        "sobre": "local PB",
+        "tramo": "total"
+      }
+    }
+  ]
+}

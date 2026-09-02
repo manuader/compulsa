@@ -1,0 +1,94 @@
+{
+  "rotulo": {
+    "titulo": "PLANTA ELÉCTRICA",
+    "codigo": "IE-01",
+    "disciplina": "instalaciones",
+    "tipoLamina": "planta",
+    "escala": "1:50",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.9
+  },
+  "entidades": [
+    {
+      "tipo": "boca",
+      "nombre": "B1",
+      "bbox": [
+        0.12,
+        0.26,
+        0.02,
+        0.02
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "toma",
+        "circuito": "TUG1"
+      }
+    },
+    {
+      "tipo": "boca",
+      "nombre": "B2",
+      "bbox": [
+        0.2,
+        0.26,
+        0.02,
+        0.02
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "toma",
+        "circuito": "TUG1"
+      }
+    },
+    {
+      "tipo": "boca",
+      "nombre": "B3",
+      "bbox": [
+        0.28,
+        0.26,
+        0.02,
+        0.02
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "luz",
+        "circuito": "IUG1"
+      }
+    },
+    {
+      "tipo": "boca",
+      "nombre": "B4",
+      "bbox": [
+        0.36,
+        0.26,
+        0.02,
+        0.02
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "luz",
+        "circuito": "IUG1"
+      }
+    },
+    {
+      "tipo": "boca",
+      "nombre": "B5",
+      "bbox": [
+        0.44,
+        0.26,
+        0.02,
+        0.02
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "luz",
+        "circuito": "IUG2"
+      }
+    }
+  ]
+}
