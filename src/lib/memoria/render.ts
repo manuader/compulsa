@@ -277,7 +277,11 @@ function elementos(entrada: EntradaMemoria): string[] {
 }
 
 /**
- * `largo = 3; altura = 2,60 m` — lo que nadie leyó (`null`) no es un atributo.
+ * `largo = 3; altura = 2,6` — lo que nadie leyó (`null`) no es un atributo.
+ *
+ * Sin unidad: el atributo no la lleva y ponerle una acá sería adivinarla
+ * (`caras` y `tipo` no son metros). La unidad de cada medida vive en la
+ * planilla, que es donde se compra.
  *
  * Los nombres de campo salen de `etiquetaCampo`, el mismo traductor que usa la
  * bandeja: acá salía `largoM = 3; alturaM = 2,6`, camelCase y todo, en el

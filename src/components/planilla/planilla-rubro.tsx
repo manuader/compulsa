@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 /**
  * Planilla de un rubro: la grilla editable, los totales por unidad, el alta de
@@ -7,35 +7,32 @@
  * ## El plano al lado, no a un click de distancia
  *
  * Lo mismo que las dos solapas de la bandeja, y por el mismo pedido: «que se
- * vea la lista de datos y al clickear se resalte en el plano, todo en la misma
- * página, sin ir de link en link». La fila cita sus láminas como botones y
- * elegir una carga el plano en el `PanelVisor` de la derecha con los bbox del
- * ítem resaltados. El `?highlight=` no se va: cada fila ofrece «página
- * completa» para cuando el plano necesita toda la pantalla.
+ * vea la lista y al clickear se resalte en el plano, todo en la misma página,
+ * sin ir de link en link». La fila cita sus láminas como botones y elegir una
+ * carga el plano en el `PanelVisor` de la derecha con los bbox del ítem
+ * resaltados. El `?highlight=` no se va: cada fila ofrece «página completa»
+ * para cuando el plano necesita toda la pantalla.
  *
  * El botón de aprobar se deshabilita cuando el gate de consultas bloqueantes
  * (RF-404) no da, pero eso es **cortesía de la pantalla**: la verificación real
  * la hace `aprobarRubroAction` en el server. Si el gate cambia entre que se
  * pintó la pantalla y el click, gana el server y el mensaje aparece acá.
  */
-import { useState, useTransition } from "react";
+import { useState, useTransition } from 'react';
 
-import {
-  aprobarRubroAction,
-  crearItemManualAction,
-} from "@/app/obras/[obraId]/computo/actions";
+import { aprobarRubroAction, crearItemManualAction } from '@/app/obras/[obraId]/computo/actions';
 import {
   FilaItem,
   type ItemPlanilla,
   type LaminaDelItem,
-} from "@/components/planilla/fila-item";
-import type { SubtotalRubro } from "@/components/planilla/precio";
-import { Badge, type BadgeTone } from "@/components/ui/badge";
-import { Button, estilosBoton } from "@/components/ui/button";
-import { Dialog } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import { PanelVisor } from "@/components/viewer/panel-visor";
+} from '@/components/planilla/fila-item';
+import type { SubtotalRubro } from '@/components/planilla/precio';
+import { Badge, type BadgeTone } from '@/components/ui/badge';
+import { Button, estilosBoton } from '@/components/ui/button';
+import { Dialog } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import { PanelVisor } from '@/components/viewer/panel-visor';
 import {
   Table,
   TableBody,
@@ -43,19 +40,9 @@ import {
   TableHead,
   TableHeaderCell,
   TableRow,
-} from "@/components/ui/table";
-import {
-  ETIQUETA_UNIDAD,
-  formatearNumero,
-  redondear2,
-} from "@/lib/computo/unidades";
-import {
-  UNIDADES,
-  type BBox,
-  type EstadoRubro,
-  type RubroId,
-  type Unidad,
-} from "@/types/domain";
+} from '@/components/ui/table';
+import { ETIQUETA_UNIDAD, formatearNumero, redondear2 } from '@/lib/computo/unidades';
+import { UNIDADES, type BBox, type EstadoRubro, type RubroId, type Unidad } from '@/types/domain';
 
 export type { ItemPlanilla };
 
@@ -82,8 +69,8 @@ export interface MiradaEnPlanilla {
  * Anular un ítem, o cambiar de rubro o de filtro, revalida la pantalla y la
  * fila desaparece de la grilla: dejar el plano abierto con el nombre de un ítem
  * que ya no está a la vista es mostrar algo que nadie eligió. Mismo guard que
- * `miradaVigente` de la bandeja y `seleccionVigente` de «Para revisar», y por el
- * mismo motivo se filtra **en el render** y no se limpia el estado.
+ * `miradaVigente` de la bandeja y `seleccionVigente` de «Para revisar», y por
+ * el mismo motivo se filtra **en el render** y no se limpia el estado.
  */
 export function miradaVigente(
   mirada: MiradaEnPlanilla | null,
@@ -94,25 +81,25 @@ export function miradaVigente(
 }
 
 const ETIQUETA_ESTADO_RUBRO: Record<EstadoRubro, string> = {
-  borrador: "Borrador",
-  revision: "En revisión",
-  aprobado: "Aprobado",
+  borrador: 'Borrador',
+  revision: 'En revisión',
+  aprobado: 'Aprobado',
 };
 
 const TONO_ESTADO_RUBRO: Record<EstadoRubro, BadgeTone> = {
-  borrador: "neutral",
-  revision: "info",
-  aprobado: "ok",
+  borrador: 'neutral',
+  revision: 'info',
+  aprobado: 'ok',
 };
 
 const NOMBRE_UNIDAD: Record<Unidad, string> = {
-  u: "unidad",
-  m: "metro",
-  ml: "metro lineal",
-  m2: "metro cuadrado",
-  m3: "metro cúbico",
-  l: "litro",
-  kg: "kilo",
+  u: 'unidad',
+  m: 'metro',
+  ml: 'metro lineal',
+  m2: 'metro cuadrado',
+  m3: 'metro cúbico',
+  l: 'litro',
+  kg: 'kilo',
 };
 
 /** Total de netas y de compra por unidad: sumar peras con manzanas no sirve. */
@@ -185,12 +172,10 @@ export function PlanillaRubro({
   const [errorAprobacion, setErrorAprobacion] = useState<string | null>(null);
   const [pendiente, iniciar] = useTransition();
 
-  const [descripcion, setDescripcion] = useState("");
-  const [unidad, setUnidad] = useState<Unidad>("u");
-  const [cantNeta, setCantNeta] = useState("");
-  const [desperdicioPct, setDesperdicioPct] = useState(
-    formatearNumero(desperdicioDefaultPct),
-  );
+  const [descripcion, setDescripcion] = useState('');
+  const [unidad, setUnidad] = useState<Unidad>('u');
+  const [cantNeta, setCantNeta] = useState('');
+  const [desperdicioPct, setDesperdicioPct] = useState(formatearNumero(desperdicioDefaultPct));
 
   const enPanel = miradaVigente(mirada, items);
   const totales = totalesPorUnidad(items);
@@ -211,11 +196,11 @@ export function PlanillaRubro({
     });
   }
   const gateOk = bloqueantes === 0;
-  const yaAprobado = estadoRubro === "aprobado";
+  const yaAprobado = estadoRubro === 'aprobado';
   const motivoGate = gateOk
     ? undefined
     : bloqueantes === 1
-      ? "Queda 1 consulta bloqueante abierta en la bandeja."
+      ? 'Queda 1 consulta bloqueante abierta en la bandeja.'
       : `Quedan ${bloqueantes} consultas bloqueantes abiertas en la bandeja.`;
 
   function crearItem(): void {
@@ -233,8 +218,8 @@ export function PlanillaRubro({
         setErrorAlta(resultado.error);
         return;
       }
-      setDescripcion("");
-      setCantNeta("");
+      setDescripcion('');
+      setCantNeta('');
       setDesperdicioPct(formatearNumero(desperdicioDefaultPct));
       setDialogoAlta(false);
     });
@@ -253,22 +238,14 @@ export function PlanillaRubro({
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="text-base font-semibold text-neutral-900">
-            {nombreRubro}
-          </h2>
-          <Badge tone={TONO_ESTADO_RUBRO[estadoRubro]}>
-            {ETIQUETA_ESTADO_RUBRO[estadoRubro]}
-          </Badge>
+          <h2 className="text-base font-semibold text-neutral-900">{nombreRubro}</h2>
+          <Badge tone={TONO_ESTADO_RUBRO[estadoRubro]}>{ETIQUETA_ESTADO_RUBRO[estadoRubro]}</Badge>
           {motivoGate ? <Badge tone="warn">{motivoGate}</Badge> : null}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {puedeEditar ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setDialogoAlta(true)}
-            >
+            <Button variant="secondary" size="sm" onClick={() => setDialogoAlta(true)}>
               Agregar ítem
             </Button>
           ) : null}
@@ -278,20 +255,18 @@ export function PlanillaRubro({
               mentirle: la única razón por la que estaba era que esta grilla no
               sabía el rol. */}
           {puedeAprobar ? (
-            <span
-              title={yaAprobado ? "El rubro ya está aprobado." : motivoGate}
-            >
+            <span title={yaAprobado ? 'El rubro ya está aprobado.' : motivoGate}>
               <Button
                 size="sm"
                 disabled={!gateOk || yaAprobado || pendiente}
                 onClick={() => setDialogoAprobacion(true)}
               >
-                {yaAprobado ? "Rubro aprobado" : "Aprobar rubro"}
+                {yaAprobado ? 'Rubro aprobado' : 'Aprobar rubro'}
               </Button>
             </span>
           ) : (
             <Badge tone={TONO_ESTADO_RUBRO[estadoRubro]}>
-              {yaAprobado ? "Rubro aprobado" : "Lo aprueba un titular"}
+              {yaAprobado ? 'Rubro aprobado' : 'Lo aprueba un titular'}
             </Badge>
           )}
           {/* Descarga: es un `<a>` de verdad, vestido de botón con las mismas
@@ -299,7 +274,7 @@ export function PlanillaRubro({
               estilos). */}
           <a
             href={`/api/obras/${obraId}/export?rubro=${rubro}`}
-            className={estilosBoton("secondary", "sm")}
+            className={estilosBoton('secondary', 'sm')}
           >
             Exportar XLSX
           </a>
@@ -312,11 +287,12 @@ export function PlanillaRubro({
         </p>
       ) : null}
 
-      {/* Split view, igual que las dos solapas de la bandeja (app/CLAUDE.md §5):
-          la planilla a la izquierda y el plano al lado, pegado al scroll.
-          Clickear la lámina de una fila resalta sus fuentes acá sin navegar.
-          Una columna sola abajo de `xl`: la grilla tiene doce columnas y
-          partirla en dos antes de eso deja las dos mitades ilegibles. */}
+      {/* Split view, igual que las dos solapas de la bandeja (app/CLAUDE.md
+          §5): la planilla a la izquierda y el plano al lado, pegado al
+          scroll. Clickear la lámina de una fila resalta sus fuentes acá sin
+          navegar. Una columna sola abajo de `xl`: la grilla tiene doce
+          columnas y partirla al medio antes de eso deja las dos mitades
+          ilegibles. */}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem] xl:items-start">
         <div className="flex min-w-0 flex-col gap-3">
           {items.length === 0 ? (
@@ -324,11 +300,11 @@ export function PlanillaRubro({
               <p className="text-sm font-medium text-neutral-900">
                 Todavía no hay ítems computados en {nombreRubro.toLowerCase()}.
               </p>
-              {/* El texto de siempre era falso justo en el caso que importa:
-                  el análisis SÍ detectó los tabiques y lo que falta es un dato
-                  que alguien tiene que contestar. Mandar a esperar al análisis
-                  a quien tiene cuatro consultas abiertas es mandarlo a esperar
-                  algo que no va a pasar. */}
+              {/* El texto de siempre era falso justo en el caso que importa: el
+                  análisis SÍ detectó los tabiques y lo que falta es un dato que
+                  alguien tiene que contestar. Mandar a esperar al análisis a quien
+                  tiene cuatro consultas abiertas es mandarlo a esperar algo que no
+                  va a pasar. */}
               {consultasAbiertas > 0 ? (
                 <p className="mt-1 text-sm text-neutral-600">
                   El análisis leyó los elementos del rubro, pero{' '}
@@ -346,8 +322,8 @@ export function PlanillaRubro({
                 </p>
               ) : (
                 <p className="mt-1 text-sm text-neutral-600">
-                  Aparecen solos cuando el análisis detecta las entidades del
-                  rubro. Si ya sabés lo que falta, agregalo a mano.
+                  Aparecen solos cuando el análisis detecta las entidades del rubro. Si ya sabés lo que
+                  falta, agregalo a mano.
                 </p>
               )}
             </div>
@@ -377,54 +353,35 @@ export function PlanillaRubro({
                     obraId={obraId}
                     item={item}
                     puedeEditar={puedeEditar}
-                    laminaActiva={
-                      enPanel?.itemId === item.id ? enPanel.laminaId : null
-                    }
+                    laminaActiva={enPanel?.itemId === item.id ? enPanel.laminaId : null}
                     onVer={ver}
                   />
                 ))}
 
                 {totales.map((total) => (
-                  <TableRow
-                    key={`total-${total.unidad}`}
-                    className="bg-neutral-50 font-medium"
-                  >
-                    <TableCell colSpan={2}>
-                      Total en {ETIQUETA_UNIDAD[total.unidad]}
-                    </TableCell>
-                    <TableCell numeric>
-                      {formatearNumero(total.cantNeta)}
-                    </TableCell>
+                  <TableRow key={`total-${total.unidad}`} className="bg-neutral-50 font-medium">
+                    <TableCell colSpan={2}>Total en {ETIQUETA_UNIDAD[total.unidad]}</TableCell>
+                    <TableCell numeric>{formatearNumero(total.cantNeta)}</TableCell>
                     <TableCell />
-                    <TableCell numeric>
-                      {formatearNumero(total.cantCompra)}
-                    </TableCell>
-                    <TableCell
-                      colSpan={7}
-                      className="text-xs font-normal text-neutral-500"
-                    >
+                    <TableCell numeric>{formatearNumero(total.cantCompra)}</TableCell>
+                    <TableCell colSpan={7} className="text-xs font-normal text-neutral-500">
                       Suma de los ítems activos que se ven en la tabla.
                     </TableCell>
                   </TableRow>
                 ))}
 
                 {/* El subtotal del rubro va sobre TODOS sus ítems activos, no sobre
-                los que quedaron a la vista: filtrar por origen cambia la tabla,
-                no lo que cuesta el rubro. */}
+                    los que quedaron a la vista: filtrar por origen cambia la tabla,
+                    no lo que cuesta el rubro. */}
                 {subtotal ? (
                   <TableRow className="bg-neutral-100 font-semibold">
-                    <TableCell colSpan={7}>
-                      Subtotal de {nombreRubro.toLowerCase()}
-                    </TableCell>
+                    <TableCell colSpan={7}>Subtotal de {nombreRubro.toLowerCase()}</TableCell>
                     <TableCell numeric>{subtotal.monto}</TableCell>
-                    <TableCell
-                      colSpan={4}
-                      className="text-xs font-normal text-neutral-500"
-                    >
+                    <TableCell colSpan={4} className="text-xs font-normal text-neutral-500">
                       {subtotal.sinPrecio === 0
-                        ? "Todos los ítems del rubro tienen precio."
+                        ? 'Todos los ítems del rubro tienen precio.'
                         : subtotal.sinPrecio === 1
-                          ? "No incluye 1 ítem sin precio."
+                          ? 'No incluye 1 ítem sin precio.'
                           : `No incluye ${subtotal.sinPrecio} ítems sin precio.`}
                     </TableCell>
                   </TableRow>
@@ -437,8 +394,8 @@ export function PlanillaRubro({
         <div className="min-w-0 xl:sticky xl:top-4">
           <PanelVisor
             laminaId={enPanel?.laminaId ?? null}
-            // La referencia sale del estado o de la constante de módulo: nunca
-            // un `[]` nuevo por render (ver `SIN_DESTACADOS`).
+            // La referencia sale del estado o de la constante de módulo:
+            // nunca un `[]` nuevo por render (ver `SIN_DESTACADOS`).
             destacados={enPanel?.destacados ?? SIN_DESTACADOS}
             etiqueta={enPanel?.etiqueta ?? null}
             colapsable
@@ -453,23 +410,19 @@ export function PlanillaRubro({
           title={`Agregar ítem a ${nombreRubro.toLowerCase()}`}
           footer={
             <>
-              <Button
-                variant="ghost"
-                onClick={() => setDialogoAlta(false)}
-                disabled={pendiente}
-              >
+              <Button variant="ghost" onClick={() => setDialogoAlta(false)} disabled={pendiente}>
                 Cancelar
               </Button>
               <Button onClick={crearItem} disabled={pendiente}>
-                {pendiente ? "Agregando…" : "Agregar"}
+                {pendiente ? 'Agregando…' : 'Agregar'}
               </Button>
             </>
           }
         >
           <div className="flex flex-col gap-3">
             <p className="text-sm text-neutral-600">
-              Un ítem cargado a mano no tiene fuente en los planos: queda
-              marcado como tuyo y el recómputo no lo pisa.
+              Un ítem cargado a mano no tiene fuente en los planos: queda marcado como tuyo y el
+              recómputo no lo pisa.
             </p>
             <Input
               label="Descripción"
@@ -505,9 +458,7 @@ export function PlanillaRubro({
               onChange={(evento) => setDesperdicioPct(evento.target.value)}
               disabled={pendiente}
             />
-            {errorAlta ? (
-              <p className="text-sm text-red-700">{errorAlta}</p>
-            ) : null}
+            {errorAlta ? <p className="text-sm text-red-700">{errorAlta}</p> : null}
           </div>
         </Dialog>
       ) : null}
@@ -530,15 +481,15 @@ export function PlanillaRubro({
                 Cancelar
               </Button>
               <Button onClick={aprobar} disabled={pendiente}>
-                {pendiente ? "Aprobando…" : "Aprobar rubro"}
+                {pendiente ? 'Aprobando…' : 'Aprobar rubro'}
               </Button>
             </>
           }
         >
           <p className="text-sm text-neutral-700">
-            Vas a dar por bueno el cómputo de {nombreRubro.toLowerCase()}: queda
-            registrado con tu usuario y la fecha. Podés seguir editando ítems
-            después, pero la aprobación es lo que habilita pedir cotizaciones.
+            Vas a dar por bueno el cómputo de {nombreRubro.toLowerCase()}: queda registrado con tu
+            usuario y la fecha. Podés seguir editando ítems después, pero la aprobación es lo que
+            habilita pedir cotizaciones.
           </p>
         </Dialog>
       ) : null}
