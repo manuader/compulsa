@@ -42,6 +42,16 @@
  *    responder un faltante de medidas deja dos registros, el de la entidad y el
  *    del hallazgo.
  *
+ * ## Responder un dato de obra
+ *
+ * Una consulta puede apuntar a un **hecho de la obra** en vez de a una entidad
+ * (`targetDato`, §5.2): la altura de local de PB, que le falta a los cuatro
+ * tabiques a la vez. Se pregunta una sola vez y responderla escribe **una** fila
+ * en `datos_obra` —no un atributo en cuatro entidades—; el recompute la propaga
+ * por la cadena de respaldo y los cuatro ítems salen computados en esa misma
+ * pasada. Es la deduplicación de preguntas cerrando el círculo: si la respuesta
+ * se copiara a cada entidad, la planta diría algo que no dice.
+ *
  * ## Confirmar una propuesta
  *
  * Desde "proponer en vez de bloquear" una consulta puede venir con un
