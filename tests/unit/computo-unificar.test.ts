@@ -309,7 +309,10 @@ describe('unificarPorElemento: el nivel de evidencia manda sobre quién quedó d
     expect(conflictos[0]!.origenes).toEqual(['inferido', 'inferido']);
   });
 
-  it('el mismo número dicho por las dos igual mueve el origen al que lo tiene escrito', () => {
+  it('si el número es el mismo no se toca nada, ni el valor ni la marca', () => {
+    // Subir la marca de `inferido` a `explicito` porque la hermana dice lo mismo
+    // sería declarar más evidencia de la que se usó para computar. Errar para el
+    // lado de la evidencia débil no compra de más.
     const { entidades, conflictos, aportes } = unificarPorElemento(
       [enPlanta({ atributos: { largoM: 6 } }), enCorte({ confianza: 0.8, atributos: { largoM: 6 } })],
       ORIGENES_MEDIDO,
@@ -317,7 +320,7 @@ describe('unificarPorElemento: el nivel de evidencia manda sobre quién quedó d
 
     expect(entidades[0]!.atributos.largoM).toBe(6);
     expect(conflictos).toEqual([]);
-    expect(aportes.get('ent-planta')!.get('largoM')).toBe('ent-corte');
+    expect(aportes.get('ent-planta')).toBeUndefined();
   });
 
   it('lo deducido le gana a lo medido, y lo escrito a los dos', () => {

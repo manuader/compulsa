@@ -44,9 +44,14 @@
  * Por eso `unificarPorElemento` recibe el mapa de orígenes por campo y resuelve
  * **campo por campo con el nivel de evidencia**: `explicito < supuesto <
  * deducido < inferido`, y a igual nivel gana la base (que es la de mayor
- * confianza). Un campo que la base traía `inferido` y la hermana trae escrito se
- * computa con el de la hermana, y el aporte queda registrado para que la marca
- * de origen viaje con el valor.
+ * confianza). Un campo que la base traía `inferido` y la hermana trae escrito
+ * **con otro número** se computa con el de la hermana, y el aporte queda
+ * registrado para que la marca de origen viaje con el valor.
+ *
+ * Si el número es el **mismo**, no se toca nada: ni el valor —que ya es ese— ni
+ * la marca. Subir la marca de `inferido` a `explicito` porque una hermana dice
+ * lo mismo sería declarar más evidencia de la que se usó para computar, y errar
+ * para el lado de la evidencia débil no compra de más.
  *
  * ## Lo que NO hace: elegir entre dos lecturas del mismo nivel
  *
@@ -241,13 +246,20 @@ function unificarGrupo(
       FUERZA[otra.origen] < FUERZA[mejor.origen] ? otra : mejor,
     );
 
-    if (gana.entidadId !== base.id || vacio(atributos[campo])) {
+    // Cuando la ganadora dice **el mismo número** que la base, no se toca nada:
+    // el valor ya es ese y la marca de origen se deja como está. Declarar menos
+    // evidencia de la que hay no compra de más; el error que importa es el
+    // contrario. Solo se pisa cuando el número cambia — que es el caso en el que
+    // la base estaba computando con la lectura más débil.
+    const enLaBase = atributos[campo];
+    const reemplaza =
+      gana.entidadId !== base.id && (vacio(enLaBase) || !mismaLectura(enLaBase, gana.valor));
+    if (reemplaza) {
       atributos[campo] = gana.valor;
+      // El aporte queda registrado para que la marca de origen viaje con el
+      // valor: sin esto el ítem seguiría diciendo «medido» computando una cota.
+      aportes.set(campo, gana.entidadId);
     }
-    // El aporte se registra siempre que el valor no venga del campo de la base,
-    // incluso cuando el número coincide: el que viaja con él es el **origen**, y
-    // sin esto el ítem seguiría diciendo «medido» apoyado en un dato escrito.
-    if (gana.entidadId !== base.id) aportes.set(campo, gana.entidadId);
 
     // Conflicto: solo entre lecturas del MISMO nivel que la ganadora. Una
     // diferencia contra un nivel más débil la resuelve la cadena del §5.2 y no
