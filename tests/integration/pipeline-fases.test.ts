@@ -250,12 +250,19 @@ describe('el cruce del expediente', () => {
     expect(placas?.cantNeta).toBe(20.8);
   });
 
-  it('T2 se queda sin altura: la consulta agrupada sigue abierta', async () => {
+  /**
+   * Y como se queda afuera de un `seco.placas` que **sí** salió (20,80 m², solo
+   * T1), la consulta frena la aprobación del rubro: la planilla está corta a la
+   * mitad y el ítem, badgeado con el origen de T1, no lo dice. Agrupar las N
+   * preguntas idénticas en una era el punto; que la agrupada no fuera compuerta,
+   * no (RF-404).
+   */
+  it('T2 se queda sin altura: la consulta agrupada sigue abierta, y frena', async () => {
     await subirYProcesar(obraId);
 
     const consulta = await hallazgoPorClave(obraId, CLAVE_ALTURA);
     expect(consulta?.estado).toBe('abierto');
-    expect(consulta?.bloqueante).toBe(false);
+    expect(consulta?.bloqueante).toBe(true);
     expect(consulta?.targetDato?.clave).toBe('altura_local.PB');
     expect(consulta?.descripcion).toContain('T2');
     expect(consulta?.descripcion).not.toContain('T1');
