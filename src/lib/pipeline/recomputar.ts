@@ -836,8 +836,12 @@ function comoNumero(valor: unknown): number | null {
  * `alturaM` que era deducido, ese id deja de existir para el motor y la marca se
  * perdía: el ítem salía «explícito» apoyado en un dato que no está escrito.
  *
- * No hay colisión posible: `aportes` solo trae los campos que a la base le
- * **faltaban**, y un campo ausente no puede tener marca previa.
+ * Va en las dos direcciones, y la segunda es la que faltaba: si el que aportó el
+ * valor lo tiene **escrito** —no figura en el mapa de orígenes—, la marca que la
+ * base tenía en ese campo se **borra**. Desde que la unificación resuelve por
+ * nivel de evidencia, un `largoM` que la base traía medido puede quedar
+ * reemplazado por la cota de la hermana, y dejar la marca vieja haría que el
+ * ítem se declarara `inferido` computando con un número escrito.
  */
 function mergearAportes(
   camposDeducidos: CamposDeducidos,
@@ -850,7 +854,10 @@ function mergearAportes(
   for (const [idUnificado, porCampo] of aportes) {
     for (const [campo, idOriginal] of porCampo) {
       const origen = camposDeducidos.get(idOriginal)?.get(campo);
-      if (origen === undefined) continue;
+      if (origen === undefined) {
+        merged.get(idUnificado)?.delete(campo);
+        continue;
+      }
       const suyos = merged.get(idUnificado) ?? new Map<string, Origen>();
       suyos.set(campo, origen);
       merged.set(idUnificado, suyos);
@@ -860,24 +867,58 @@ function mergearAportes(
 }
 
 /**
+ * Cómo se nombra cada nivel de evidencia en una consulta.
+ *
+ * Es la cadena del §5.2 dicha en castellano: la consulta tiene que poder decir
+ * con qué clase de dato se computó, en vez de afirmar que el ganador es «la
+ * lectura más confiable» —que es falso cuando lo que ganó salió de medir un
+ * rectángulo a 0,5 de confianza—.
+ */
+const NIVEL_DE_EVIDENCIA: Record<Origen, string> = {
+  explicito: 'escrito en la lámina',
+  supuesto: 'un supuesto del rubro',
+  deducido: 'deducido de otra lámina',
+  inferido: 'medido sobre el dibujo',
+};
+
+/** `lámina A-02` si la lámina tiene código; si no, nada que decir. */
+function refDeLamina(
+  entidad: EntidadPersistida | undefined,
+  codigos: ReadonlyMap<string, string | null>,
+): string {
+  if (entidad === undefined) return '';
+  const codigo = codigos.get(entidad.laminaId) ?? null;
+  return codigo === null ? '' : `lámina ${codigo}`;
+}
+
+/**
  * La consulta que avisa que dos láminas dicen cosas distintas del mismo elemento.
  *
  * `inconsistencia` y **no bloqueante**, igual que la contradicción de una
- * deducción: el cómputo no está mal —usa la lectura más confiable y cuenta el
- * elemento una sola vez— pero hay una diferencia real entre dos láminas que
- * alguien tiene que mirar. La clave es estable por elemento y campo, así que el
- * conciliador la abre una vez y, si el conflicto desaparece, la cierra sola.
+ * deducción: el cómputo no está mal —cuenta el elemento una sola vez— pero hay
+ * una diferencia real entre dos láminas que alguien tiene que mirar. La clave es
+ * estable por elemento y campo, así que el conciliador la abre una vez y, si el
+ * conflicto desaparece, la cierra sola.
+ *
+ * El texto **nombra la lámina y el nivel de evidencia con el que se computó**.
+ * Decía «la lectura más confiable», que era mentira en el caso justo: un `largoM`
+ * medido sobre el dibujo le ganaba a la cota escrita en la hermana y la consulta
+ * le declaraba al arquitecto que el ganador era el dato bueno. Hoy la
+ * unificación resuelve por nivel de evidencia y este hallazgo solo aparece entre
+ * lecturas del **mismo** nivel, así que decir cuál es alcanza y es cierto.
  */
 function hallazgoUnificacion(
   conflicto: ConflictoUnificacion,
   porId: ReadonlyMap<string, EntidadPersistida>,
+  codigos: ReadonlyMap<string, string | null>,
 ): HallazgoDetectado {
   const lecturas = conflicto.valores.map((valor, i) => {
     const entidad = porId.get(conflicto.entidadIds[i] ?? '');
-    const donde = entidad === undefined ? '' : ` (${entidad.nombre})`;
-    return `${comoTexto(conflicto.campo, valor)}${donde}`;
+    const donde = [entidad?.nombre, refDeLamina(entidad, codigos)].filter(Boolean).join(', ');
+    return `${comoTexto(conflicto.campo, valor)}${donde === '' ? '' : ` (${donde})`}`;
   });
   const gana = lecturas[0] ?? '';
+  const nivel = NIVEL_DE_EVIDENCIA[conflicto.origenes[0] ?? 'explicito'];
 
   return hallazgoInconsistencia({
     rubro: null, // es coherencia del expediente, no de un rubro
@@ -885,8 +926,8 @@ function hallazgoUnificacion(
     checklistItem: 'unificacion.conflicto',
     descripcion:
       `Dos láminas dicen cosas distintas sobre ${etiquetaCampo(conflicto.campo)} del mismo ` +
-      `elemento: ${enumerar(lecturas)}. Computo con ${gana}, que es la lectura más confiable, ` +
-      'y lo cuento una sola vez. Revisá cuál de las dos vale.',
+      `elemento: ${enumerar(lecturas)}. Computo con ${gana} —${nivel}— y lo cuento una sola ` +
+      'vez. Revisá cuál de las dos vale.',
     fuentes: unirFuentes(
       ...conflicto.entidadIds.map((id) => {
         const entidad = porId.get(id);
@@ -1323,7 +1364,15 @@ export async function recomputarObra(
   // después del overlay —las deducciones siguen apuntando a las filas reales— y
   // antes de computar. `deducir()` corre sobre las entidades **sin** unificar a
   // propósito: sus reglas son las que cruzan una lámina con la otra.
-  const { entidades: unificadas, conflictos, aportes } = unificarPorElemento(persistidas);
+  //
+  // El mapa de orígenes va **adentro** de la unificación: el overlay ya le
+  // llenó campos a la base, y sin saber con qué evidencia entró cada uno, un
+  // `largoM` medido sobre el dibujo le ganaba a la cota escrita en la lámina
+  // hermana solo por estar del lado de la base — al revés de la cadena del §5.2.
+  const { entidades: unificadas, conflictos, aportes } = unificarPorElemento(
+    persistidas,
+    camposDeducidos,
+  );
   const camposUnificados = mergearAportes(camposDeducidos, aportes);
 
   // Tres cosas que el motor no adivina y el pipeline sí sabe:
@@ -1348,7 +1397,10 @@ export async function recomputarObra(
   // vale para lo que quedó en pugna al unificar.
   const superadas = contradichas.map(hallazgoContradiccion);
   const porId = new Map(persistidas.map((entidad) => [entidad.id, entidad]));
-  const enPugna = conflictos.map((conflicto) => hallazgoUnificacion(conflicto, porId));
+  const codigosDeLamina = new Map(planos.map((plano) => [plano.id, plano.codigo]));
+  const enPugna = conflictos.map((conflicto) =>
+    hallazgoUnificacion(conflicto, porId, codigosDeLamina),
+  );
 
   const resumen = resumenVacio();
   await sincronizarItems(db, obraId, items, resumen);

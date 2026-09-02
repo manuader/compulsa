@@ -165,6 +165,7 @@ describe('unificarPorElemento: cuando las dos láminas no coinciden', () => {
         campo: 'alturaM',
         valores: [2.6, 2.4],
         entidadIds: ['ent-planta', 'ent-corte'],
+        origenes: ['explicito', 'explicito'],
       },
     ]);
   });
@@ -253,5 +254,78 @@ describe('mismaLectura', () => {
   it('lo que no es número ni texto se compara por igualdad', () => {
     expect(mismaLectura(true, true)).toBe(true);
     expect(mismaLectura(true, false)).toBe(false);
+  });
+});
+
+describe('unificarPorElemento: el nivel de evidencia manda sobre quién quedó de base', () => {
+  // El caso que rompía: la planta trae el `largoM` que el pipeline **midió sobre
+  // el dibujo** (§5.5, confianza 0,5 fija) y el corte lo trae **acotado**. Antes
+  // ganaba la planta por ser la base, y la consulta le decía al arquitecto que
+  // 6,12 era «la lectura más confiable» — es la evidencia más débil que el
+  // sistema produce.
+  const ORIGENES_MEDIDO = new Map([['ent-planta', new Map([['largoM', 'inferido' as const]])]]);
+
+  it('un campo medido sobre el dibujo pierde contra la cota escrita en la hermana', () => {
+    const planta = enPlanta({ atributos: { largoM: 6.12 } });
+    const corte = enCorte({ confianza: 0.8, atributos: { largoM: 6 } });
+
+    const { entidades, conflictos, aportes } = unificarPorElemento(
+      [planta, corte],
+      ORIGENES_MEDIDO,
+    );
+
+    expect(entidades[0]!.atributos.largoM).toBe(6);
+    // No es una contradicción del expediente: es la cadena del §5.2 haciendo su
+    // trabajo. Lo escrito le gana a lo medido, y no se molesta a nadie.
+    expect(conflictos).toEqual([]);
+    // El aporte queda registrado para que la marca de origen viaje con el valor.
+    expect(aportes.get('ent-planta')!.get('largoM')).toBe('ent-corte');
+  });
+
+  it('sin el mapa de orígenes se comporta como siempre: gana la base', () => {
+    const { entidades, conflictos } = unificarPorElemento([
+      enPlanta({ atributos: { largoM: 6.12 } }),
+      enCorte({ confianza: 0.8, atributos: { largoM: 6 } }),
+    ]);
+
+    expect(entidades[0]!.atributos.largoM).toBe(6.12);
+    expect(conflictos).toHaveLength(1);
+  });
+
+  it('a igual nivel de evidencia gana la base y el conflicto se emite', () => {
+    const origenes = new Map([
+      ['ent-planta', new Map([['largoM', 'inferido' as const]])],
+      ['ent-corte', new Map([['largoM', 'inferido' as const]])],
+    ]);
+    const { entidades, conflictos } = unificarPorElemento(
+      [enPlanta({ atributos: { largoM: 6.12 } }), enCorte({ confianza: 0.8, atributos: { largoM: 6 } })],
+      origenes,
+    );
+
+    expect(entidades[0]!.atributos.largoM).toBe(6.12);
+    expect(conflictos[0]!.origenes).toEqual(['inferido', 'inferido']);
+  });
+
+  it('el mismo número dicho por las dos igual mueve el origen al que lo tiene escrito', () => {
+    const { entidades, conflictos, aportes } = unificarPorElemento(
+      [enPlanta({ atributos: { largoM: 6 } }), enCorte({ confianza: 0.8, atributos: { largoM: 6 } })],
+      ORIGENES_MEDIDO,
+    );
+
+    expect(entidades[0]!.atributos.largoM).toBe(6);
+    expect(conflictos).toEqual([]);
+    expect(aportes.get('ent-planta')!.get('largoM')).toBe('ent-corte');
+  });
+
+  it('lo deducido le gana a lo medido, y lo escrito a los dos', () => {
+    const origenes = new Map([
+      ['ent-planta', new Map([['largoM', 'inferido' as const]])],
+      ['ent-corte', new Map([['largoM', 'deducido' as const]])],
+    ]);
+    const { entidades } = unificarPorElemento(
+      [enPlanta({ atributos: { largoM: 6.12 } }), enCorte({ confianza: 0.8, atributos: { largoM: 6 } })],
+      origenes,
+    );
+    expect(entidades[0]!.atributos.largoM).toBe(6);
   });
 });

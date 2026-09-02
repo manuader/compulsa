@@ -32,21 +32,42 @@
  *  - el `estadoReforma` es el de la base. Una hermana que dice otra cosa no
  *    cambia el alcance de la obra por un `fill gap`.
  *
- * ## Lo que NO hace: elegir entre dos números
+ * ## Manda el nivel de evidencia, no quién quedó de base
  *
- * Si dos hermanas declaran el mismo campo con valores distintos (más de un 1 %
- * de diferencia), no se elige el mejor: se conserva el de la base **y se emite
- * un `ConflictoUnificacion`**, que el recompute convierte en una consulta no
- * bloqueante. Elegir en silencio sería exactamente el "deducir es inventar" que
- * el PRD prohíbe: la planta dice 2,60 y el corte 2,40, y quién tiene razón lo
- * sabe el arquitecto.
+ * Elegir la base por confianza alcanzaba mientras todo lo que traía una entidad
+ * estaba escrito en su lámina. Ya no: el overlay de deducciones (§5.4) y la
+ * medición gráfica (§5.5) le llenan campos a la base **antes** de unificar, y un
+ * `largoM` medido sobre el dibujo a 0,5 de confianza le ganaba a un `largoM`
+ * acotado en la lámina hermana solo por estar del lado de la base. Eso invierte
+ * la cadena del §5.2, donde medir es el último respaldo.
+ *
+ * Por eso `unificarPorElemento` recibe el mapa de orígenes por campo y resuelve
+ * **campo por campo con el nivel de evidencia**: `explicito < supuesto <
+ * deducido < inferido`, y a igual nivel gana la base (que es la de mayor
+ * confianza). Un campo que la base traía `inferido` y la hermana trae escrito se
+ * computa con el de la hermana, y el aporte queda registrado para que la marca
+ * de origen viaje con el valor.
+ *
+ * ## Lo que NO hace: elegir entre dos lecturas del mismo nivel
+ *
+ * Si dos entidades declaran el mismo campo **con el mismo nivel de evidencia** y
+ * valores distintos (más de un 1 % de diferencia), no se elige el mejor: se
+ * conserva el de la base **y se emite un `ConflictoUnificacion`**, que el
+ * recompute convierte en una consulta no bloqueante. Elegir en silencio sería
+ * exactamente el "deducir es inventar" que el PRD prohíbe: la planta dice 2,60 y
+ * el corte 2,40, y quién tiene razón lo sabe el arquitecto.
+ *
+ * Una diferencia **entre niveles distintos** no es un conflicto y no abre
+ * consulta: lo escrito le gana a lo medido, que es lo que el PRD ya dice. La
+ * lectura perdedora no se pierde — la deducción que la sostenía sigue en la
+ * bandeja de deducciones con su fuente.
  *
  * Módulo **hoja**: puro, sin I/O y sin imports del motor (solo el tipo de la
  * entidad, que se borra al compilar). El engine no lo conoce; lo aplican
  * `recomputarObra` y `persistirResumen` antes de computar.
  */
-import type { EntidadPersistida } from '@/lib/computo/engine';
-import type { Fuente } from '@/types/domain';
+import type { CamposDeducidos, EntidadPersistida } from '@/lib/computo/engine';
+import type { Fuente, Origen } from '@/types/domain';
 
 /** Un valor de atributo que se puede poner en pugna (los `null` no se comparan). */
 export type ValorAtributo = number | string | boolean;
@@ -62,6 +83,15 @@ export interface ConflictoUnificacion {
   campo: string;
   valores: ValorAtributo[];
   entidadIds: string[];
+  /**
+   * El nivel de evidencia de cada lectura, alineado con `valores`.
+   *
+   * Todas son del **mismo** nivel: una diferencia entre niveles distintos la
+   * resuelve la cadena del §5.2 y no llega acá. Viaja igual para que la consulta
+   * pueda decir con qué evidencia se computó, en vez de afirmar que el ganador
+   * es «la lectura más confiable» sin mirar de dónde salió.
+   */
+  origenes: Origen[];
 }
 
 export interface ResultadoUnificacion {
@@ -83,6 +113,31 @@ export interface ResultadoUnificacion {
 
 /** Diferencia relativa a partir de la cual dos lecturas son dos lecturas distintas. */
 export const TOLERANCIA_UNIFICACION = 0.01;
+
+/**
+ * Qué tan fuerte es cada nivel de evidencia: **menor es mejor**.
+ *
+ * Es la cadena del §5.2 escrita como número, la misma que usa el engine para
+ * ponerle al ítem el peor origen de sus campos. Un campo que no figura en el
+ * mapa de orígenes está escrito en la lámina, y por eso `explicito` es el
+ * default de `nivelDe()`.
+ */
+const FUERZA: Record<Origen, number> = {
+  explicito: 0,
+  supuesto: 1,
+  deducido: 2,
+  inferido: 3,
+};
+
+/** Sin mapa de orígenes, todo lo que trae una entidad está escrito en su lámina. */
+const SIN_ORIGENES: CamposDeducidos = new Map();
+
+/** Una lectura del mismo campo, con de dónde salió y con qué evidencia. */
+interface Lectura {
+  valor: ValorAtributo;
+  entidadId: string;
+  origen: Origen;
+}
 
 /** Mismo criterio que `leerNumero()`: un número escrito como texto es un número. */
 function comoNumero(valor: unknown): number | null {
@@ -137,7 +192,11 @@ interface GrupoUnificado {
   aportes: Map<string, string>;
 }
 
-function unificarGrupo(elementoId: string, grupo: readonly EntidadPersistida[]): GrupoUnificado {
+function unificarGrupo(
+  elementoId: string,
+  grupo: readonly EntidadPersistida[],
+  origenes: CamposDeducidos,
+): GrupoUnificado {
   // Empate de confianza ⇒ gana la de id menor. NO la primera del arreglo: las
   // entidades llegan como las devuelve Postgres, y ese orden cambia solo (un
   // `UPDATE` mueve la fila al final del heap). Dos recomputes de la misma obra
@@ -150,36 +209,73 @@ function unificarGrupo(elementoId: string, grupo: readonly EntidadPersistida[]):
   });
   const hermanas = grupo.filter((entidad) => entidad !== base);
 
+  // Un campo que no figura en el mapa está escrito en la lámina: el overlay solo
+  // marca lo que él aportó.
+  const nivelDe = (entidadId: string, campo: string): Origen =>
+    origenes.get(entidadId)?.get(campo) ?? 'explicito';
+
+  // Todas las lecturas de cada campo, la base primero: el orden es el desempate
+  // a igual nivel de evidencia.
+  const lecturas = new Map<string, Lectura[]>();
+  for (const entidad of [base, ...hermanas]) {
+    for (const [campo, valor] of Object.entries(entidad.atributos)) {
+      if (vacio(valor)) continue;
+      const cola = lecturas.get(campo) ?? [];
+      cola.push({
+        valor: valor as ValorAtributo,
+        entidadId: entidad.id,
+        origen: nivelDe(entidad.id, campo),
+      });
+      lecturas.set(campo, cola);
+    }
+  }
+
   const atributos = { ...base.atributos };
   const aportes = new Map<string, string>();
-  const enPugna = new Map<string, ConflictoUnificacion>();
+  const conflictos: ConflictoUnificacion[] = [];
 
-  for (const hermana of hermanas) {
-    for (const [campo, valor] of Object.entries(hermana.atributos)) {
-      if (vacio(valor)) continue;
+  for (const [campo, candidatos] of lecturas) {
+    // Gana el nivel de evidencia más fuerte; a igual nivel, la base (que es la
+    // primera del arreglo y la de mayor confianza).
+    const gana = candidatos.reduce((mejor, otra) =>
+      FUERZA[otra.origen] < FUERZA[mejor.origen] ? otra : mejor,
+    );
 
-      const actual = atributos[campo];
-      if (vacio(actual)) {
-        atributos[campo] = valor;
-        aportes.set(campo, hermana.id);
-        continue;
-      }
-      if (mismaLectura(actual, valor)) continue;
-
-      // Gana la base y el conflicto se cuenta: uno por campo, aunque tres
-      // hermanas digan tres cosas (la clave del hallazgo es por campo).
-      const previo = enPugna.get(campo) ?? {
-        elementoId,
-        campo,
-        valores: [actual as ValorAtributo],
-        entidadIds: [base.id],
-      };
-      if (!previo.valores.some((otro) => mismaLectura(otro, valor))) {
-        previo.valores.push(valor as ValorAtributo);
-        previo.entidadIds.push(hermana.id);
-      }
-      enPugna.set(campo, previo);
+    if (gana.entidadId !== base.id || vacio(atributos[campo])) {
+      atributos[campo] = gana.valor;
     }
+    // El aporte se registra siempre que el valor no venga del campo de la base,
+    // incluso cuando el número coincide: el que viaja con él es el **origen**, y
+    // sin esto el ítem seguiría diciendo «medido» apoyado en un dato escrito.
+    if (gana.entidadId !== base.id) aportes.set(campo, gana.entidadId);
+
+    // Conflicto: solo entre lecturas del MISMO nivel que la ganadora. Una
+    // diferencia contra un nivel más débil la resuelve la cadena del §5.2 y no
+    // es una contradicción del expediente.
+    const enPugna = candidatos.filter(
+      (candidata) =>
+        candidata !== gana &&
+        FUERZA[candidata.origen] === FUERZA[gana.origen] &&
+        !mismaLectura(candidata.valor, gana.valor),
+    );
+    if (enPugna.length === 0) continue;
+
+    const conflicto: ConflictoUnificacion = {
+      elementoId,
+      campo,
+      valores: [gana.valor],
+      entidadIds: [gana.entidadId],
+      origenes: [gana.origen],
+    };
+    for (const otra of enPugna) {
+      // Uno por campo, aunque tres hermanas digan tres cosas (la clave del
+      // hallazgo es por campo) y sin repetir el mismo número dos veces.
+      if (conflicto.valores.some((valor) => mismaLectura(valor, otra.valor))) continue;
+      conflicto.valores.push(otra.valor);
+      conflicto.entidadIds.push(otra.entidadId);
+      conflicto.origenes.push(otra.origen);
+    }
+    conflictos.push(conflicto);
   }
 
   // La base primero: su fuente es la que la entidad unificada sigue teniendo
@@ -204,7 +300,7 @@ function unificarGrupo(elementoId: string, grupo: readonly EntidadPersistida[]):
     ...(extra.length === 0 ? {} : { fuentesUnificadas: extra }),
   };
 
-  return { entidad, conflictos: [...enPugna.values()], aportes };
+  return { entidad, conflictos, aportes };
 }
 
 /**
@@ -213,9 +309,17 @@ function unificarGrupo(elementoId: string, grupo: readonly EntidadPersistida[]):
  * Las que no tienen `elemento_id` —y los grupos de uno— pasan tal cual, sin
  * copiarse: una obra a la que el cruce todavía no le escribió nada sale de acá
  * exactamente como entró.
+ *
+ * `origenes` es el mapa `entidadId → campo → Origen` que arma el overlay de
+ * deducciones (§5.4/§5.5). Es **opcional** y por defecto está vacío: sin él todo
+ * cuenta como escrito en la lámina y la unificación se comporta como antes de
+ * que existiera el parámetro —gana la base y toda diferencia es conflicto—.
+ * Quien tenga el mapa **tiene que pasarlo**: sin eso, un campo que la base traía
+ * medido sobre el dibujo le gana a la cota que la hermana tiene escrita.
  */
 export function unificarPorElemento(
   entidades: readonly EntidadPersistida[],
+  origenes: CamposDeducidos = SIN_ORIGENES,
 ): ResultadoUnificacion {
   const grupos = new Map<string, EntidadPersistida[]>();
   for (const entidad of entidades) {
@@ -240,7 +344,7 @@ export function unificarPorElemento(
     if (emitidos.has(elementoId as string)) continue;
     emitidos.add(elementoId as string);
 
-    const unificado = unificarGrupo(elementoId as string, grupo);
+    const unificado = unificarGrupo(elementoId as string, grupo, origenes);
     salida.push(unificado.entidad);
     conflictos.push(...unificado.conflictos);
     if (unificado.aportes.size > 0) aportes.set(unificado.entidad.id, unificado.aportes);
