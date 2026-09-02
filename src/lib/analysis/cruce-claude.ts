@@ -104,7 +104,16 @@ export function crearProviderCruceClaude(): CruceProvider {
         output_config: { format: zodOutputFormat(zRespuestaCruceCruda) },
       });
 
-      const cruce = respuesta.parsed_output ?? cruceVacio();
+      // Una salida que no parsea NO es un expediente prolijo. Con
+      // `?? cruceVacio()` una truncada por `max_tokens` era byte a byte igual a
+      // "no encontré nada": se pagaba la llamada más cara del pipeline, se
+      // perdía entera y el operador no tenía con qué distinguir las dos cosas.
+      // Misma disciplina que `claude.ts`: se audita —con `stop_reason`, que es
+      // lo único que dice por qué— y se levanta. Quien llama es
+      // `cruzarTolerante`, que lo anota como fase caída y deja la obra como
+      // estaba.
+      const cruce = respuesta.parsed_output;
+      const contado = cruce ?? cruceVacio();
 
       // RNF-7: el costo por obra se mide desde acá. El cruce es la llamada más
       // grande del pipeline —el expediente entero en un solo prompt—, así que su
@@ -125,13 +134,22 @@ export function crearProviderCruceClaude(): CruceProvider {
           tokensCacheLectura: respuesta.usage.cache_read_input_tokens ?? 0,
           tokensCacheEscritura: respuesta.usage.cache_creation_input_tokens ?? 0,
           caracteresMemoria: memoria.length,
-          datosObra: cruce.datosObra.length,
-          completados: cruce.completados.length,
-          identidades: cruce.identidades.length,
-          conflictos: cruce.conflictos.length,
-          relecturas: cruce.relecturas.length,
+          datosObra: contado.datosObra.length,
+          completados: contado.completados.length,
+          identidades: contado.identidades.length,
+          conflictos: contado.conflictos.length,
+          relecturas: contado.relecturas.length,
+          // Las dos que separan "no encontró nada" de "la llamada se rompió".
+          stopReason: respuesta.stop_reason,
+          salidaInvalida: cruce === null,
         },
       });
+
+      if (cruce === null) {
+        throw new Error(
+          `Claude no devolvió un cruce que valide contra el contrato (obra ${ctx.obraId}, stop_reason: ${respuesta.stop_reason}).`,
+        );
+      }
 
       return cruce;
     },
