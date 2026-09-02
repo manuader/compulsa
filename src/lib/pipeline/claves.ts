@@ -42,6 +42,24 @@ export const PREFIJO_DEDUCCION = 'deduccion.';
  */
 export const PREFIJO_VERIFICACION = 'verificacion.';
 
+/**
+ * Prefijo reservado al **cruce del expediente**: `cruce.conflicto.<huella>`.
+ *
+ * Protegido igual que el de escala y el de la doble pasada, y por el mismo
+ * motivo: estas consultas las abre `aplicarCruce()` comparando lo que dicen dos
+ * láminas distintas, no el motor de cómputo. Sin la protección, el primer
+ * `recomputarObra` posterior al cruce las cerraría "porque ya no salen" —y el
+ * cruce corre **antes** del recompute final de la misma corrida, así que el
+ * aviso de contradicción moría a los milisegundos de nacer, sin que el
+ * arquitecto lo viera nunca. Las abre y las cierra el cruce siguiente.
+ */
+export const PREFIJO_CRUCE = 'cruce.';
+
+/** `cruce.conflicto.<huella>`: la contradicción que el cruce encontró (§17). */
+export function claveConflictoCruce(huella: string): string {
+  return `${PREFIJO_CRUCE}conflicto.${huella}`;
+}
+
 export function claveEscala(laminaId: string): string {
   return `${PREFIJO_ESCALA}${laminaId}`;
 }
@@ -70,11 +88,15 @@ export function claveVerificacion(claveItem: string): string {
 /**
  * `true` si la clave es de las que emite el recompute —`computarObra()` o el
  * motor de deducción—. Solo estas las concilia; las del pipeline (el bloqueo por
- * escala y la doble pasada) las administran `procesarLamina` y
- * `verificarComputo`.
+ * escala, la doble pasada y las contradicciones del cruce) las administran
+ * `procesarLamina`, `verificarComputo` y `aplicarCruce`.
  */
 export function esClaveDelMotor(clave: string): boolean {
-  return !clave.startsWith(PREFIJO_ESCALA) && !clave.startsWith(PREFIJO_VERIFICACION);
+  return (
+    !clave.startsWith(PREFIJO_ESCALA) &&
+    !clave.startsWith(PREFIJO_VERIFICACION) &&
+    !clave.startsWith(PREFIJO_CRUCE)
+  );
 }
 
 /** `true` si la consulta la levantó la doble pasada. La pantalla las agrupa. */

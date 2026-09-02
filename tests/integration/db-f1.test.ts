@@ -843,22 +843,34 @@ describe('laminas.procesando_desde es el reloj del rescate por TTL', () => {
     await rm(raizStorage, { recursive: true, force: true });
   });
 
-  /** Anota qué veía la fila de la lámina en el momento en que el provider corrió. */
+  /**
+   * Anota qué veía la fila de la lámina en el momento en que el provider corrió.
+   *
+   * `inventariar` está implementado y **no anota**: la fase de inventario lee el
+   * rótulo antes de que nadie reclame la lámina —no extrae nada, así que no
+   * necesita el lock— y si cayera al `leerRotulo` de acá, la primera
+   * observación sería la suya, con la lámina todavía en `pendiente`. Lo que
+   * estos tests miran es el reloj del **análisis**.
+   */
   function providerObservador(visto: Array<{ estado: string; procesandoDesde: Date | null }>) {
+    const rotulo = {
+      titulo: 'Planta baja',
+      codigo: 'A-01',
+      disciplina: 'arquitectura' as const,
+      tipoLamina: 'planta' as const,
+      escala: '1:100',
+      escalaConfiable: true,
+      revision: null,
+      confianza: 1,
+    };
     const provider: AnalysisProvider = {
+      async inventariar() {
+        return rotulo;
+      },
       async leerRotulo(entrada) {
         const [fila] = await db.select().from(laminas).where(eq(laminas.id, entrada.laminaId));
         visto.push({ estado: fila.estadoAnalisis, procesandoDesde: fila.procesandoDesde });
-        return {
-          titulo: 'Planta baja',
-          codigo: 'A-01',
-          disciplina: 'arquitectura',
-          tipoLamina: 'planta',
-          escala: '1:100',
-          escalaConfiable: true,
-          revision: null,
-          confianza: 1,
-        };
+        return rotulo;
       },
       async extraerEntidades() {
         return [];

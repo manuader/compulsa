@@ -1,0 +1,67 @@
+{
+  "rotulo": {
+    "titulo": "PLANTA PB",
+    "codigo": "A-01",
+    "disciplina": "arquitectura",
+    "tipoLamina": "planta",
+    "escala": "1:50",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.94
+  },
+  "entidades": [
+    {
+      "tipo": "tabique",
+      "nombre": "T1",
+      "bbox": [
+        0.2,
+        0.2,
+        0.02,
+        0.3
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "nueva",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 4,
+        "caras": 2,
+        "nivel": "PB"
+      }
+    },
+    {
+      "tipo": "tabique",
+      "nombre": "T2",
+      "bbox": [
+        0.5,
+        0.2,
+        0.02,
+        0.24
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "nueva",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 3,
+        "caras": 2,
+        "nivel": "PB"
+      }
+    },
+    {
+      "tipo": "muro",
+      "nombre": "M1",
+      "bbox": [
+        0.06,
+        0.8,
+        0.5,
+        0.02
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "nueva",
+      "atributos": {
+        "tipo": "mamposteria",
+        "alturaM": 2.6,
+        "nivel": "PB"
+      }
+    }
+  ]
+}

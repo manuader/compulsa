@@ -8,8 +8,18 @@ Extracción de información de láminas con IA (visión). Acá vive la frontera 
 interface AnalysisProvider {
   leerRotulo(lamina: LaminaInput, ctx?: ObraContexto): Promise<RotuloDetectado>;  // título, escala, disciplina, tipo, revisión
   extraerEntidades(lamina: LaminaInput, ctx: ObraContexto): Promise<EntidadDetectada[]>;
+  inventariar?(lamina: LaminaInput, ctx?: ObraContexto): Promise<RotuloDetectado>; // fase 1: solo el rótulo, barato
 }
 ```
+
+`inventariar` es la **fase de inventario** del pipeline: una pasada corta y paralela
+que lee únicamente rótulos, para que la extracción de cada lámina arranque con el
+índice completo del expediente en su `ObraContexto`. Es opcional (quien lo consume
+llama a `inventariarLamina()`, que cae a `leerRotulo`) y en `claude.ts` **no comparte
+el caché por lámina**: ese caché guarda la extracción completa y el inventario existe
+para no pagarla. Su `ctx` **no viaja al prompt** —el índice es lo que esta fase
+construye— sino que existe por el costo: sin `ctx.obraId` la fila `inventario_llm`
+queda sin obra y el consumo del inventario no se ve en `/estudio/auditoria` (RNF-7).
 
 El `ctx` de `leerRotulo` es **opcional y aditivo** (el mock lo ignora), y existe por
 el caché de `claude.ts`: el provider real resuelve la lámina entera en **una** llamada
