@@ -333,6 +333,9 @@ export default async function ComputoPage({
         items={items}
         subtotal={subtotalRubro}
         bloqueantes={gate.bloqueantes}
+        consultasAbiertas={
+          consultas.filter((fila) => fila.estado === 'abierto' && fila.rubro === rubro).length
+        }
         puedeEditar={esRolSuficiente(usuario, 'colaborador')}
         puedeAprobar={esRolSuficiente(usuario, 'titular')}
       />

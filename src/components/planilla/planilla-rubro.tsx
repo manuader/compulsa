@@ -153,6 +153,12 @@ export interface PlanillaRubroProps {
   subtotal: SubtotalRubro | null;
   /** Consultas bloqueantes abiertas del rubro (0 ⇒ el gate da). */
   bloqueantes: number;
+  /**
+   * Consultas abiertas del rubro, bloqueen o no. Solo se usa para el vacío: un
+   * rubro sin ítems **y con consultas** no está esperando más documentación,
+   * está esperando una respuesta.
+   */
+  consultasAbiertas: number;
   /** `colaborador` o más: agregar, editar y anular ítems (RF-1201). */
   puedeEditar: boolean;
   /** Solo el `titular` aprueba un rubro (RF-1201). */
@@ -168,6 +174,7 @@ export function PlanillaRubro({
   items,
   subtotal,
   bloqueantes,
+  consultasAbiertas,
   puedeEditar,
   puedeAprobar,
 }: PlanillaRubroProps) {
@@ -317,10 +324,32 @@ export function PlanillaRubro({
               <p className="text-sm font-medium text-neutral-900">
                 Todavía no hay ítems computados en {nombreRubro.toLowerCase()}.
               </p>
-              <p className="mt-1 text-sm text-neutral-600">
-                Aparecen solos cuando el análisis detecta las entidades del
-                rubro. Si ya sabés lo que falta, agregalo a mano.
-              </p>
+              {/* El texto de siempre era falso justo en el caso que importa:
+                  el análisis SÍ detectó los tabiques y lo que falta es un dato
+                  que alguien tiene que contestar. Mandar a esperar al análisis
+                  a quien tiene cuatro consultas abiertas es mandarlo a esperar
+                  algo que no va a pasar. */}
+              {consultasAbiertas > 0 ? (
+                <p className="mt-1 text-sm text-neutral-600">
+                  El análisis leyó los elementos del rubro, pero{' '}
+                  {consultasAbiertas === 1
+                    ? 'queda 1 consulta sin contestar'
+                    : `quedan ${consultasAbiertas} consultas sin contestar`}{' '}
+                  y sin ese dato no hay nada que computar.{' '}
+                  <a
+                    href={`/obras/${obraId}/bandeja`}
+                    className="font-medium text-neutral-900 underline"
+                  >
+                    Ir a la bandeja
+                  </a>
+                  .
+                </p>
+              ) : (
+                <p className="mt-1 text-sm text-neutral-600">
+                  Aparecen solos cuando el análisis detecta las entidades del
+                  rubro. Si ya sabés lo que falta, agregalo a mano.
+                </p>
+              )}
             </div>
           ) : (
             <Table>

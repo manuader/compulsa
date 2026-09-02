@@ -38,29 +38,37 @@ export function enCurso(fase: FaseAnalisis | null): boolean {
 /**
  * Cuánto puede pasar sin noticias antes de que «Analizando» deje de ser cierto.
  *
- * Media hora: una obra de 25 láminas tarda minutos, no horas, y el paralelismo
- * está acotado. Pasado eso, lo que hay no es un análisis lento sino uno que se
- * cortó sin poder escribir su fase — el proceso se murió, el deploy reinició,
- * la máquina se quedó sin memoria.
+ * Diez minutos: el doble del `maxDuration` del POST del upload, que es adentro
+ * de donde corre el análisis. Pasado eso, lo que hay no es un análisis lento
+ * sino uno que se cortó sin poder escribir su fase — el proceso se murió, el
+ * deploy reinició, la máquina se quedó sin memoria.
+ *
+ * **Es el mismo número que `TTL_FASE_ANALISIS_MS` de `types/domain.ts`**, que
+ * escribe la rama del pipeline: cuando las dos estén juntas, esta constante se
+ * borra y se importa aquella.
  */
-export const FASE_VIEJA_MS = 30 * 60 * 1000;
+export const FASE_VIEJA_MS = 10 * 60 * 1000;
 
 /**
- * La marca de tiempo de la fase, si el pipeline la dejó.
+ * La marca de tiempo que el pipeline deja en cada avance de fase
+ * (`FaseAnalisis.desde`), o `null` si esta versión todavía no la escribe.
  *
- * El campo lo agrega el arreglo del pipeline a `FaseAnalisis`; hasta que esté,
- * esto devuelve `null` y la pantalla se comporta como antes. Se lee con un
- * ensanchamiento explícito y no con un `any`: el día que el tipo lo declare,
- * este acceso sigue siendo el mismo y el `typeof` sobra sin molestar.
+ * Se lee con un ensanchamiento explícito y no con un `any` porque el campo lo
+ * agrega la rama del pipeline en paralelo a esta: hasta que estén juntas, esto
+ * devuelve `null` y la pantalla se comporta como antes. El día que el tipo lo
+ * declare, este acceso sigue siendo el mismo y el `typeof` sobra sin molestar
+ * — y entonces `faseColgada` se borra y su lugar lo ocupa `faseVencida()`, que
+ * es la misma función del lado del dominio.
  */
 export function selloDeFase(fase: FaseAnalisis): string | null {
-  const sello = (fase as FaseAnalisis & { at?: unknown }).at;
+  const sello = (fase as FaseAnalisis & { desde?: unknown }).desde;
   return typeof sello === 'string' ? sello : null;
 }
 
 /**
  * `true` si la fase quedó **colgada**: dice que está corriendo pero hace rato
- * que nadie la toca.
+ * que nadie la toca. Gemela de `faseVencida()` de `types/domain.ts`, que la
+ * rama del pipeline escribió del lado del dominio; sobrevive una sola.
  *
  * Sin esto, un pipeline que se murió sin escribir su error deja la pantalla
  * diciendo «Analizando las láminas · 3 de 25» para siempre, con la barra
@@ -154,12 +162,13 @@ export interface ProgresoAnalisisProps {
   /** La fase que el pipeline dejó escrita, o `null` si la obra nunca se analizó. */
   fase: FaseAnalisis | null;
   /**
-   * A dónde postear «Reintentar el cruce», o `null` si esa ruta todavía no
-   * existe en esta versión.
+   * A dónde postear «Reintentar el cruce», o `null` para no ofrecerlo.
    *
-   * Un botón que pega contra un 404 es peor que no tener botón: dice que hay
-   * una salida y no la hay. Cuando el endpoint de reintento del cruce esté, la
-   * página se lo pasa acá y el botón aparece solo.
+   * La ruta es `POST /api/obras/[obraId]/cruce`, que rehace las tres fases de
+   * obra (cruce, relectura y cómputo final) y se niega con 409 si hay una
+   * corrida viva encima. Es un prop y no una constante porque un botón que pega
+   * contra un 404 es peor que no tener botón: la página lo pasa cuando la ruta
+   * existe, y así esta pantalla no depende de en qué orden entren las ramas.
    */
   reintentoDeCruce?: string | null;
 }

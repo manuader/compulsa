@@ -89,7 +89,7 @@ const ESTADO_INICIAL: EstadoPrecio = {};
  * `scripts/seed.ts`.
  */
 const EJEMPLO_CSV = `clave_item;descripcion;unidad;precio;fecha
-seco.placas;Placa de yeso 12,5 mm;m2;9800;2026-08-10
+seco.placas;Placa de roca de yeso (1,20 × 2,40 m);m2;9800;2026-08-10
 pintura.latex_paredes;Látex interior para paredes;l;4300;
 gruesa.cemento;Cemento de albañilería;kg;"260,50";`;
 
@@ -316,7 +316,7 @@ export function FormularioPrecio({
         <Input
           name="descripcion"
           label="Descripción"
-          placeholder="Placa de yeso 12,5 mm"
+          placeholder="Placa de roca de yeso (1,20 × 2,40 m)"
           defaultValue={valores?.descripcion ?? inicial?.descripcion ?? ''}
           required
           error={estado.errores?.descripcion}
