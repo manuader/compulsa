@@ -27,11 +27,17 @@ import { eq } from 'drizzle-orm';
 import type { Db } from '@/db/client';
 import { deducciones, entidades, hallazgos, laminas, obras, type Obra } from '@/db/schema';
 import { registrarAuditoria } from '@/lib/audit';
-import { computarObra, type EntidadPersistida } from '@/lib/computo/engine';
+import {
+  computarObra,
+  type CamposDeducidos,
+  type DatosObraResueltos,
+  type EntidadPersistida,
+} from '@/lib/computo/engine';
 import { igualJson } from '@/lib/pipeline/json';
 import {
   aplicarDeduccionesValidadas,
   comoEntidadPersistida,
+  datosDeObra,
   ACTOR_PIPELINE,
   ObraInexistenteError,
 } from '@/lib/pipeline/recomputar';
@@ -217,6 +223,20 @@ function titularDe(
 }
 
 /**
+ * Lo que el motor necesita para dar **los mismos ítems que la planilla**.
+ *
+ * Todo opcional: sin nada, el resumen computa como una obra sin deducciones y
+ * sin datos de obra, que es lo que hacía antes de que existieran. El que la
+ * llama de verdad (`persistirResumen`) los pasa siempre — si no, un rubro que
+ * solo computa gracias a un dato de obra desaparece del resumen mientras la
+ * planilla lo muestra bien, y el resumen deja de ser la foto de la obra.
+ */
+export interface ContextoResumen {
+  camposDeducidos?: CamposDeducidos;
+  datosObra?: DatosObraResueltos;
+}
+
+/**
  * El resumen ejecutivo de una obra a partir de su estado.
  *
  * `entidades` son las de la obra (con las deducciones validadas ya aplicadas si
@@ -229,6 +249,7 @@ export function generarResumen(
   laminasObra: readonly LaminaDelResumen[],
   entidadesObra: readonly EntidadPersistida[],
   hallazgosObra: readonly HallazgoDelResumen[],
+  contexto: ContextoResumen = {},
 ): ResumenObra {
   const porDisciplina = contarPor(
     laminasObra.map((lamina) => lamina.disciplina),
@@ -247,10 +268,20 @@ export function generarResumen(
     laminasObra.map((lamina) => lamina.tipo).filter((t): t is TipoLamina => t !== null),
   );
 
-  // Las láminas viajan al motor por el tipo: el alcance del resumen tiene que
-  // dar los mismos ítems que la planilla (`recomputarObra`), y aberturas cuenta
-  // distinto según de qué lámina salió cada carpintería.
-  const { items } = computarObra(entidadesObra, obra.tipo, undefined, undefined, laminasObra);
+  // Todo lo que el motor recibe acá tiene que ser lo MISMO que recibe en
+  // `recomputarObra`: el alcance del resumen tiene que dar los mismos ítems que
+  // la planilla. Las láminas por el tipo (aberturas cuenta distinto según de qué
+  // lámina salió cada carpintería), el origen por campo y los datos de obra —un
+  // rubro que solo computa por una altura de local declarada una vez tiene que
+  // estar en los dos lados—.
+  const { items } = computarObra(
+    entidadesObra,
+    obra.tipo,
+    undefined,
+    contexto.camposDeducidos,
+    laminasObra,
+    contexto.datosObra,
+  );
   const ordenados = [...items].sort((a, b) => a.claveItem.localeCompare(b.claveItem, 'es-AR'));
   const alcance: RubroDelAlcance[] = RUBROS.map((rubro) => {
     const delRubro = ordenados.filter((item) => item.rubro === rubro);
@@ -333,19 +364,22 @@ export function generarResumen(
  * (`igualJson`, no `JSON.stringify` — el jsonb vuelve de Postgres con las claves
  * reordenadas, ver `@/lib/pipeline/json`).
  *
- * Las entidades pasan por `aplicarDeduccionesValidadas` antes de computarse, por
- * el mismo motivo que en `recomputarObra`: el alcance que muestra el resumen
- * tiene que ser el mismo que el de la planilla.
+ * Las entidades pasan por `aplicarDeduccionesValidadas` antes de computarse —y
+ * el motor recibe además los datos de obra y el origen por campo—, por el mismo
+ * motivo: el alcance que muestra el resumen tiene que ser el mismo que el de la
+ * planilla. Es un invariante fácil de romper en silencio, porque el resumen no
+ * lee `computo_items`: lo vuelve a computar.
  */
 export async function persistirResumen(db: Db, obraId: string): Promise<ResumenObra> {
   const [obra] = await db.select().from(obras).where(eq(obras.id, obraId));
   if (!obra) throw new ObraInexistenteError(obraId);
 
-  const [filasLaminas, filasEntidades, filasHallazgos, filasDeducciones] = await Promise.all([
+  const [filasLaminas, filasEntidades, filasHallazgos, filasDeducciones, datos] = await Promise.all([
     db.select().from(laminas).where(eq(laminas.obraId, obraId)).orderBy(laminas.numeroPagina),
     db.select().from(entidades).where(eq(entidades.obraId, obraId)),
     db.select().from(hallazgos).where(eq(hallazgos.obraId, obraId)).orderBy(hallazgos.clave),
     db.select().from(deducciones).where(eq(deducciones.obraId, obraId)),
+    datosDeObra(db, obraId),
   ]);
 
   // Orden estable de las entidades: sin esto el resumen dependería del orden en
@@ -358,7 +392,10 @@ export async function persistirResumen(db: Db, obraId: string): Promise<ResumenO
         a.tipo.localeCompare(b.tipo) ||
         a.nombre.localeCompare(b.nombre, 'es-AR'),
     );
-  const { entidades: conDeducciones } = aplicarDeduccionesValidadas(persistidas, filasDeducciones);
+  const { entidades: conDeducciones, camposDeducidos } = aplicarDeduccionesValidadas(
+    persistidas,
+    filasDeducciones,
+  );
 
   const resumen = generarResumen(
     obra,
@@ -378,6 +415,7 @@ export async function persistirResumen(db: Db, obraId: string): Promise<ResumenO
       bloqueante: hallazgo.bloqueante,
       estado: hallazgo.estado,
     })),
+    { camposDeducidos, datosObra: datos },
   );
 
   if (igualJson(obra.resumenJson, resumen)) return resumen;
