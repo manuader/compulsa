@@ -531,7 +531,7 @@ async function sincronizarHallazgos(
  * Clave de una deducción: `(entidad, campo)` — la misma que el UNIQUE de la
  * tabla, con la obra ya fijada por el `where`.
  */
-function claveDeDeduccion(fila: { entidadId: string; campo: string }): string {
+export function claveDeDeduccion(fila: { entidadId: string; campo: string }): string {
   return `${fila.entidadId}::${fila.campo}`;
 }
 
@@ -1316,6 +1316,69 @@ export async function borrarDeduccionesDeEntidades(
   }
 
   return afectadas.length;
+}
+
+/**
+ * Retira las deducciones **auto-validadas por el cruce** que el último cruce
+ * dejó de emitir. Devuelve cuántas retiró.
+ *
+ * El barrido que le faltaba a `sincronizarDeducciones`, y no puede vivir ahí:
+ * el sweep del recompute está acotado a `estado === 'propuesta'` justamente
+ * porque el recompute corre el motor del §11, que **nunca** emite
+ * `regla: 'cruce'` — barrer desde ahí borraría todas las filas del cruce en cada
+ * corrida. Quién sigue sosteniendo un completado del cruce lo sabe el cruce, y
+ * solo él.
+ *
+ * Sin este barrido, un campo que el cruce completó una vez se queda `validada`
+ * para siempre y el overlay lo sigue aplicando aunque el cruce siguiente —con
+ * la revisión buena de la lámina— ya no lo diga. No hay quién lo retire: no es
+ * `propuesta`, así que el recompute no lo toca, y no es una decisión de una
+ * persona, así que nadie lo va a mirar en la bandeja.
+ *
+ * Las condiciones son las tres que hacen a la fila "del sistema", y las tres
+ * hacen falta:
+ *
+ *  - `regla = 'cruce'` — las de `medicion_grafica` las administra `procesar.ts`,
+ *    y las del motor del §11, el recompute;
+ *  - `estado = 'validada'` — una `rechazada` es historia y una `propuesta` ya
+ *    tiene su propio barrido;
+ *  - `validado_por = null` — si la validó una persona es suya, y el cruce no la
+ *    toca (mismo criterio que `esDecidida()` en `cruce.ts`).
+ *
+ * **Solo la puede llamar un cruce que salió bien**, igual que
+ * `cerrarConflictosResueltos`: si el provider se cayó, que no haya emitido nada
+ * no significa que los datos dejaron de valer, y un timeout barrería la obra
+ * entera.
+ *
+ * `emitidas` son las claves `claveDeDeduccion({entidadId, campo})` que **este**
+ * cruce volvió a emitir, incluidas las que omitió por estar debajo del umbral:
+ * omitir no es desmentir.
+ */
+export async function retirarDeduccionesDeCruce(
+  db: Db,
+  obraId: string,
+  emitidas: ReadonlySet<string>,
+): Promise<number> {
+  const existentes = await db
+    .select()
+    .from(deducciones)
+    .where(and(eq(deducciones.obraId, obraId), eq(deducciones.regla, 'cruce')));
+
+  let retiradas = 0;
+  for (const fila of existentes) {
+    if (fila.estado !== 'validada' || fila.validadoPor !== null) continue;
+    if (emitidas.has(claveDeDeduccion(fila))) continue;
+
+    await db.delete(deducciones).where(eq(deducciones.id, fila.id));
+    retiradas += 1;
+    await auditar(obraId, 'deduccion_retirada', `deducciones:${fila.entidadId}.${fila.campo}`, {
+      regla: fila.regla,
+      valor: fila.valorJson,
+      confianza: fila.confianza,
+      motivo: 'El cruce del expediente ya no relaciona este dato.',
+    });
+  }
+  return retiradas;
 }
 
 // ---------------------------------------------------------------------------

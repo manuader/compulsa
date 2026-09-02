@@ -26,6 +26,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { setDbForTests, type Db } from '@/db/client';
 import {
   auditoria,
+  computoItems,
   deducciones,
   documentos,
   entidades,
@@ -37,9 +38,11 @@ import {
 } from '@/db/schema';
 import { igualJson } from '@/lib/pipeline/json';
 import {
+  claveDeDeduccion,
   conMarcasDe,
   estaContradicha,
   recomputarObra,
+  retirarDeduccionesDeCruce,
   sinMarcas,
   valorQueDocumenta,
 } from '@/lib/pipeline/recomputar';
@@ -234,5 +237,100 @@ describe('cruce + recompute compuestos', () => {
     await aplicarComoCruce(false);
     await recomputarObra(obraId, { db });
     expect(await auditorias()).toBe(base + 4);
+  });
+});
+
+describe('retirarDeduccionesDeCruce: lo que el cruce dejó de decir deja de aplicar', () => {
+  /**
+   * Sin este barrido, un campo que el cruce completó una vez se queda
+   * `validada` para siempre y el overlay lo sigue aplicando aunque el cruce
+   * siguiente —con la revisión buena de la lámina— ya no lo diga. No hay quién
+   * lo retire: no es `propuesta`, así que el sweep del recompute no lo mira, y
+   * no es una decisión de una persona, así que nadie lo va a buscar en la
+   * bandeja.
+   *
+   * Vive en `recomputar.ts` y lo llama el cruce: quién sigue sosteniendo un
+   * completado del cruce lo sabe el cruce, y solo él. Barrer desde
+   * `sincronizarDeducciones` borraría **todas** las filas del cruce en cada
+   * corrida, porque el motor del §11 nunca emite `regla: 'cruce'`.
+   */
+  async function sinAlturaEscrita(): Promise<void> {
+    await db
+      .update(entidades)
+      .set({ atributosJson: { tipo: 'durlock', largoM: 5, caras: 2 } })
+      .where(eq(entidades.id, entidadId));
+  }
+
+  function placas() {
+    return db
+      .select()
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.claveItem, 'seco.placas')))
+      .then((filas) => filas[0]);
+  }
+
+  it('la fila que el cruce vuelve a emitir se queda', async () => {
+    const previa = await laDeduccion();
+    const retiradas = await retirarDeduccionesDeCruce(
+      db,
+      obraId,
+      new Set([claveDeDeduccion(previa)]),
+    );
+
+    expect(retiradas).toBe(0);
+    expect(await laDeduccion()).toBeDefined();
+  });
+
+  it('la que dejó de emitir se retira, con su auditoría', async () => {
+    const retiradas = await retirarDeduccionesDeCruce(db, obraId, new Set());
+
+    expect(retiradas).toBe(1);
+    const quedan = await db.select().from(deducciones).where(eq(deducciones.obraId, obraId));
+    expect(quedan).toEqual([]);
+    const auditadas = await db
+      .select()
+      .from(auditoria)
+      .where(and(eq(auditoria.obraId, obraId), eq(auditoria.accion, 'deduccion_retirada')));
+    expect(auditadas).toHaveLength(1);
+  });
+
+  it('y el cómputo deja de apoyarse en el dato retirado', async () => {
+    await sinAlturaEscrita();
+    await recomputarObra(obraId, { db });
+    // 5 m × 2,60 m × 2 caras = 26 m²: la altura la puso el cruce.
+    expect((await placas())?.cantNeta).toBe(26);
+
+    await retirarDeduccionesDeCruce(db, obraId, new Set());
+    await recomputarObra(obraId, { db });
+
+    expect((await placas())?.estado).toBe('anulado');
+  });
+
+  it('no toca la que validó una persona: esa es suya', async () => {
+    const [alguien] = await db.select().from(usuarios);
+    await db
+      .update(deducciones)
+      .set({ validadoPor: alguien!.id })
+      .where(eq(deducciones.obraId, obraId));
+
+    expect(await retirarDeduccionesDeCruce(db, obraId, new Set())).toBe(0);
+  });
+
+  it('no toca lo que no es del cruce: la medición gráfica la administra el pipeline', async () => {
+    await db
+      .update(deducciones)
+      .set({ regla: 'medicion_grafica', confianza: 0.5 })
+      .where(eq(deducciones.obraId, obraId));
+
+    expect(await retirarDeduccionesDeCruce(db, obraId, new Set())).toBe(0);
+  });
+
+  it('no toca una rechazada: es una decisión, no una sugerencia viva', async () => {
+    await db
+      .update(deducciones)
+      .set({ estado: 'rechazada' })
+      .where(eq(deducciones.obraId, obraId));
+
+    expect(await retirarDeduccionesDeCruce(db, obraId, new Set())).toBe(0);
   });
 });
