@@ -112,6 +112,47 @@ function metodoDe(fila: Deduccion): string | null {
   return typeof metodo === 'string' ? metodo : null;
 }
 
+/** En qué lista de la solapa cae cada deducción decidida. */
+export interface DeduccionesClasificadas {
+  /** Las que aplicó el sistema y siguen aplicándose: se rechazan, no se validan. */
+  aplicadas: Deduccion[];
+  /** Las que no llegaron al umbral: el cómputo todavía no las usa. */
+  propuestas: Deduccion[];
+  /** Validadas a las que la documentación pasó por encima: solo se avisan. */
+  superadas: Deduccion[];
+}
+
+/**
+ * Reparte las deducciones de la obra en las tres listas de la solapa.
+ *
+ * Las tres reglas, y ninguna es obvia mirando la fila sola:
+ *
+ *  - **`validado_por` es lo único que distingue** una deducción que aplicó el
+ *    sistema de una que validó una persona (§5.4). Las validadas a mano no van a
+ *    esta solapa: ya pasaron por acá y alguien decidió.
+ *  - una **contradicha** no se ofrece para rechazar aunque esté validada: la
+ *    documentación ya le pasó por encima y el cómputo usa el dato escrito, así
+ *    que rechazarla sería deshacer algo que no se está aplicando. Va al aviso.
+ *  - una **rechazada** no entra a ninguna: es historia, y el llamador ni la trae.
+ */
+export function clasificarDeducciones(filas: readonly Deduccion[]): DeduccionesClasificadas {
+  const aplicadas: Deduccion[] = [];
+  const propuestas: Deduccion[] = [];
+  const superadas: Deduccion[] = [];
+
+  for (const fila of filas) {
+    if (fila.estado === 'propuesta') {
+      propuestas.push(fila);
+      continue;
+    }
+    if (fila.estado !== 'validada') continue;
+    if (estaContradicha(fila)) superadas.push(fila);
+    else if (fila.validadoPor === null) aplicadas.push(fila);
+  }
+
+  return { aplicadas, propuestas, superadas };
+}
+
 /** Un grupo por elemento (tipo + nombre) y adentro un bloque por lámina. */
 function agrupar(
   filas: readonly Deduccion[],
@@ -257,11 +298,7 @@ export async function SolapaRevisar({ obraId, regla, enlace }: SolapaRevisarProp
   );
   const porEntidad = new Map(elementos.map((fila) => [fila.id, fila]));
 
-  const superadas = decididas.filter((fila) => fila.estado === 'validada' && estaContradicha(fila));
-  const aplicadas = decididas.filter(
-    (fila) => fila.estado === 'validada' && fila.validadoPor === null && !estaContradicha(fila),
-  );
-  const propuestas = decididas.filter((fila) => fila.estado === 'propuesta');
+  const { aplicadas, propuestas, superadas } = clasificarDeducciones(decididas);
 
   const deLaRegla = (filas: readonly Deduccion[]): Deduccion[] =>
     regla === null ? [...filas] : filas.filter((fila) => fila.regla === regla);

@@ -737,7 +737,9 @@ function TarjetaConsulta({
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-end gap-2">
               {claves.map((clave) => (
-                <div key={clave} className="w-48">
+                // El dato de obra lleva más ancho: su etiqueta es una frase
+                // («Altura de revestimiento en baño (m)»), no dos palabras.
+                <div key={clave} className={dato ? 'w-72' : 'w-48'}>
                   <Input
                     label={etiquetaDeClave(clave)}
                     inputMode={esNumerica(clave) ? 'decimal' : undefined}
