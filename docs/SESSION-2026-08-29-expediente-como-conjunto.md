@@ -120,7 +120,7 @@ Es la misma familia que la regla 9 del CLAUDE.md (Next valida exports que `tsc` 
 
 | Comando | Resultado |
 |---|---|
-| `vitest run --maxWorkers=3` | **102 archivos, 1583 tests, 0 fallos** |
+| `vitest run --maxWorkers=3` | **102 archivos, 1584 tests, 0 fallos** |
 | `npm run golden` | **3 casos, 0,00 % de error** — obra-demo 15 ítems, obra-reforma 11, obra-conjunta 28 |
 | `npm run build` | verde en el worktree (los dos warnings preexistentes de pdfjs) |
 | `npm run seed` | idempotente: la segunda corrida no toca una fila |
