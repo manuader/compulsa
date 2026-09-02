@@ -1,12 +1,25 @@
 /**
- * Bandeja de consultas de la obra (PRD §8): todo lo que el sistema no pudo
- * resolver solo, agrupado por rubro y accionable de un click.
+ * Bandeja de la obra (PRD §8 + §5.8 del diseño), en dos solapas.
  *
- * Server Component (`src/app/CLAUDE.md` §2): lee con `getDb()` y filtra desde
- * la URL —así la vista es compartible y no necesita JavaScript—, y le baja a
- * `BandejaConsultas` solo datos serializables. El contador del header cuenta
- * **todas** las consultas de la obra, no las filtradas: es el estado de la
- * obra, no el de la vista.
+ * De compuerta a revisión: hasta acá la bandeja era una sola lista donde todo
+ * pesaba lo mismo, y desde que lo deducido entra solo al cómputo (§5.4) eso ya
+ * no alcanza. Ahora hay dos cosas distintas y se ven distintas:
+ *
+ *  - **Preguntas** — las consultas abiertas: lo único que espera algo del
+ *    arquitecto. Un dato que falta, un conflicto entre láminas, una escala sin
+ *    confirmar. Es lo que frena la aprobación de un rubro (RF-404).
+ *  - **Para revisar** — lo que el sistema ya aplicó: deducciones que se validaron
+ *    solas e ítems computados con medidas del dibujo, con su fuente y su método
+ *    y un botón para rechazarlas. Informa; **no bloquea nada**.
+ *
+ * La solapa viaja en la URL (`?solapa=revisar`) como el resto de los filtros:
+ * así la vista es compartible, no necesita JavaScript, y `/obras/[obraId]/deducciones`
+ * puede redirigir acá conservando su deep-link (`?regla=`).
+ *
+ * Server Component (`src/app/CLAUDE.md` §2): lee con `getDb()`, filtra desde la
+ * URL y le baja a `BandejaConsultas` solo datos serializables. El contador del
+ * header cuenta **todas** las consultas de la obra, no las filtradas: es el
+ * estado de la obra, no el de la vista.
  */
 import { eq } from 'drizzle-orm';
 import type { Metadata } from 'next';
@@ -17,6 +30,7 @@ import { entidades, hallazgos, laminas } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
 import { formatearNumero } from '@/lib/computo/unidades';
 import { camposDelTarget } from '@/lib/hallazgos/target';
+import { CAMPO_DATO_OBRA, etiquetaDeDatoObra } from '@/lib/hallazgos/taxonomia';
 import { PREFIJO_ESCALA } from '@/lib/pipeline/claves';
 import {
   checklistEfectivoDeTodos,
@@ -26,7 +40,15 @@ import {
 import { PLANTILLAS } from '@/lib/rubros/index';
 import { RUBROS, type EstadoHallazgo } from '@/types/domain';
 
-import { BandejaConsultas, type ConsultaVista, type GrupoConsultas, type LaminaCitada } from './ui';
+import { esRegla, SolapaRevisar } from './revisar';
+import {
+  BandejaConsultas,
+  fuentesDeAfectadas,
+  type ConsultaVista,
+  type FuenteVista,
+  type GrupoConsultas,
+  type LaminaCitada,
+} from './ui';
 
 /** Qué estados muestra cada filtro. `null` en el mapa ⇒ no filtra. */
 const FILTROS = [
@@ -38,6 +60,19 @@ const FILTROS = [
 
 type ValorFiltro = (typeof FILTROS)[number]['valor'];
 
+/**
+ * Las dos solapas del §5.8. La de por defecto es la que pide algo.
+ *
+ * Sin `export`: un `page.tsx` solo puede exportar el componente por defecto y
+ * las opciones de segmento (CLAUDE.md §9, misma familia que un `route.ts`).
+ */
+const SOLAPAS = [
+  { valor: 'preguntas', etiqueta: 'Preguntas' },
+  { valor: 'revisar', etiqueta: 'Para revisar' },
+] as const;
+
+type ValorSolapa = (typeof SOLAPAS)[number]['valor'];
+
 interface Vista {
   filtro: ValorFiltro;
   soloBloqueantes: boolean;
@@ -46,7 +81,13 @@ interface Vista {
 function enlace(obraId: string, vista: Vista): string {
   const query = new URLSearchParams({ estado: vista.filtro });
   if (vista.soloBloqueantes) query.set('bloqueantes', '1');
+  // Los chips de estado son de «Preguntas»: no llevan `solapa` porque es la de
+  // por defecto, y sumarla a cada link solo alargaría la URL que se comparte.
   return `/obras/${obraId}/bandeja?${query.toString()}`;
+}
+
+function esSolapa(valor: string | null): valor is ValorSolapa {
+  return valor !== null && SOLAPAS.some((solapa) => solapa.valor === valor);
 }
 
 function primerParametro(valor: string | string[] | undefined): string | null {
@@ -125,7 +166,15 @@ export default async function BandejaPage({
       .from(laminas)
       .where(eq(laminas.obraId, obra.id)),
     db
-      .select({ id: entidades.id, tipo: entidades.tipo, nombre: entidades.nombre })
+      .select({
+        id: entidades.id,
+        tipo: entidades.tipo,
+        nombre: entidades.nombre,
+        // Para el split view de una consulta de dato de obra: el hallazgo nace
+        // sin fuentes (el hecho no se leyó en ninguna lámina) y lo que hay para
+        // mirar es dónde está dibujado cada afectado.
+        fuentes: entidades.fuentesJson,
+      })
       .from(entidades)
       .where(eq(entidades.obraId, obra.id)),
     checklistEfectivoDeTodos(db, obra.estudioId),
@@ -140,12 +189,23 @@ export default async function BandejaPage({
   const nombreEntidad = new Map(
     elementos.map((fila) => [fila.id, `${capitalizar(fila.tipo)} ${fila.nombre}`]),
   );
+  const fuentesEntidad = new Map<string, FuenteVista[]>(
+    elementos.map((fila) => [
+      fila.id,
+      fila.fuentes.map((fuente) => ({ laminaId: fuente.laminaId, bbox: fuente.bbox })),
+    ]),
+  );
 
   const abiertas = filas.filter((fila) => fila.estado === 'abierto');
   // El contador tiene que decir lo mismo que el gate: un ítem de checklist que
   // el estudio desactivó (o marcó no bloqueante) deja de frenar la aprobación,
   // aunque la fila siga guardada con `bloqueante = true` y siga en la bandeja.
   const bloqueantes = contarBloqueantes(abiertas, checklist);
+
+  const solapaPedida = primerParametro(query.solapa);
+  const solapa: ValorSolapa = esSolapa(solapaPedida) ? solapaPedida : 'preguntas';
+  const reglaPedida = primerParametro(query.regla);
+  const regla = esRegla(reglaPedida) ? reglaPedida : null;
 
   const pedido = primerParametro(query.estado);
   const filtro: ValorFiltro = esFiltro(pedido) ? pedido : 'abiertas';
@@ -175,6 +235,25 @@ export default async function BandejaPage({
     const propuesta = fila.valorPropuestoJson;
     const fuentePropuesta = propuesta?.fuente ?? null;
 
+    // Una consulta de dato de obra (§5.2) no apunta a ninguna entidad: nombra un
+    // hecho y a quiénes afecta. De los afectados salen las fuentes que el panel
+    // resalta —el hallazgo no tiene ninguna propia, y con razón (P1)— y de la
+    // clave sale el nombre del input.
+    const dato = fila.targetDato;
+    const fuentesAfectadas = dato === null ? [] : fuentesDeAfectadas(dato.entidades, fuentesEntidad);
+    const fuentesPropias: FuenteVista[] = fila.laminasJson.map((f) => ({
+      laminaId: f.laminaId,
+      bbox: f.bbox,
+    }));
+    const fuentes = dato === null ? fuentesPropias : [...fuentesPropias, ...fuentesAfectadas];
+    const laminasDeAfectadas: LaminaCitada[] = [];
+    for (const fuente of fuentesAfectadas) {
+      if (vistas.has(fuente.laminaId)) continue;
+      vistas.add(fuente.laminaId);
+      const etiqueta = etiquetaLamina.get(fuente.laminaId);
+      if (etiqueta) laminasDeAfectadas.push({ laminaId: fuente.laminaId, etiqueta });
+    }
+
     return {
       id: fila.id,
       clave: fila.clave,
@@ -187,10 +266,20 @@ export default async function BandejaPage({
       campo: campos[0] ?? null,
       entidad: fila.targetRef ? (nombreEntidad.get(fila.targetRef.entidadId) ?? null) : null,
       esEscala: fila.clave.startsWith(PREFIJO_ESCALA),
-      laminas: citadas,
+      datoObra:
+        dato === null
+          ? null
+          : {
+              clave: dato.clave,
+              etiqueta: etiquetaDeDatoObra(dato.clave),
+              unidad: dato.unidad ?? null,
+              campo: CAMPO_DATO_OBRA,
+              afectadas: dato.entidades.length,
+            },
+      laminas: [...citadas, ...laminasDeAfectadas],
       // Con bbox: es lo que el visor necesita para resaltar de qué está
       // hablando la consulta sin que el arquitecto tenga que buscarlo.
-      fuentes: fila.laminasJson.map((f) => ({ laminaId: f.laminaId, bbox: f.bbox })),
+      fuentes,
       valorPropuesto: propuesta
         ? {
             valores: Object.fromEntries(
@@ -230,8 +319,55 @@ export default async function BandejaPage({
     },
   ].filter((grupo) => grupo.consultas.length > 0);
 
+  // Las solapas van arriba de todo y en las dos vistas: son la navegación de la
+  // pantalla, no un filtro de una de ellas. El link de «Para revisar» conserva
+  // la regla del deep-link con el que se puede haber llegado desde /deducciones.
+  const solapas = (
+    <nav className="flex flex-wrap items-center gap-2 border-b border-neutral-200 pb-2">
+      {SOLAPAS.map((candidata) => {
+        const query = new URLSearchParams({ solapa: candidata.valor });
+        if (candidata.valor === 'revisar' && regla !== null) query.set('regla', regla);
+        const activa = solapa === candidata.valor;
+        return (
+          <Link
+            key={candidata.valor}
+            href={`/obras/${obra.id}/bandeja?${query.toString()}`}
+            aria-current={activa ? 'page' : undefined}
+            className={[
+              'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+              activa
+                ? 'bg-neutral-900 text-white'
+                : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900',
+            ].join(' ')}
+          >
+            {candidata.etiqueta}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+
+  if (solapa === 'revisar') {
+    return (
+      <div className="flex flex-col gap-4">
+        {solapas}
+        <h1 className="text-base font-semibold text-neutral-900">Para revisar</h1>
+        <SolapaRevisar
+          obraId={obra.id}
+          regla={regla}
+          enlace={(candidata) =>
+            candidata === null
+              ? `/obras/${obra.id}/bandeja?solapa=revisar`
+              : `/obras/${obra.id}/bandeja?solapa=revisar&regla=${candidata}`
+          }
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4">
+      {solapas}
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-base font-semibold text-neutral-900">
           {abiertas.length === 1 ? '1 consulta abierta' : `${abiertas.length} consultas abiertas`}

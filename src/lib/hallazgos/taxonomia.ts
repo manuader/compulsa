@@ -259,6 +259,34 @@ export const PREFIJO_DATO_OBRA = 'dato_obra.';
  */
 export const CAMPO_DATO_OBRA = 'valor';
 
+/** Cómo se llama en castellano cada familia de dato de obra. */
+const FAMILIA_DATO_OBRA: Record<string, string> = {
+  altura_local: 'Altura de local',
+  altura_revestimiento: 'Altura de revestimiento',
+  nivel: 'Nivel',
+};
+
+/**
+ * El nombre del dato para la tarjeta de la bandeja: `altura_local.PB` ⇒
+ * «Altura de local en PB», `altura_local.general` ⇒ «Altura de local».
+ *
+ * La clave es convencional y legible para nosotros, no para el arquitecto: un
+ * input que dice `altura_local.PB` es un identificador de base de datos puesto
+ * adelante de una persona. El sufijo `general` no se nombra —es el hecho que
+ * vale para toda la obra cuando no hay uno más fino— y una familia que no
+ * conozcamos se muestra tal cual, con los guiones bajos abiertos: peor que un
+ * nombre feo es un input sin nombre.
+ */
+export function etiquetaDeDatoObra(clave: string): string {
+  const punto = clave.indexOf('.');
+  const familia = punto === -1 ? clave : clave.slice(0, punto);
+  const sufijo = punto === -1 ? '' : clave.slice(punto + 1);
+  const nombre =
+    FAMILIA_DATO_OBRA[familia] ??
+    familia.replace(/_/g, ' ').replace(/^./, (letra) => letra.toUpperCase());
+  return sufijo === '' || sufijo === 'general' ? nombre : `${nombre} en ${sufijo}`;
+}
+
 /**
  * El dato de obra que respalda un campo, o `null` si no está.
  *

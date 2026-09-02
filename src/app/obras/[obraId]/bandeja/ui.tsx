@@ -147,6 +147,24 @@ export interface PropuestaVista {
   fuente: (FuenteVista & { etiqueta: string }) | null;
 }
 
+/**
+ * Un dato de obra, listo para la tarjeta. Todo lo arma el server: el nombre en
+ * castellano sale de `etiquetaDeDatoObra()` y el nombre del input de
+ * `CAMPO_DATO_OBRA`, que es la misma clave con la que el resolver lo lee.
+ */
+export interface DatoObraVista {
+  /** `altura_local.PB` — la clave de `datos_obra`, para el rastro. */
+  clave: string;
+  /** "Altura de local en PB" — cómo se lo nombra al arquitecto. */
+  etiqueta: string;
+  /** "m", o `null` si el dato es un texto (un solado, un revestimiento). */
+  unidad: string | null;
+  /** El nombre del input, que es el que el server acepta. */
+  campo: string;
+  /** Cuántas entidades lo están esperando: es el sentido de preguntarlo una vez. */
+  afectadas: number;
+}
+
 export interface ConsultaVista {
   id: string;
   clave: string;
@@ -163,6 +181,12 @@ export interface ConsultaVista {
   entidad: string | null;
   /** `true` si es el bloqueo por escala de una lámina (RF-201). */
   esEscala: boolean;
+  /**
+   * Puesto ⇒ la consulta pide un **hecho de la obra** y no un campo de una
+   * entidad (§5.2): un solo input, y responderlo escribe `datos_obra` una vez
+   * para todas las entidades que lo estaban esperando.
+   */
+  datoObra: DatoObraVista | null;
   laminas: LaminaCitada[];
   /** Las fuentes con bbox: de acá sale el resaltado del visor. */
   fuentes: FuenteVista[];
@@ -204,6 +228,8 @@ function textoRespuesta(consulta: ConsultaVista): string {
       }
       case 'escala':
         return valor === undefined ? 'Escala confirmada.' : `Escala confirmada: ${String(valor)}`;
+      case 'dato_obra':
+        return `Dato de obra cargado: ${String(valor)}`;
       case 'existente':
         return 'Marcada como existente: no está dentro del alcance de la obra.';
       case 'supuesto_confirmado':
@@ -230,6 +256,9 @@ const CLAVE_NOTA = 'nota';
 /** Qué inputs muestra la tarjeta: la escala, los campos del target, o la nota. */
 function clavesDeInput(consulta: ConsultaVista): string[] {
   if (consulta.esEscala) return [CLAVE_ESCALA];
+  // Un dato de obra pide UN valor y su nombre lo dice la clave del dato, no un
+  // campo de dominio: el input se llama como el server lo espera leer.
+  if (consulta.datoObra) return [consulta.datoObra.campo];
   return consulta.campos.length > 0 ? consulta.campos : [CLAVE_NOTA];
 }
 
@@ -361,6 +390,39 @@ export function laminasDeConsulta(consulta: ConsultaVista): LaminaMirable[] {
 }
 
 /**
+ * Dónde están dibujadas las entidades a las que les falta un dato de obra.
+ *
+ * Una consulta de dato de obra nace **sin fuentes** y con razón: el hecho no se
+ * leyó en ninguna lámina, así que no hay bbox honesto que citar (P1 no se cumple
+ * citando cualquier cosa). Pero eso dejaba la tarjeta sin nada para mirar —«la
+ * altura de local de PB» sin un solo plano al lado— justo en la consulta que más
+ * contexto necesita, porque afecta a cuatro elementos a la vez.
+ *
+ * La provenance que sí existe es la de **los afectados**: dónde está dibujado
+ * cada tabique que está esperando la altura. Eso es lo que el panel resalta, en
+ * el orden en que el hallazgo los enumera, y por eso se arma acá y no en la
+ * base: no es una fuente del hallazgo, es la de las entidades que nombra.
+ *
+ * Puro: `tests/unit/bandeja-plano.test.ts` lo pinnea.
+ */
+export function fuentesDeAfectadas(
+  entidadIds: readonly string[],
+  porEntidad: ReadonlyMap<string, readonly FuenteVista[]>,
+): FuenteVista[] {
+  const fuentes: FuenteVista[] = [];
+  const vistas = new Set<string>();
+  for (const id of entidadIds) {
+    for (const fuente of porEntidad.get(id) ?? []) {
+      const clave = `${fuente.laminaId}:${fuente.bbox.join(',')}`;
+      if (vistas.has(clave)) continue;
+      vistas.add(clave);
+      fuentes.push(fuente);
+    }
+  }
+  return fuentes;
+}
+
+/**
  * Los recuadros de **esta** consulta en **esa** lámina, sin repetidos.
  *
  * El de la propuesta va primero porque es el que el arquitecto tiene que mirar
@@ -472,19 +534,26 @@ function TarjetaConsulta({
   // Responder solo el ancho la cerraría con la abertura igual de incomputable.
   const completa = claves.every((clave) => (valores[clave] ?? '').trim() !== '');
 
+  const dato = consulta.datoObra;
+
   function etiquetaDeClave(clave: string): string {
     if (clave === CLAVE_ESCALA) return 'Escala';
     if (clave === CLAVE_NOTA) return 'Nota';
+    // El dato de obra se nombra por lo que es ("Altura de local en PB (m)"), no
+    // por su clave: `altura_local.PB` es un identificador nuestro.
+    if (dato) return dato.unidad === null ? dato.etiqueta : `${dato.etiqueta} (${dato.unidad})`;
     return etiquetaCampo(clave);
   }
 
   function esNumerica(clave: string): boolean {
+    if (dato) return dato.unidad !== null;
     return clave !== CLAVE_ESCALA && clave !== CLAVE_NOTA && !CAMPOS_DE_TEXTO.has(clave);
   }
 
   function placeholderDe(clave: string): string {
     if (clave === CLAVE_ESCALA) return '1:100';
     if (clave === CLAVE_NOTA) return 'Escribí tu respuesta';
+    if (dato) return dato.unidad === null ? 'Escribí el dato' : '2,60';
     return esNumerica(clave) ? '2,05' : 'Escribí tu respuesta';
   }
 
@@ -508,6 +577,18 @@ function TarjetaConsulta({
           obraId,
           hallazgoId: consulta.id,
           valor: valores[CLAVE_ESCALA] ?? '',
+        }),
+      );
+      return;
+    }
+    // Un dato de obra no es un campo de ninguna entidad: se manda con el
+    // nombre que el resolver espera y escribe `datos_obra`, no un atributo.
+    if (dato) {
+      correr(() =>
+        responderHallazgoAction({
+          obraId,
+          hallazgoId: consulta.id,
+          valores: { [dato.campo]: valores[dato.campo] ?? '' },
         }),
       );
       return;
@@ -587,6 +668,18 @@ function TarjetaConsulta({
 
         {consulta.entidad ? (
           <p className="text-xs text-neutral-500">Sobre: {consulta.entidad}</p>
+        ) : null}
+
+        {/* Por qué esta consulta es una y no N: el hecho es de la obra, no de
+            un elemento. Responderla computa a todos los que lo esperaban. */}
+        {consulta.datoObra ? (
+          <p className="text-xs text-neutral-500">
+            Es un dato de toda la obra: se responde una vez y{' '}
+            {consulta.datoObra.afectadas === 1
+              ? 'el elemento que lo esperaba se computa solo'
+              : `los ${consulta.datoObra.afectadas} elementos que lo esperaban se computan solos`}
+            .
+          </p>
         ) : null}
 
         {/* Cada lámina es un botón, no un link: carga el plano en el panel de
