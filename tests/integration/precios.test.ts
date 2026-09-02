@@ -446,7 +446,7 @@ describe('persistirImportPrecios', () => {
 });
 
 describe('listaDelEstudio: lo que el recompute le pasa a la cascada', () => {
-  it('devuelve el mapa por clave con moneda y fecha, y solo del estudio', async () => {
+  it('devuelve el mapa por clave con moneda, unidad y fecha, y solo del estudio', async () => {
     await guardarPrecio(db, actor, VENTANA, 'manual');
     await guardarPrecio(db, actorAjeno, { ...VENTANA, precio: 99000 }, 'manual');
 
@@ -456,15 +456,29 @@ describe('listaDelEstudio: lo que el recompute le pasa a la cascada', () => {
     expect(lista.get('aberturas.ventana.dvh')).toEqual({
       precio: 145000,
       moneda: 'ARS',
+      unidad: 'm2',
       fecha: '2026-08-10',
     });
 
     // La cascada completa, con datos de verdad: sin manual, gana la lista.
-    expect(resolverPrecio({ claveItem: 'aberturas.ventana.dvh' }, lista, null)).toEqual({
-      unitario: 145000,
-      moneda: 'ARS',
-      fuente: 'lista',
-      fechaPrecio: '2026-08-10',
-    });
+    expect(resolverPrecio({ claveItem: 'aberturas.ventana.dvh', unidad: 'm2' }, lista, null)).toEqual(
+      {
+        unitario: 145000,
+        moneda: 'ARS',
+        fuente: 'lista',
+        fechaPrecio: '2026-08-10',
+      },
+    );
+  });
+
+  it('la unidad guardada es la que la cascada chequea: en `u` el ítem por m² no la usa', async () => {
+    await guardarPrecio(db, actor, { ...VENTANA, unidad: 'u' }, 'csv');
+
+    const lista = await listaDelEstudio(db, estudioId);
+
+    expect(lista.get('aberturas.ventana.dvh')?.unidad).toBe('u');
+    expect(
+      resolverPrecio({ claveItem: 'aberturas.ventana.dvh', unidad: 'm2' }, lista, null),
+    ).toBeNull();
   });
 });

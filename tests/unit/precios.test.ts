@@ -18,8 +18,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { importarCsvPrecios, parsearPrecio } from '@/lib/precios/import-csv';
-import { MONEDA_DEFAULT, resolverPrecio } from '@/lib/precios/resolver';
-import type { PrecioEstimado } from '@/types/domain';
+import {
+  admiteIndice,
+  CLAVES_CON_INDICE,
+  MONEDA_DEFAULT,
+  resolverPrecio,
+} from '@/lib/precios/resolver';
+import type { PrecioEstimado, Unidad } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Cascada
@@ -33,12 +38,12 @@ const MANUAL: PrecioEstimado = {
 };
 
 /** La lista del estudio, tal cual la arma el recompute: por `claveItem`. */
-function lista(precio: number) {
-  return new Map([['aberturas.ventana.dvh', { precio, moneda: 'ARS', fecha: '2026-08-10' }]]);
+function lista(precio: number, unidad: Unidad = 'm2') {
+  return new Map([['seco.placas', { precio, moneda: 'ARS', unidad, fecha: '2026-08-10' }]]);
 }
 
 describe('resolverPrecio: la cascada del §5.6', () => {
-  const item = { claveItem: 'aberturas.ventana.dvh' };
+  const item = { claveItem: 'seco.placas', unidad: 'm2' as const };
 
   it('con las tres fuentes gana el precio manual del ítem', () => {
     const precio = resolverPrecio({ ...item, precioManual: MANUAL }, lista(90), {
@@ -88,7 +93,7 @@ describe('resolverPrecio: la cascada del §5.6', () => {
   });
 
   it('la lista matchea por clave exacta: una clave parecida no cuenta', () => {
-    const precio = resolverPrecio({ claveItem: 'aberturas.ventana.dvh.negra' }, lista(90), null);
+    const precio = resolverPrecio({ claveItem: 'seco.placas.verdes', unidad: 'm2' }, lista(90), null);
     expect(precio).toBeNull();
   });
 
@@ -114,10 +119,100 @@ describe('resolverPrecio: la cascada del §5.6', () => {
 
   it('la moneda de la lista viaja al ítem: no se asume que todo es en pesos', () => {
     const enDolares = new Map([
-      ['aberturas.ventana.dvh', { precio: 90, moneda: 'USD', fecha: '2026-08-10' }],
+      ['seco.placas', { precio: 90, moneda: 'USD', unidad: 'm2' as const, fecha: '2026-08-10' }],
     ]);
 
     expect(resolverPrecio(item, enDolares, null)?.moneda).toBe('USD');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La unidad de la lista contra la del ítem
+// ---------------------------------------------------------------------------
+
+describe('resolverPrecio: la unidad de la fila tiene que ser la del ítem', () => {
+  const item = { claveItem: 'seco.placas', unidad: 'm2' as const };
+
+  it('una fila por unidad contra un ítem por m² no se usa: sigue la cascada', () => {
+    // El caso del CSV: `seco.placas / u / 45000`. El subtotal multiplica el
+    // unitario por `cantCompra`, que está en m²; usar esa fila da un número que
+    // se ve bien, está mal, y entra al total de la obra y al XLSX.
+    const precio = resolverPrecio(item, lista(45000, 'u'), null);
+    expect(precio).toBeNull();
+  });
+
+  it('con la unidad mal, cae al índice en vez de mentir', () => {
+    const precio = resolverPrecio(item, lista(45000, 'u'), { p50: 80, mes: '2026-08', n: 5 });
+    expect(precio).toEqual({
+      unitario: 80,
+      moneda: MONEDA_DEFAULT,
+      fuente: 'indice',
+      fechaPrecio: '2026-08',
+    });
+  });
+
+  it('con la unidad bien, la fila se usa como siempre', () => {
+    expect(resolverPrecio(item, lista(45000, 'm2'), null)?.unitario).toBe(45000);
+  });
+
+  it('el precio manual del arquitecto no pasa por el chequeo: es suyo', () => {
+    const precio = resolverPrecio({ ...item, precioManual: MANUAL }, lista(45000, 'u'), null);
+    expect(precio?.fuente).toBe('manual');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El índice solo costea claves comparables entre obras
+// ---------------------------------------------------------------------------
+
+describe('resolverPrecio: el índice no cruza obras por una clave de esta obra', () => {
+  const CORTE = { p50: 80, mes: '2026-08', n: 5 };
+
+  /**
+   * `aberturas.V1` es la ventana que **en esta obra** se llama V1. En la obra de
+   * al lado, V1 es otra cosa. `price_index` es único por
+   * `(estudio, clave_item, zona, mes)` y se alimenta de las adjudicaciones con
+   * estas mismas claves: sin el filtro, adjudicar una le pone precio a la otra
+   * y la planilla lo muestra con `fuente: 'indice'` y una fecha, como si fuera
+   * evidencia.
+   */
+  it.each([
+    ['aberturas.V1', 'u'],
+    ['aberturas.P2', 'u'],
+    ['terminaciones.solado.porcelanato_beige', 'm2'],
+    ['terminaciones.revestimiento.ceramico_blanco', 'm2'],
+    ['sanitaria.artefacto.inodoro_1', 'u'],
+    ['sanitaria.canieria.cloacal.110', 'ml'],
+    ['sanitaria.accesorio.codo90.110', 'u'],
+  ] as const)('no costea %s con el índice', (claveItem, unidad) => {
+    expect(resolverPrecio({ claveItem, unidad }, new Map(), CORTE)).toBeNull();
+  });
+
+  it.each([
+    ['seco.placas', 'm2'],
+    ['seco.tornillos', 'u'],
+    ['pintura.latex_paredes', 'l'],
+    ['gruesa.cemento', 'kg'],
+    ['terminaciones.contrapiso', 'm2'],
+    ['demolicion.muros', 'm2'],
+    ['electrica.boca.toma', 'u'],
+  ] as const)('sí costea %s: la clave es literal de la plantilla', (claveItem, unidad) => {
+    expect(resolverPrecio({ claveItem, unidad }, new Map(), CORTE)?.fuente).toBe('indice');
+  });
+
+  it('la lista del estudio no pasa por el filtro: esa fila la cargó una persona', () => {
+    const propia = new Map([
+      ['aberturas.V1', { precio: 320000, moneda: 'ARS', unidad: 'u' as const, fecha: '2026-08-10' }],
+    ]);
+    const precio = resolverPrecio({ claveItem: 'aberturas.V1', unidad: 'u' }, propia, CORTE);
+    expect(precio?.fuente).toBe('lista');
+    expect(precio?.unitario).toBe(320000);
+  });
+
+  it('`admiteIndice` es la lista blanca, y está enumerada', () => {
+    expect(admiteIndice('seco.masilla')).toBe(true);
+    expect(admiteIndice('aberturas.V1')).toBe(false);
+    expect(CLAVES_CON_INDICE.size).toBe(22);
   });
 });
 

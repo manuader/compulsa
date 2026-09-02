@@ -1208,7 +1208,8 @@ async function corteDelIndice(
  * Qué precio le toca a cada uno lo decide `resolverPrecio` (puro, §5.6): precio
  * manual del ítem → lista del estudio → índice de la zona → `null`. Acá solo
  * está la mitad sucia: leer las dos tablas una vez por obra y escribir lo que
- * cambió.
+ * cambió. La **unidad del ítem** viaja con él: una fila de la lista en otra
+ * unidad no es el precio de este ítem, y la cascada la saltea.
  *
  * **También le pone precio a los ítems editados a mano.** La regla 2 del archivo
  * —lo humano es intocable— es sobre las cantidades, que son la afirmación del
@@ -1239,7 +1240,7 @@ async function sincronizarPrecios(
       item.precioJson !== null && item.precioJson.fuente === 'manual' ? item.precioJson : null;
 
     const precio = resolverPrecio(
-      { claveItem: item.claveItem, precioManual: manual },
+      { claveItem: item.claveItem, unidad: item.unidad, precioManual: manual },
       lista,
       indice.get(item.claveItem) ?? null,
     );
