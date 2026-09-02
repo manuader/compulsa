@@ -18,13 +18,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  fuentesDeAfectadas,
+  type FuenteVista,
+} from '@/app/obras/[obraId]/bandeja/plano';
+import {
   armarMirada,
   destacadosDeConsulta,
-  fuentesDeAfectadas,
   laminasDeConsulta,
   miradaVigente,
   type ConsultaVista,
-  type FuenteVista,
   type GrupoConsultas,
 } from '@/app/obras/[obraId]/bandeja/ui';
 import type { BBox } from '@/types/domain';

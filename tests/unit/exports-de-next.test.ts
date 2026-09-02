@@ -32,6 +32,20 @@
  * `estudioId` del actor solo para leer el checklist y filtraba las tres queries
  * por `obra_id` pelado: con el id de una obra ajena aprobaba su rubro, que es la
  * llave de `lanzarCompulsa`. `tsc` no lo ve y ninguna suite lo miraba.
+ *
+ * ## El cuarto, de la misma familia: `'use client'` mirado desde el server
+ *
+ * La frontera corre para los dos lados. Lo que un archivo `'use client'`
+ * exporta **hacia el server** no es la función: es una referencia serializable
+ * que solo sirve para renderizar como componente o pasar como prop. Un Server
+ * Component que **llama** a una función exportada de ahí compila con `tsc`,
+ * pasa la suite y tira 500 en runtime: «Attempted to call X() from the server
+ * but X is on the client».
+ *
+ * Pasó con `fuentesDeAfectadas` en la bandeja, y la pantalla entera se caía al
+ * abrir una obra con una consulta de dato de obra. La pieza pura se mudó a
+ * `bandeja/plano.ts`, que no lleva la directiva. `import type` sigue estando
+ * bien: los tipos se borran y nunca llegan a ser un valor.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -243,6 +257,112 @@ describe('imports que el bundler no sigue', () => {
       .map((archivo) => ({ archivo, fuente: readFileSync(archivo, 'utf8') }))
       .filter(({ fuente }) => IMPORT_IGNORADO.test(fuente))
       .map(({ archivo }) => path.relative(process.cwd(), archivo));
+
+    expect(ofensores).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Un Server Component no llama a una función de un `'use client'`
+// ---------------------------------------------------------------------------
+
+/** La directiva vale solo si es lo primero del archivo, igual que `use server`. */
+function tieneDirectivaUseClient(fuente: string): boolean {
+  const primera = fuente
+    .replace(/^\uFEFF/, '')
+    .split('\n')
+    .map((linea) => linea.trim())
+    .find(
+      (linea) =>
+        linea !== '' && !linea.startsWith('//') && !linea.startsWith('/*') && !linea.startsWith('*'),
+    );
+  return primera === `'use client';` || primera === '"use client";';
+}
+
+/**
+ * Los nombres de **valor** que un archivo importa de cada specifier relativo.
+ *
+ * `import type { X } from './y'` y una lista de solo `{ type A, type B }` no
+ * cuentan: se borran al compilar y nunca llegan a ser un valor en runtime.
+ * De `{ X as Y }` se queda con `Y`, que es como se lo usa acá.
+ */
+function importsDeValorRelativos(fuente: string): Map<string, string[]> {
+  const porSpecifier = new Map<string, string[]>();
+  // La cláusula no puede tener comillas ni `;`: sin eso el `*?` salta por
+  // encima de un `from '…'` anterior y le atribuye a este módulo los nombres
+  // que en realidad venían de drizzle.
+  const re = /import\s+(type\s+)?([^;']*?)\s+from\s+'(\.[^']*)'/g;
+  let encontrado: RegExpExecArray | null;
+  while ((encontrado = re.exec(fuente)) !== null) {
+    const [, esType, clausula, specifier] = encontrado;
+    if (esType !== undefined || specifier === undefined) continue;
+    const nombres = (clausula ?? '')
+      .replace(/[{}]/g, '')
+      .split(',')
+      .map((n) => n.trim())
+      .filter((n) => n !== '' && !n.startsWith('type '))
+      .map((n) => (n.includes(' as ') ? (n.split(' as ')[1] as string).trim() : n));
+    if (nombres.length === 0) continue;
+    porSpecifier.set(specifier, [...(porSpecifier.get(specifier) ?? []), ...nombres]);
+  }
+  return porSpecifier;
+}
+
+/** `'./plano'` desde `src/app/x/page.tsx` → el archivo real, con su extensión. */
+function resolverRelativo(desde: string, specifier: string): string | null {
+  const base = path.resolve(path.dirname(desde), specifier);
+  const candidatos = [
+    `${base}.ts`,
+    `${base}.tsx`,
+    path.join(base, 'index.ts'),
+    path.join(base, 'index.tsx'),
+  ];
+  for (const candidato of candidatos) {
+    try {
+      if (statSync(candidato).isFile()) return candidato;
+    } catch {
+      // no existe: probamos el siguiente
+    }
+  }
+  return null;
+}
+
+/**
+ * ¿El archivo **llama** a ese nombre, o solo lo renderiza?
+ *
+ * Es la distinción que hace útil al chequeo. Importar un componente de un
+ * `'use client'` y ponerlo en el JSX (`<BandejaConsultas … />`) es exactamente
+ * para lo que existe la directiva. Lo que rompe es **invocarlo**
+ * (`fuentesDeAfectadas(...)`): ahí del otro lado no hay función, hay una
+ * referencia serializable, y Next tira «Attempted to call X() from the server».
+ */
+function loLlama(fuente: string, nombre: string): boolean {
+  return new RegExp(`(?<![\\w.$])${nombre}\\s*\\(`).test(fuente);
+}
+
+describe('la frontera client/server, mirada desde el server', () => {
+  it("ningún módulo de server llama a una función de un 'use client'", () => {
+    const fuentes = new Map(
+      archivosDeFuente(SRC).map((archivo) => [archivo, readFileSync(archivo, 'utf8')]),
+    );
+
+    const ofensores: string[] = [];
+    for (const [archivo, fuente] of fuentes) {
+      if (tieneDirectivaUseClient(fuente)) continue; // cliente → cliente está bien
+      for (const [specifier, nombres] of importsDeValorRelativos(fuente)) {
+        const destino = resolverRelativo(archivo, specifier);
+        if (destino === null) continue;
+        const fuenteDestino = fuentes.get(destino) ?? readFileSync(destino, 'utf8');
+        if (!tieneDirectivaUseClient(fuenteDestino)) continue;
+        for (const nombre of nombres) {
+          if (!loLlama(fuente, nombre)) continue; // lo renderiza, no lo llama
+          ofensores.push(
+            `${path.relative(process.cwd(), archivo)} llama a ${nombre}(), que exporta ` +
+              `${path.relative(process.cwd(), destino)} y es 'use client'`,
+          );
+        }
+      }
+    }
 
     expect(ofensores).toEqual([]);
   });
