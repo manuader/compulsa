@@ -12,7 +12,25 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { enCurso, textoDeFase } from '@/app/obras/[obraId]/expediente/progreso-ui';
+import {
+  enCurso,
+  etiquetaDeEstado,
+  FASE_VIEJA_MS,
+  faseColgada,
+  selloDeFase,
+  textoDeFase,
+} from '@/app/obras/[obraId]/expediente/progreso-ui';
+import type { FaseAnalisis } from '@/types/domain';
+
+/**
+ * Una fase con el sello de tiempo que el pipeline deja (o dejará: el campo lo
+ * agrega el arreglo del pipeline). `selloDeFase` lo lee con un ensanchamiento
+ * explícito, así que acá se arma igual: el JSON de la columna es más ancho que
+ * el tipo.
+ */
+function conSello(fase: FaseAnalisis, at: string): FaseAnalisis {
+  return { ...fase, at } as FaseAnalisis;
+}
 
 describe('textoDeFase', () => {
   it('el inventario dice cuántas láminas lleva', () => {
@@ -79,5 +97,64 @@ describe('enCurso', () => {
 
   it('una obra que nunca se analizó tampoco lo enciende', () => {
     expect(enCurso(null)).toBe(false);
+  });
+});
+
+
+describe('etiquetaDeEstado: el badge no puede decir «Analizando» cuando falló', () => {
+  it('un análisis que terminó con problemas lo dice, y en rojo', () => {
+    // Decía «Analizando» en rojo al lado de «El análisis terminó con
+    // problemas», con el polling ya apagado: el badge afirmaba que algo estaba
+    // pasando cuando no pasaba nada.
+    expect(etiquetaDeEstado({ fase: 'error', detalle: 'se cayó el cruce' }, false)).toEqual({
+      texto: 'Con problemas',
+      tono: 'error',
+    });
+  });
+
+  it('el que terminó bien y el que está corriendo se siguen leyendo igual', () => {
+    expect(etiquetaDeEstado({ fase: 'listo' }, false)).toEqual({ texto: 'Analizado', tono: 'ok' });
+    expect(etiquetaDeEstado({ fase: 'extraccion', total: 25, completadas: 3 }, false)).toEqual({
+      texto: 'Analizando',
+      tono: 'info',
+    });
+  });
+
+  it('una fase colgada deja de afirmar que algo está pasando', () => {
+    expect(etiquetaDeEstado({ fase: 'extraccion', total: 25, completadas: 3 }, true)).toEqual({
+      texto: 'Sin novedades',
+      tono: 'warn',
+    });
+  });
+});
+
+describe('faseColgada: un pipeline que se murió sin escribir su error', () => {
+  const AHORA = Date.parse('2026-09-02T18:00:00.000Z');
+  const CORRIENDO: FaseAnalisis = { fase: 'extraccion', total: 25, completadas: 3 };
+
+  it('sin sello no se puede saber, y no se inventa', () => {
+    expect(selloDeFase(CORRIENDO)).toBeNull();
+    expect(faseColgada(CORRIENDO, AHORA)).toBe(false);
+  });
+
+  it('una fase que se movió recién no está colgada', () => {
+    const fase = conSello(CORRIENDO, new Date(AHORA - FASE_VIEJA_MS + 60_000).toISOString());
+    expect(faseColgada(fase, AHORA)).toBe(false);
+  });
+
+  it('una que hace más de media hora que no se mueve, sí', () => {
+    const fase = conSello(CORRIENDO, new Date(AHORA - FASE_VIEJA_MS - 60_000).toISOString());
+    expect(faseColgada(fase, AHORA)).toBe(true);
+  });
+
+  it('una terminada nunca está colgada, por vieja que sea', () => {
+    const vieja = new Date(AHORA - 30 * FASE_VIEJA_MS).toISOString();
+    expect(faseColgada(conSello({ fase: 'listo' }, vieja), AHORA)).toBe(false);
+    expect(faseColgada(conSello({ fase: 'error' }, vieja), AHORA)).toBe(false);
+    expect(faseColgada(null, AHORA)).toBe(false);
+  });
+
+  it('un sello ilegible no cuelga la fase: se comporta como si no estuviera', () => {
+    expect(faseColgada(conSello(CORRIENDO, 'cuando sea'), AHORA)).toBe(false);
   });
 });
