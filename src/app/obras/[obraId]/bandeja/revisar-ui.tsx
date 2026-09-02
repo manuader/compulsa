@@ -313,8 +313,12 @@ function FilaDeduccion({ obraId, deduccion, laminaActiva, onVer }: FilaProps) {
             vez no significaría nada. Lo único que ofrece es deshacerla. */}
         {aplicada ? null : confirmando === 'validar' ? (
           <span className="flex flex-wrap items-center gap-1">
+            {/* Qué pasa con la obra, no qué escribe el sistema: su gemelo de
+                rechazo («se saca del cómputo y el dato vuelve a faltar») ya lo
+                decía bien. «Se escribe en el elemento» es nuestra plomería. */}
             <span className="text-xs text-neutral-600">
-              Se escribe {deduccion.etiqueta} = {deduccion.valor} en el elemento. ¿Va?
+              El cómputo pasa a usar {deduccion.etiqueta} = {deduccion.valor} y la consulta que lo
+              pedía se cierra. ¿Va?
             </span>
             <Button
               size="sm"
