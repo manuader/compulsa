@@ -33,7 +33,12 @@ import {
 } from '@/db/schema';
 import {
   confirmarLote,
+  confirmarSupuesto,
+  DATO_OBRA_NO_ES_EXISTENTE,
+  DATO_OBRA_NO_ES_SUPUESTO,
   DATO_OBRA_SIN_VALOR,
+  descartarHallazgo,
+  marcarExistente,
   MEDIDA_NO_POSITIVA,
   responderHallazgo,
   type ActorBandeja,
@@ -325,5 +330,57 @@ describe('la consulta de dato de obra', () => {
     const tabiques = await db.select().from(entidades).where(eq(entidades.obraId, obraId));
     expect(tabiques.every((t) => t.atributosJson.alturaM === undefined)).toBe(true);
     expect((await itemDe('seco.placas'))?.cantNeta).toBe(62.4);
+  });
+});
+
+/**
+ * Las dos salidas que **no** existen para un dato de obra, cerradas en el core.
+ *
+ * Las dos cerraban la consulta con `resuelto_por` seteado **sin escribir nada**,
+ * y eso es para siempre: las cuatro entidades siguen sin computar y la consulta
+ * no vuelve ni por recompute —reabrir exige que la haya cerrado el propio
+ * recompute—. Que la tarjeta no muestre los botones no alcanza: cada `*Action`
+ * es un endpoint HTTP con el payload que se le antoje (`app/CLAUDE.md` §8).
+ */
+describe('un dato de obra no se cierra por la puerta de al lado', () => {
+  it('«Ya está construido» lo rechaza y la consulta sigue abierta', async () => {
+    const fila = await consulta();
+
+    expect(await marcarExistente({ obraId, hallazgoId: fila!.id }, actor)).toEqual({
+      ok: false,
+      error: DATO_OBRA_NO_ES_EXISTENTE,
+    });
+
+    expect(await datos()).toEqual([]);
+    const sigue = await consulta();
+    expect(sigue?.estado).toBe('abierto');
+    expect(sigue?.resueltoPor).toBeNull();
+    expect(await itemDe('seco.placas')).toBeUndefined();
+  });
+
+  it('«Confirmar supuesto» también, aunque hoy el tipo ya lo frenaría', async () => {
+    const fila = await consulta();
+    // Se lo hace pasar por supuesto a propósito: el chequeo de `tipo` no puede
+    // ser lo único que lo salve, porque es una casualidad del constructor.
+    await db.update(hallazgos).set({ tipo: 'supuesto' }).where(eq(hallazgos.id, fila!.id));
+
+    expect(await confirmarSupuesto({ obraId, hallazgoId: fila!.id }, actor)).toEqual({
+      ok: false,
+      error: DATO_OBRA_NO_ES_SUPUESTO,
+    });
+
+    expect(await datos()).toEqual([]);
+    expect((await consulta())?.estado).toBe('abierto');
+  });
+
+  it('descartarla sí procede: es la salida honesta cuando no aplica', async () => {
+    const fila = await consulta();
+
+    expect(await descartarHallazgo({ obraId, hallazgoId: fila!.id }, actor)).toEqual({ ok: true });
+
+    expect(await datos()).toEqual([]);
+    const cerrada = await consulta();
+    expect(cerrada?.estado).toBe('descartado');
+    expect(cerrada?.resueltoPor).toBe(actor.usuarioId);
   });
 });

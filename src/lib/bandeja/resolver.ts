@@ -646,6 +646,32 @@ export const DATO_OBRA_SIN_VALOR =
   'Escribí el dato para responder la consulta, o descartala si no aplica a esta obra.';
 
 /**
+ * Las dos salidas que **no** existen para un dato de obra, y por qué el core las
+ * corta en vez de confiar en que la pantalla no las ofrezca.
+ *
+ * «Ya está construido» y «Confirmar supuesto» hablan de un **elemento**: el
+ * primero le pone `estado_reforma = 'existente'` a la entidad del `target_ref`,
+ * el segundo da por bueno el supuesto con el que se computó ese ítem. Un
+ * `targetDato` no apunta a ninguna entidad, así que las dos hacían lo mismo:
+ * cerrar la consulta con `resuelto_por` seteado **sin escribir nada**. Y eso es
+ * un cierre para siempre — las N entidades que esperaban el hecho siguen sin
+ * computar, y la consulta no puede volver ni por recompute, porque reabrir exige
+ * que la haya cerrado el propio recompute (`cerradoPorElRecompute`). El mismo
+ * agujero que el "0" y que la respuesta a medias, por una tercera puerta.
+ *
+ * Que la tarjeta no muestre esos botones **no alcanza**: cada `*Action` es un
+ * endpoint HTTP invocable con el payload que se le antoje (`src/app/CLAUDE.md`
+ * §8 — el `disabled` es cortesía, la regla vive en el core).
+ */
+export const DATO_OBRA_NO_ES_EXISTENTE =
+  'Esto es un dato de toda la obra, no un elemento: no se marca como construido. ' +
+  'Respondelo con su valor, o descartalo si no aplica.';
+
+export const DATO_OBRA_NO_ES_SUPUESTO =
+  'Esto es un dato de toda la obra, no un supuesto del cómputo. ' +
+  'Respondelo con su valor, o descartalo si no aplica.';
+
+/**
  * Responde una consulta de **dato de obra** (§5.2): un hecho que vale para toda
  * la obra —la altura de local de PB, la altura de revestimiento del baño—.
  *
@@ -799,6 +825,9 @@ export async function marcarExistente(
   const hallazgo = await cargarHallazgo(db, obraId, hallazgoId);
   if (!hallazgo) return { ok: false, error: NO_ENCONTRADO };
   if (hallazgo.estado !== 'abierto') return { ok: false, error: YA_RESUELTA };
+  // Un hecho de la obra no está "ya construido": no hay entidad a la que
+  // marcarle nada, y cerrarlo por acá lo enterraría sin escribir el dato.
+  if (hallazgo.targetDato) return { ok: false, error: DATO_OBRA_NO_ES_EXISTENTE };
 
   const target = hallazgo.targetRef;
   let recalcular = false;
@@ -850,6 +879,10 @@ export async function confirmarSupuesto(
   if (laminaBloqueada(hallazgo.clave) !== null) {
     return { ok: false, error: ESCALA_NO_ES_SUPUESTO };
   }
+  // Hoy `hallazgoDatoObraFaltante` emite `tipo: 'faltante'`, así que el chequeo
+  // de abajo ya lo frenaría — pero por casualidad, no por diseño: el día que un
+  // dato de obra se emita como supuesto, esto lo cerraría sin escribirlo.
+  if (hallazgo.targetDato) return { ok: false, error: DATO_OBRA_NO_ES_SUPUESTO };
   if (hallazgo.tipo !== 'supuesto') {
     return { ok: false, error: 'Esa consulta no es un supuesto: respondela o descartala.' };
   }
