@@ -10,8 +10,15 @@
  *
  * Dos familias, y las dos cuentan:
  *
- *  - **Los del rubro** (`rubro === 'seco'`): falta la altura de un tabique, el
- *    sistema constructivo no es el de la plantilla.
+ *  - **Los del rubro** (`rubro === 'seco'`): falta el largo de un tabique, el
+ *    sistema constructivo no es el de la plantilla. Desde F5 la altura que no
+ *    está en ninguna lámina se pregunta **una vez para todos los que la
+ *    esperan** (`dato_obra.altura_local.PB`), y esa consulta agrupada bloquea
+ *    cuando dejó ítems cortos: si el rubro computó las placas de tres tabiques
+ *    de los cuatro que hay, el número que sale a compulsa es un 25% menor que
+ *    el que la obra necesita. Si el rubro no computó nada, esa consulta no
+ *    bloquea —no hay ítem corto que frenar— y lo que impide aprobar es que el
+ *    rubro no tenga ítems (`aprobarRubroCore`).
  *  - **Los de obra** (`rubro === null`): no pertenecen a ningún rubro porque
  *    los afectan a **todos**. El caso vivo es el bloqueo por escala (RF-201):
  *    una lámina sin escala verificable no se midió, así que el cómputo de

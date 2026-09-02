@@ -77,7 +77,7 @@ import {
   type ActorPlataforma,
 } from '@/lib/plataforma/usuarios';
 import type { StorageAdapter } from '@/lib/storage/index';
-import { RUBROS } from '@/types/domain';
+import { RUBROS, type RubroId } from '@/types/domain';
 
 import { createTestDb } from '../helpers/test-db';
 
@@ -981,7 +981,26 @@ describe('aprobarRubroCore: el aislamiento va adentro del núcleo (RNF-4)', () =
 
   const actor = () => ({ usuarioId: titular.usuarioId, email: titular.email, estudioId });
 
+  /** Un ítem activo del rubro: sin eso no hay cómputo que aprobar. */
+  async function sembrarItem(obraId: string, rubro: RubroId = 'seco'): Promise<void> {
+    await db.insert(computoItems).values({
+      obraId,
+      rubro,
+      claveItem: `${rubro}.placas`,
+      unidad: 'm2',
+      descripcion: 'Placa de roca de yeso (1,20 × 2,40 m)',
+      cantNeta: 10,
+      cantCompra: 12,
+      desperdicioPct: 12,
+      presentacion: 'placa 1,20 × 2,40',
+      fuentesJson: [],
+      confianza: 0.9,
+      origen: 'explicito',
+    });
+  }
+
   it('aprueba el rubro de una obra del estudio', async () => {
+    await sembrarItem(obraPropiaId);
     expect(await aprobarRubroCore(db, actor(), obraPropiaId, 'seco')).toEqual({ ok: true });
 
     const [fila] = await db
@@ -1005,6 +1024,43 @@ describe('aprobarRubroCore: el aislamiento va adentro del núcleo (RNF-4)', () =
     ).toEqual([]);
     // Y tampoco deja rastro: el guard corta antes de escribir.
     expect(await acciones()).not.toContain('rubro_aprobado');
+  });
+
+  /**
+   * Un rubro sin ítems no es un rubro aprobado: es un rubro vacío.
+   *
+   * Y aprobado es la llave de `lanzarCompulsa`, así que la compulsa salía sin
+   * una sola línea. Pasa de verdad cuando el expediente **sí** tiene los
+   * elementos del rubro y falta un dato para computarlos: la pantalla dice
+   * «todavía no hay ítems computados… aparecen solos cuando el análisis detecta
+   * las entidades», que en ese caso no es cierto, y el botón aprobaba igual.
+   */
+  it('no aprueba un rubro sin un solo ítem computado', async () => {
+    const resultado = await aprobarRubroCore(db, actor(), obraPropiaId, 'seco');
+
+    expect(resultado.ok).toBe(false);
+    expect(resultado.ok === false && resultado.error).toContain('no hay ningún ítem computado');
+    expect(
+      await db.select().from(computoRubros).where(eq(computoRubros.obraId, obraPropiaId)),
+    ).toEqual([]);
+    expect(await acciones()).not.toContain('rubro_aprobado');
+  });
+
+  it('los ítems de otro rubro no habilitan a este', async () => {
+    await sembrarItem(obraPropiaId, 'aberturas');
+    const resultado = await aprobarRubroCore(db, actor(), obraPropiaId, 'seco');
+
+    expect(resultado.ok).toBe(false);
+  });
+
+  it('un ítem anulado tampoco: la aprobación es sobre lo que quedó en la planilla', async () => {
+    await sembrarItem(obraPropiaId);
+    await db
+      .update(computoItems)
+      .set({ estado: 'anulado' })
+      .where(eq(computoItems.obraId, obraPropiaId));
+
+    expect((await aprobarRubroCore(db, actor(), obraPropiaId, 'seco')).ok).toBe(false);
   });
 
   /**

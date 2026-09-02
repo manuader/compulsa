@@ -580,6 +580,22 @@ export async function aprobarRubroCore(
     };
   }
 
+  // Un rubro sin ítems no es un rubro aprobado: es un rubro vacío, y aprobado
+  // es la llave de `lanzarCompulsa` — la compulsa saldría sin una sola línea.
+  // El caso que importa no es la obra que no tiene el rubro sino la que **sí**
+  // lo tiene y no se pudo computar: faltó un dato, la planilla quedó en cero y
+  // el botón aprobaba igual.
+  const activos = await contarItemsActivos(db, obraId, rubro);
+  if (activos === 0) {
+    return {
+      ok: false,
+      error:
+        `No puedo aprobar ${PLANTILLAS[rubro].nombre.toLowerCase()}: no hay ningún ítem computado en el rubro. ` +
+        'Si el expediente tiene esos elementos, mirá la bandeja: falta un dato para poder computarlos. ' +
+        'Si la obra no incluye el rubro, no hace falta aprobarlo para lanzar la compulsa de los demás.',
+    };
+  }
+
   const [previo] = await db
     .select({ estado: computoRubros.estado })
     .from(computoRubros)
@@ -619,6 +635,21 @@ export async function aprobarRubroCore(
   });
 
   return { ok: true };
+}
+
+/** Cuántos ítems del rubro quedaron en la planilla (los anulados no cuentan). */
+async function contarItemsActivos(db: Db, obraId: string, rubro: RubroId): Promise<number> {
+  const filas = await db
+    .select({ id: computoItems.id })
+    .from(computoItems)
+    .where(
+      and(
+        eq(computoItems.obraId, obraId),
+        eq(computoItems.rubro, rubro),
+        eq(computoItems.estado, 'activo'),
+      ),
+    );
+  return filas.length;
 }
 
 /** Cuántos ítems activos del rubro salieron `deducido` y cuántos `inferido`. */

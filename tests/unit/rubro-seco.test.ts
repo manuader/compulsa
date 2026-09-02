@@ -338,3 +338,131 @@ describe('plantilla seco: sin dato de obra, UNA sola pregunta', () => {
     expect(porClave(items)['seco.placas']!.cantNeta).toBe(72); // 4 × 3 × 3 × 2
   });
 });
+
+/**
+ * El defecto que la ola dejó abierta, y que es el que cuesta plata.
+ *
+ * Tres tabiques con altura y uno sin ella: el rubro emite `seco.placas` con
+ * los tres, la consulta agrupada sale por el cuarto, y hasta acá salía **sin
+ * bloquear**. O sea: el arquitecto aprobaba «seco», lanzaba la compulsa y
+ * compraba un 25% menos de placa que la que la obra necesita, con la planilla
+ * diciendo `explícito` porque los tres que sí computaron leyeron su altura de
+ * la lámina.
+ *
+ * Una consulta agrupada bloquea cuando dejó ítems cortos. Deduplicar las
+ * **preguntas** era el objetivo de la ola; sacar la **compuerta** no.
+ */
+describe('plantilla seco: lo que falta deja el ítem corto y frena la aprobación', () => {
+  /** Tres tabiques de 3 m acotados y un cuarto sin altura, todos del mismo local. */
+  function tresConAlturaYUnoSin(): EntidadPersistida[] {
+    return ['T1', 'T2', 'T3', 'T4'].map((nombre, i) =>
+      tabique({
+        id: `t${i + 1}`,
+        nombre,
+        atributos:
+          nombre === 'T4'
+            ? { largoM: 3, caras: 2, tipo: 'durlock' }
+            : { largoM: 3, alturaM: 2.6, caras: 2, tipo: 'durlock' },
+      }),
+    );
+  }
+
+  const { items, hallazgos } = plantillaSeco.computar(tresConAlturaYUnoSin(), 'nueva');
+
+  it('el ítem sale corto: 3 de los 4 tabiques', () => {
+    // 3 × 3 m × 2,60 m × 2 caras = 46,80 m², contra los 62,40 de los cuatro.
+    expect(porClave(items)['seco.placas']!.cantNeta).toBe(46.8);
+  });
+
+  it('y la consulta por el que falta bloquea la aprobación del rubro', () => {
+    const consulta = hallazgos.find((h) => h.clave.startsWith('dato_obra.'))!;
+    expect(consulta.bloqueante).toBe(true);
+    expect(consulta.targetDato?.entidades).toEqual(['t4']);
+  });
+
+  it('sin ningún tabique computado no hay ítem corto que frenar', () => {
+    // Los cuatro sin altura: el rubro no emite nada. Lo que impide aprobarlo no
+    // es esta consulta sino no tener ítems (`aprobarRubroCore`).
+    const { items: vacio, hallazgos: solos } = plantillaSeco.computar(cuatroSinAltura(), 'nueva');
+    expect(vacio).toEqual([]);
+    expect(solos[0]!.bloqueante).toBe(false);
+  });
+});
+
+/**
+ * La forma que tiene una obra real: el modelo extrae los tabiques **sin
+ * `nivel`** (la planta no lo dice tabique por tabique) y el cruce escribe la
+ * altura que el corte acota como `altura_local.PB`. Sin respaldo, la plantilla
+ * preguntaba por `altura_local.general` una altura que el sistema ya tenía
+ * anotada dos renglones más abajo.
+ */
+describe('plantilla seco: una entidad sin nivel se apoya en la única altura que hay', () => {
+  function alturaDe(clave: string, valor: number): [string, DatoObraResuelto] {
+    return [
+      clave,
+      { clave, valor, unidad: 'm', origen: 'deducido', fuentes: [FUENTE_CORTE], confianza: 0.9 },
+    ];
+  }
+
+  it('tabiques sin nivel + `altura_local.PB` ⇒ computan, y no preguntan nada', () => {
+    const { items, hallazgos } = plantillaSeco.computar(
+      cuatroSinAltura(),
+      'nueva',
+      undefined,
+      new Map([alturaDe('altura_local.PB', 2.6)]),
+    );
+
+    expect(hallazgos).toEqual([]);
+    expect(porClave(items)['seco.placas']!.cantNeta).toBe(62.4);
+    // P1: el ítem cita el corte del que salió la altura.
+    expect(porClave(items)['seco.placas']!.fuentes.at(-1)).toEqual(FUENTE_CORTE);
+  });
+
+  it('la general le gana a la única específica: es la que vale para toda la obra', () => {
+    const { items } = plantillaSeco.computar(
+      cuatroSinAltura(),
+      'nueva',
+      undefined,
+      new Map([alturaDe('altura_local.PB', 3), alturaDe('altura_local.general', 2.6)]),
+    );
+    expect(porClave(items)['seco.placas']!.cantNeta).toBe(62.4);
+  });
+
+  it('dos niveles declarados y un tabique que no dice en cuál está: eso sí se pregunta', () => {
+    const { items, hallazgos } = plantillaSeco.computar(
+      cuatroSinAltura(),
+      'nueva',
+      undefined,
+      new Map([alturaDe('altura_local.PB', 2.6), alturaDe('altura_local.P1', 3)]),
+    );
+
+    expect(items).toEqual([]);
+    expect(hallazgos.map((h) => h.clave)).toEqual(['dato_obra.altura_local.general']);
+    // Y lo dice como es: hay dos alturas y el tabique no dice a cuál pertenece.
+    expect(hallazgos[0]!.descripcion).toContain('PB y P1');
+    expect(hallazgos[0]!.descripcion).toContain('nivel');
+  });
+});
+
+/**
+ * La clave del dato es nuestra convención, no el castellano de nadie: la
+ * consulta decía «…declarada para «general»», que es un identificador interno
+ * puesto adelante de una persona.
+ */
+describe('plantilla seco: la consulta no muestra la clave interna', () => {
+  it('con `general`, el sufijo ni se nombra', () => {
+    const { hallazgos } = plantillaSeco.computar(cuatroSinAltura(), 'nueva');
+    expect(hallazgos[0]!.descripcion).not.toContain('general');
+    expect(hallazgos[0]!.descripcion).toContain('altura de local');
+  });
+
+  it('con un nivel, lo nombra en castellano', () => {
+    const enPB = cuatroSinAltura().map((entidad) => ({
+      ...entidad,
+      atributos: { ...entidad.atributos, nivel: 'PB' },
+    }));
+    const { hallazgos } = plantillaSeco.computar(enPB, 'nueva');
+    expect(hallazgos[0]!.descripcion).toContain('altura de local en PB');
+    expect(hallazgos[0]!.descripcion).not.toContain('«PB»');
+  });
+});

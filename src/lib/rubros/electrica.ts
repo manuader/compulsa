@@ -40,7 +40,7 @@ const TIPOS_BOCA = ['toma', 'luz', 'caja', 'tablero', 'datos'] as const;
 type TipoBoca = (typeof TIPOS_BOCA)[number];
 
 const ETIQUETA_BOCA: Record<TipoBoca, string> = {
-  toma: 'Boca de tomacorriente',
+  toma: 'Boca de toma',
   luz: 'Boca de luz',
   caja: 'Caja de paso',
   tablero: 'Tablero eléctrico',

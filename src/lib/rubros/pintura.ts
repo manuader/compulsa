@@ -20,6 +20,7 @@ import { armarItem } from '@/lib/computo/presentacion';
 import { redondear2 } from '@/lib/computo/unidades';
 import {
   alcanceDeReforma,
+  datoEnFrase,
   hallazgoDatoFaltante,
   hallazgoSupuesto,
   leerMedida,
@@ -27,11 +28,10 @@ import {
 } from '@/lib/hallazgos/taxonomia';
 import type { PlantillaRubro, ResultadoComputo } from '@/lib/rubros/index';
 import {
+  ALTURA_LOCAL,
   cadenaDeRespaldo,
-  clavesAlturaLocal,
   conFuentesDeDato,
   conOrigenes,
-  sufijoDeClave,
   type DatosObra,
 } from '@/lib/rubros/respaldo';
 import type { HallazgoDetectado, ItemComputo, TipoObra } from '@/types/domain';
@@ -72,7 +72,7 @@ export const plantillaPintura = {
       if (alcanceDeReforma(entidad.estadoReforma) !== 'completo') continue; // existente/demoler: no se pinta
 
       // --- Paredes ---
-      const altura = cadena.medida(entidad, 'alturaM', clavesAlturaLocal(entidad));
+      const altura = cadena.medida(entidad, 'alturaM', ALTURA_LOCAL);
       const perimetro = leerMedida(entidad, 'perimetroM');
       // Sin altura no hay pared que pintar, y la consulta por la altura del
       // local es una sola para todos los ambientes: sale al final del recorrido.
@@ -132,16 +132,6 @@ export const plantillaPintura = {
       }
     }
 
-    hallazgos.push(
-      ...cadena.hallazgosFaltantes({
-        rubro: RUBRO,
-        unidad: 'm',
-        descripcion: (clave) =>
-          `No encontré la altura de estos ambientes ni una altura de local declarada para «${sufijoDeClave(clave)}». ` +
-          'Sin altura no computo los m² de pared: cargá la altura del local una sola vez y la aplico a todos.',
-      }),
-    );
-
     const items: ItemComputo[] = [];
 
     if (deParedes.length > 0 && m2Paredes > 0) {
@@ -178,6 +168,20 @@ export const plantillaPintura = {
         }),
       );
     }
+
+    // Al final, porque bloquea según lo emitido: un ambiente sin altura queda
+    // afuera del látex de paredes, y el cielorraso —que no usa la altura— sale
+    // igual. La planilla queda corta con cara de completa.
+    hallazgos.push(
+      ...cadena.hallazgosFaltantes({
+        rubro: RUBRO,
+        unidad: 'm',
+        computados: items,
+        descripcion: (clave) =>
+          `No encontré la altura de estos ambientes y en el expediente tampoco hay ${datoEnFrase(clave)}. ` +
+          'Sin altura no computo los m² de pared: cargá la altura del local una sola vez y la aplico a todos.',
+      }),
+    );
 
     return { items, hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
   },

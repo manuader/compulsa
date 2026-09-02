@@ -65,6 +65,9 @@ vi.mock('@/lib/rubros/overrides', async (importActual) => {
                   unidad: 'm',
                   descripcion: 'No encontré la altura de local de planta baja.',
                   entidades: sinAltura,
+                  // Esta plantilla de mentira no emite ítems: no hay ninguno
+                  // corto que frenar (el gate de un rubro vacío es otro).
+                  bloqueante: false,
                 }),
               ],
             };

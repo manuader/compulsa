@@ -190,7 +190,7 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
     },
     {
       itemId: 'sanitaria.correspondencia',
-      descripcion: 'Cada artefacto tiene un tramo de desagüe cloacal en su mismo ambiente.',
+      descripcion: 'Cada artefacto tiene un tramo de desagüe cloacal en el mismo ambiente.',
       // Nace en `false`: el desagüe puede estar dibujado en otra lámina, y
       // frenar el rubro entero por un aviso de coherencia sería un cepo.
       bloqueante: false,

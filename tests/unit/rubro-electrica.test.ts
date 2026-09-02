@@ -53,7 +53,7 @@ describe('plantilla eléctrica: bocas por tipo', () => {
     expect(luz.cantCompra).toBe(3);
     expect(luz.presentacion).toBe('global');
     expect(luz.descripcion).toBe('Boca de luz');
-    expect(item['electrica.boca.toma']!.descripcion).toBe('Boca de tomacorriente');
+    expect(item['electrica.boca.toma']!.descripcion).toBe('Boca de toma');
   });
 
   it('hereda fuentes y la peor confianza de las bocas que la componen', () => {

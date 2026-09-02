@@ -303,3 +303,36 @@ describe('plantilla terminaciones: el cuadro de locales (entidades `terminacion`
     expect(porClave(items)['terminaciones.solado.porcelanato']!.cantNeta).toBe(32);
   });
 });
+
+/**
+ * El solado y el zócalo del mismo ambiente no usan la altura del revestimiento:
+ * salen igual. El rubro queda con ítems y **sin una sola línea de
+ * revestimiento**, que es peor que un número corto porque no se ve.
+ */
+describe('plantilla terminaciones: el revestimiento ausente frena, aunque el solado salga', () => {
+  const bano = ambiente({
+    id: 'b1',
+    nombre: 'Baño',
+    atributos: {
+      superficieM2: 4,
+      perimetroM: 10,
+      solado: 'porcelanato',
+      revestimiento: 'cerámica',
+    },
+  });
+  const { items, hallazgos } = plantillaTerminaciones.computar([bano], 'nueva');
+
+  it('el solado sale y el revestimiento no aparece en ningún lado', () => {
+    expect(items.map((i) => i.claveItem)).toEqual([
+      'terminaciones.solado.porcelanato',
+      'terminaciones.contrapiso',
+      'terminaciones.carpeta',
+    ]);
+  });
+
+  it('y la consulta por la altura de revestimiento bloquea', () => {
+    const consulta = hallazgos.find((h) => h.clave.startsWith('dato_obra.'))!;
+    expect(consulta.bloqueante).toBe(true);
+    expect(consulta.clave).toBe('dato_obra.altura_revestimiento.Baño');
+  });
+});
