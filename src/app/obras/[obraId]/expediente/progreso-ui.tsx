@@ -258,18 +258,20 @@ export function ProgresoAnalisis({ fase, reintentoDeCruce = null }: ProgresoAnal
 
       {colgada ? (
         <p className="text-xs text-neutral-600">
-          Hace más de media hora que esta etapa no avanza: lo más probable es que el análisis se
-          haya cortado sin poder dejarlo escrito. Lo que se alcanzó a analizar está computado.
-          Volvé a subir la documentación o reprocesá las láminas de abajo.
+          Hace más de diez minutos que esta etapa no avanza: lo más probable es que el análisis se
+          haya cortado sin poder dejarlo escrito. Lo que se alcanzó a analizar está computado; el
+          resto quedó como estaba. Podés volver a cruzar el expediente, o reprocesar las láminas de
+          abajo de a una.
         </p>
       ) : ayuda ? (
         <p className="text-xs text-neutral-600">{ayuda}</p>
       ) : null}
 
-      {/* Cruzar de nuevo es la única acción de obra entera que arregla un cruce
-          que falló: reprocesar lámina por lámina vuelve a leer los planos, que
-          no es lo que se rompió. */}
-      {fase.fase === 'error' && reintentoDeCruce !== null ? (
+      {/* Cruzar de nuevo es la única acción de obra entera que arregla una
+          corrida que se cortó: reprocesar lámina por lámina vuelve a leer los
+          planos, que no es lo que se rompió. Va también sobre la fase colgada,
+          que es el mismo problema sin el cartel de error. */}
+      {(fase.fase === 'error' || colgada) && reintentoDeCruce !== null ? (
         <div className="flex flex-wrap items-center gap-2">
           <Button
             size="sm"
