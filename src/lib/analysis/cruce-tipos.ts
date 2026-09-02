@@ -282,6 +282,47 @@ function comoNumero(valor: number | string): number | null {
 const UNIDADES_VALIDAS: ReadonlySet<string> = new Set(UNIDADES);
 
 /**
+ * Las familias de clave que un dato de obra puede tener. RF-506 del lado de
+ * `datosObra`, que hasta acá no tenía ninguno.
+ *
+ * `completados` pasa por `esCampoDeducible()` y `datosObra` no pasaba por nada:
+ * el modelo podía escribir cualquier clave —`resistencia_hormigon.PB`,
+ * `carga_viva.general`— y `aplicarDatosDeObra()` la insertaba tal cual. Hoy
+ * ninguna plantilla lee otra cosa que `altura_local.*` y
+ * `altura_revestimiento.*`, así que ningún número se movía; pero
+ * `memoria/render.ts` imprime **todas** las filas de `datos_obra` en la memoria
+ * que baja el arquitecto, como hechos establecidos con su confianza y su lámina
+ * citada, y `memoria/compacta.ts` se las devuelve al cruce siguiente, que las
+ * lee como algo que la obra ya sabe. Un invento se imprime y después se
+ * refuerza.
+ *
+ * Con esto, "nada estructural ni de seguridad entra solo" es verdad por
+ * construcción y no porque todavía nadie lea esa fila.
+ *
+ * La lista sale de quién las lee, no de la imaginación: `clavesAlturaLocal()` y
+ * `clavesAlturaRevestimiento()` (`lib/rubros/respaldo.ts`) y `FAMILIA_DATO_OBRA`
+ * (`lib/hallazgos/taxonomia.ts`). Si aparece una familia nueva, se agrega acá y
+ * en la regla 5 del prompt de `cruce-claude.ts`, en el mismo commit.
+ */
+export const FAMILIAS_DATO_OBRA = ['altura_local', 'altura_revestimiento', 'nivel'] as const;
+
+const FAMILIAS_VALIDAS: ReadonlySet<string> = new Set(FAMILIAS_DATO_OBRA);
+
+/**
+ * `true` si la clave es `<familia conocida>.<sufijo no vacío>`.
+ *
+ * El sufijo es obligatorio porque es lo que la hace encontrable: la cadena de
+ * respaldo busca `altura_local.PB` y después `altura_local.general`, nunca
+ * `altura_local` pelada, así que una clave sin sufijo sería una fila que se
+ * imprime en la memoria y que ninguna plantilla puede usar.
+ */
+export function esClaveDeDatoObra(clave: string): boolean {
+  const punto = clave.indexOf('.');
+  if (punto <= 0 || punto === clave.length - 1) return false;
+  return FAMILIAS_VALIDAS.has(clave.slice(0, punto));
+}
+
+/**
  * La fuente de un dato citado (P1).
  *
  * Sin bbox usable —ausente, o que no son cuatro números finitos— la fuente es
@@ -344,6 +385,29 @@ function claveEntidad(laminaId: string, nombre: string): string {
 }
 
 /**
+ * `true` si el grupo puede ser **un solo elemento físico dibujado varias veces**.
+ *
+ * Dos condiciones, las dos por construcción del §15 y las dos indispensables:
+ * río abajo `unificarPorElemento()` funde el grupo en una cosa sola, y un grupo
+ * mal armado **le baja la cantidad al cómputo en silencio** —dos tabiques de
+ * 15,6 m² pasan a ser uno, sin conflicto y sin hallazgo—.
+ *
+ *  - **Láminas distintas.** El §15 pregunta si la FP01 de la planta es la misma
+ *    que la de la planilla; dos entidades de la MISMA lámina son dos cosas que
+ *    el proyectista dibujó dos veces, no una vista dos veces. Un par
+ *    intra-lámina es un error del modelo, no una identidad.
+ *  - **Mismo `tipo`.** Un `tabique` y un `muro` no pueden ser el mismo elemento
+ *    físico aunque compartan el tag: cada plantilla los computa distinto, y
+ *    unificarlos mezcla dos rubros.
+ */
+function esIdentidadPosible(grupo: readonly EntidadDelCruce[]): boolean {
+  const laminas = new Set(grupo.map((entidad) => entidad.laminaId));
+  if (laminas.size !== grupo.length) return false;
+  const tipos = new Set(grupo.map((entidad) => entidad.tipo));
+  return tipos.size === 1;
+}
+
+/**
  * Aplica el contrato sobre lo que devolvió el cruce.
  *
  * Descarta —y cuenta, por categoría— todo lo que no se puede usar:
@@ -355,12 +419,19 @@ function claveEntidad(laminaId: string, nombre: string): string {
  *    provenance;
  *  - **un campo fuera de `CAMPOS_DEDUCIBLES`** (RF-506): nada estructural ni de
  *    seguridad se auto-propone, y el cruce no es la excepción;
+ *  - **una clave de dato de obra fuera de `FAMILIAS_DATO_OBRA`**: el mismo
+ *    RF-506 del lado de `datosObra`, que es el que se imprime en la memoria
+ *    descargable y vuelve al prompt de la corrida siguiente;
  *  - **un valor no numérico o no positivo en un campo de medida**: "no figura",
  *    "s/d" o "2,05 m" no son medidas;
  *  - **una confianza que no es un número**: no podría competir contra otra
  *    lectura del mismo campo;
  *  - **un grupo de identidad con menos de dos entidades distintas resueltas**:
- *    una entidad sola no es una identidad, es un dato suelto.
+ *    una entidad sola no es una identidad, es un dato suelto;
+ *  - **un grupo de identidad de la misma lámina o de tipos mezclados**
+ *    (`esIdentidadPosible`): el §15 es identidad ENTRE láminas, y funde
+ *    cantidades — un grupo mal armado le come la mitad a un rubro sin abrir un
+ *    solo hallazgo.
  *
  * Lo recuperable se clampa (bbox y confianza a [0,1]) y lo ilegible se afloja:
  * una unidad que no es del dominio se cae sola —la clave del dato de obra ya
@@ -399,14 +470,17 @@ export function sanearCruce(crudo: CruceCrudo, ctx: ContextoCruce): ResultadoCru
   for (const cruce of crudo.datosObra) {
     const clave = cruce.clave.trim();
     const laminaId = laminaDe(cruce.laminaCodigo);
-    if (clave === '' || laminaId === null || !Number.isFinite(cruce.confianza)) {
+    if (!esClaveDeDatoObra(clave) || laminaId === null || !Number.isFinite(cruce.confianza)) {
       descartados.datosObra += 1;
       continue;
     }
 
     // Un dato de obra puede ser una medida (`altura_local.PB`) o un texto
-    // (`solado.general`): manda lo que el valor es, no un catálogo de claves.
-    // El cero es válido — un nivel puede ser 0,00.
+    // (`altura_revestimiento.Baño` = "hasta el cielorraso"): manda lo que el
+    // valor es. Un texto no respalda una medida —`medidaDelDato()` lo deja
+    // pasar de largo y la consulta se abre igual— pero sí se imprime en la
+    // memoria, que es donde el arquitecto lee qué dijo cada lámina. El cero es
+    // válido: un nivel puede ser 0,00.
     const numero = comoNumero(cruce.valor);
     const texto = String(cruce.valor).trim();
     if (numero === null && texto === '') {
@@ -460,16 +534,18 @@ export function sanearCruce(crudo: CruceCrudo, ctx: ContextoCruce): ResultadoCru
   // --- Identidades ---
   const identidades: string[][] = [];
   for (const grupo of crudo.identidades) {
-    const ids: string[] = [];
+    const resueltas: EntidadDelCruce[] = [];
     for (const ref of grupo) {
       const entidad = entidadDe(ref.laminaCodigo, ref.entidadNombre);
-      if (entidad !== null && !ids.includes(entidad.id)) ids.push(entidad.id);
+      if (entidad === null) continue;
+      if (resueltas.some((previa) => previa.id === entidad.id)) continue;
+      resueltas.push(entidad);
     }
-    if (ids.length < 2) {
+    if (resueltas.length < 2 || !esIdentidadPosible(resueltas)) {
       descartados.identidades += 1;
       continue;
     }
-    identidades.push(ids);
+    identidades.push(resueltas.map((entidad) => entidad.id));
   }
 
   // --- Conflictos ---
