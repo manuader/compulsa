@@ -1,4 +1,3 @@
-import { and, count, eq } from 'drizzle-orm';
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import Link from 'next/link';
@@ -6,8 +5,8 @@ import type { ReactNode } from 'react';
 
 import { Badge, type BadgeTone } from '@/components/ui/badge';
 import { getDb } from '@/db/client';
-import { hallazgos } from '@/db/schema';
 import { requireObra } from '@/lib/auth/guards';
+import { contarPendientes, detallePendientes } from '@/lib/bandeja/pendientes';
 import { HEADER_PATHNAME } from '@/middleware';
 import type { TipoObra } from '@/types/domain';
 
@@ -29,7 +28,11 @@ const TONO_TIPO: Record<TipoObra, BadgeTone> = {
  *
  * «Bandeja» es la única que lleva contador: las otras son lugares a los que se
  * va, y esta es una **cola de trabajo** —lo que espera una decisión—. Sin el
- * número, nadie entra a mirar si hay algo.
+ * número, nadie entra a mirar si hay algo. Cuenta las dos mitades que **sí**
+ * esperan algo (`contarPendientes`): las consultas abiertas de «Preguntas» y las
+ * deducciones `propuesta` de «Para revisar». Lo ya aplicado —auto-validadas e
+ * inferidos— queda afuera: sumarlo dejaría un número que no baja nunca a cero, y
+ * un badge que no baja a cero deja de leerse a la semana.
  *
  * «Deducciones» ya no está: desde §5.8 lo que el motor propuso y lo que el
  * sistema aplicó viven en la solapa «Para revisar» de la bandeja, y la ruta vieja
@@ -89,14 +92,7 @@ export default async function ObraLayout({
   const pathname = (await headers()).get(HEADER_PATHNAME) ?? '';
 
   const db = await getDb();
-  // Lo que espera una decisión: las consultas abiertas de «Preguntas». Lo de
-  // «Para revisar» no entra al contador a propósito — informa y no bloquea
-  // (§5.8), y sumarlo haría que el número no bajara nunca a cero.
-  const [abiertas] = await db
-    .select({ total: count() })
-    .from(hallazgos)
-    .where(and(eq(hallazgos.obraId, obra.id), eq(hallazgos.estado, 'abierto')));
-  const pendientes = abiertas?.total ?? 0;
+  const pendientes = await contarPendientes(db, obra.id);
 
   return (
     <div className="flex flex-col gap-6">
@@ -137,9 +133,11 @@ export default async function ObraLayout({
                   {etiqueta}
                   {/* El contador solo aparece si hay algo que decidir: un «0»
                       permanente al lado de la solapa deja de leerse a la semana. */}
-                  {segmento === '/bandeja' && pendientes > 0 ? (
-                    <Badge tone="info" className="ml-2">
-                      {pendientes}
+                  {segmento === '/bandeja' && pendientes.total > 0 ? (
+                    // El `title` desglosa: un «5» solo deja buscando las otras
+                    // dos cuando «Preguntas» muestra tres.
+                    <Badge tone="info" className="ml-2" title={detallePendientes(pendientes)}>
+                      {pendientes.total}
                     </Badge>
                   ) : null}
                 </Link>
