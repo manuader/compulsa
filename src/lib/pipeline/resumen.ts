@@ -39,6 +39,7 @@ import {
   aplicarDeduccionesValidadas,
   comoEntidadPersistida,
   datosDeObra,
+  mergearAportes,
   ACTOR_PIPELINE,
   ObraInexistenteError,
 } from '@/lib/pipeline/recomputar';
@@ -276,12 +277,20 @@ export function generarResumen(
   // rubro que solo computa por una altura de local declarada una vez tiene que
   // estar en los dos lados— y los elementos ya unificados, para no contar dos
   // veces el tabique que la planta y el corte dicen cada una por su lado.
-  const { entidades: unificadas } = unificarPorElemento(entidadesObra);
+  // El mapa de orígenes y el mergeo de aportes van igual que en el recompute
+  // (ver `recomputarObra`): sin ellos, un `largoM` medido sobre el dibujo le
+  // ganaba a la cota escrita en la lámina hermana solo por estar del lado de la
+  // base, y el alcance del resumen dejaba de coincidir con la planilla — que es
+  // justamente lo único que este cómputo existe para sostener.
+  const { entidades: unificadas, aportes } = unificarPorElemento(
+    entidadesObra,
+    contexto.camposDeducidos,
+  );
   const { items } = computarObra(
     unificadas,
     obra.tipo,
     undefined,
-    contexto.camposDeducidos,
+    mergearAportes(contexto.camposDeducidos ?? new Map(), aportes),
     laminasObra,
     contexto.datosObra,
   );

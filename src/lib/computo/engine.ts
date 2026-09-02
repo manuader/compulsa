@@ -17,6 +17,8 @@
  */
 import { sanityChecks } from '@/lib/computo/sanity';
 import {
+  esDatoObraFaltante,
+  fusionarDatoObraFaltante,
   hallazgoBajaConfianza,
   propuestaDeLectura,
   UMBRAL_CONFIANZA,
@@ -334,14 +336,24 @@ function marcarOrigen(
 
 /** Deja el primer hallazgo de cada clave: la clave es única por obra. */
 function deduplicarPorClave(hallazgos: readonly HallazgoDetectado[]): HallazgoDetectado[] {
-  const vistas = new Set<string>();
-  const unicos: HallazgoDetectado[] = [];
+  const porClave = new Map<string, HallazgoDetectado>();
   for (const hallazgo of hallazgos) {
-    if (vistas.has(hallazgo.clave)) continue;
-    vistas.add(hallazgo.clave);
-    unicos.push(hallazgo);
+    const previo = porClave.get(hallazgo.clave);
+    if (previo === undefined) {
+      porClave.set(hallazgo.clave, hallazgo);
+      continue;
+    }
+    // Un dato de obra lo abren varios rubros —a `altura_local.PB` la piden los
+    // tabiques de seco, el muro de gruesa y los ambientes de pintura— y
+    // quedarse con el primero prometía de menos: la tarjeta decía «Afecta a T1
+    // y T2» y responderla también computaba el muro. Peor: el gate mira
+    // `rubro`, así que el descarte dejaba a gruesa aprobar un cómputo corto por
+    // el mismo dato que la consulta estaba pidiendo. Ver `fusionarDatoObraFaltante`.
+    if (esDatoObraFaltante(previo) && esDatoObraFaltante(hallazgo)) {
+      porClave.set(hallazgo.clave, fusionarDatoObraFaltante(previo, hallazgo));
+    }
   }
-  return unicos;
+  return [...porClave.values()];
 }
 
 /**
