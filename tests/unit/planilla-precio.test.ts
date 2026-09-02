@@ -62,6 +62,23 @@ describe('precioDeFila', () => {
       unitario: '$ 12.500',
       subtotal: '$ 396.000',
       detalle: 'Lista de precios del estudio · 20/08/2026',
+      // La versión corta es la que entra en la celda: de dónde salió y de
+      // cuándo es no pueden vivir solo en un `title`, que no existe ni en una
+      // tablet ni en el papel.
+      fuenteCorta: 'Lista',
+      fecha: '20/08/2026',
+    });
+  });
+
+  it('la versión corta nombra las tres fuentes en una palabra', () => {
+    expect(precioDeFila(item({ precioJson: DEL_INDICE, cantCompra: 10 }))).toMatchObject({
+      fuenteCorta: 'Índice',
+      fecha: '08/2026',
+    });
+    const manual: PrecioEstimado = { ...DE_LISTA, fuente: 'manual', fechaPrecio: '2026-08-28' };
+    expect(precioDeFila(item({ precioJson: manual }))).toMatchObject({
+      fuenteCorta: 'A mano',
+      fecha: '28/08/2026',
     });
   });
 
@@ -144,9 +161,12 @@ describe('detalleDeOrigen', () => {
     expect(texto).toContain('Láminas: A-01.');
   });
 
-  it('lo supuesto nombra a la plantilla, que es de dónde salió', () => {
+  it('lo supuesto dice qué evidencia falta, no de qué módulo nuestro salió', () => {
+    // Sus dos hermanos describen la evidencia («no está escrito en una sola
+    // lámina», «se midió sobre el dibujo»); este nombraba «la plantilla del
+    // rubro», que es arquitectura nuestra y no le dice nada al arquitecto.
     expect(detalleDeOrigen('supuesto', [])).toBe(
-      'Se computó sobre un supuesto declarado de la plantilla del rubro.',
+      'Ninguna lámina lo dice: se computó sobre un supuesto declarado, que queda a la vista para que lo confirmes.',
     );
   });
 });

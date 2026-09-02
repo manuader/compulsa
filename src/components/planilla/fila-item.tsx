@@ -20,7 +20,20 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { TableCell, TableRow } from '@/components/ui/table';
 import { ETIQUETA_UNIDAD, formatearNumero } from '@/lib/computo/unidades';
-import type { Origen, Unidad } from '@/types/domain';
+import type { BBox, Origen, Unidad } from '@/types/domain';
+
+/** Una lámina que el ítem cita, con el nombre que se muestra en la fila. */
+export interface LaminaDelItem {
+  laminaId: string;
+  /** "A-04" o "Página 7": el rótulo entero no entra en una celda. */
+  etiqueta: string;
+}
+
+/** Una zona que sostiene el ítem: lámina + bbox normalizado (P1). */
+export interface FuenteDelItem {
+  laminaId: string;
+  bbox: BBox;
+}
 
 /** Lo que la pantalla necesita de un ítem. Todo serializable: cruza al cliente. */
 export interface ItemPlanilla {
@@ -37,8 +50,16 @@ export interface ItemPlanilla {
   anulado: boolean;
   /** `true` si alguien lo tocó a mano: el recómputo ya no lo pisa. */
   editado: boolean;
-  /** Lámina de la primera fuente, para el link "Ver en plano". `null` si es manual. */
-  laminaId: string | null;
+  /**
+   * Las láminas que el ítem cita, sin repetir. Vacío ⇒ se cargó a mano y no
+   * tiene fuente en los planos.
+   */
+  laminas: LaminaDelItem[];
+  /**
+   * Los bbox que lo sostienen, para resaltarlos en el panel de al lado sin
+   * navegar: es lo mismo que resuelve `?highlight=<itemId>`.
+   */
+  fuentes: FuenteDelItem[];
   /**
    * La lámina sin escala verificada sobre la que se computó, o `null` si todas
    * sus fuentes están verificadas. Lo cruza la página (`escalaAsumidaDelItem`):
@@ -95,9 +116,13 @@ export interface FilaItemProps {
   item: ItemPlanilla;
   /** `colaborador` o más (RF-1201). Con `lectura` la fila se mira y no se toca. */
   puedeEditar: boolean;
+  /** La lámina de ESTE ítem que el panel está mostrando, o `null`. */
+  laminaActiva: string | null;
+  /** Cargar una lámina del ítem en el panel de al lado, sin navegar. */
+  onVer: (item: ItemPlanilla, lamina: LaminaDelItem) => void;
 }
 
-export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
+export function FilaItem({ obraId, item, puedeEditar, laminaActiva, onVer }: FilaItemProps) {
   const [editando, setEditando] = useState(false);
   const [confirmandoAnulacion, setConfirmandoAnulacion] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -234,7 +259,14 @@ export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
               disabled={pendiente}
             />
           ) : item.precio ? (
-            <span title={item.precio.detalle}>{item.precio.unitario}</span>
+            <span title={item.precio.detalle}>
+              {item.precio.unitario}
+              {/* De dónde salió y de cuándo es, en la celda y no solo en el
+                  `title`: un tooltip no existe en una tablet ni en el papel. */}
+              <span className="block text-[11px] font-normal text-neutral-500">
+                {item.precio.fuenteCorta} · {item.precio.fecha}
+              </span>
+            </span>
           ) : (
             <span
               className="text-neutral-400"
@@ -265,16 +297,44 @@ export function FilaItem({ obraId, item, puedeEditar }: FilaItemProps) {
           </span>
         </TableCell>
 
+        {/* Cada lámina es un botón, no un link: carga el plano en el panel de al
+            lado sin sacar al arquitecto de la planilla que está revisando. Es
+            lo que el arquitecto pidió con todas las letras («que se vea la
+            lista y al clickear se resalte en el plano, todo en la misma
+            página»). El link a la página completa queda al lado, para cuando
+            el plano necesita toda la pantalla (contrato `?highlight=`,
+            app/CLAUDE.md §4). */}
         <TableCell>
-          {item.laminaId ? (
-            <Link
-              href={`/obras/${obraId}/laminas/${item.laminaId}?highlight=${item.id}`}
-              className="text-sm font-medium text-neutral-900 underline"
-            >
-              Ver en plano
-            </Link>
-          ) : (
+          {item.laminas.length === 0 ? (
             <span className="text-neutral-400">cargado a mano</span>
+          ) : (
+            <span className="flex flex-wrap items-center gap-1">
+              {item.laminas.map((lamina) => {
+                const activa = laminaActiva === lamina.laminaId;
+                return (
+                  <button
+                    key={lamina.laminaId}
+                    type="button"
+                    aria-pressed={activa}
+                    onClick={() => onVer(item, lamina)}
+                    className={[
+                      'rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors',
+                      activa
+                        ? 'border-neutral-900 bg-neutral-900 text-white'
+                        : 'border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-100',
+                    ].join(' ')}
+                  >
+                    {lamina.etiqueta}
+                  </button>
+                );
+              })}
+              <Link
+                href={`/obras/${obraId}/laminas/${item.laminas[0]!.laminaId}?highlight=${item.id}`}
+                className="text-xs whitespace-nowrap text-neutral-500 underline hover:text-neutral-900"
+              >
+                página completa
+              </Link>
+            </span>
           )}
         </TableCell>
 

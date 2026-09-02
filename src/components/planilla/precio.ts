@@ -23,8 +23,19 @@ import type { Origen, PrecioEstimado } from '@/types/domain';
 export interface PrecioPlanilla {
   unitario: string;
   subtotal: string;
-  /** "Lista de precios del estudio · 20/08/2026". */
+  /** "Lista de precios del estudio · 20/08/2026" — el texto largo, para el title. */
   detalle: string;
+  /**
+   * Lo mismo en corto: "Lista", "Índice", "A mano".
+   *
+   * De dónde salió un precio y de cuándo es no puede vivir **solo** en un
+   * `title`: un tooltip no existe en una pantalla táctil ni en una impresión, y
+   * un número sin fecha en un país con esta inflación no es un precio. Va a la
+   * celda, chico, debajo del unitario.
+   */
+  fuenteCorta: string;
+  /** "20/08/2026" para la lista y lo manual; "08/2026" para el índice, que es mensual. */
+  fecha: string;
 }
 
 /** El subtotal de un conjunto de ítems, calculado y formateado en el server. */
@@ -46,6 +57,13 @@ export const ETIQUETA_FUENTE_PRECIO: Record<PrecioEstimado['fuente'], string> = 
   manual: 'Precio cargado a mano',
   lista: 'Lista de precios del estudio',
   indice: 'Índice de precios del estudio',
+};
+
+/** Lo mismo, en una palabra: es lo que entra en la celda de la planilla. */
+export const ETIQUETA_FUENTE_PRECIO_CORTA: Record<PrecioEstimado['fuente'], string> = {
+  manual: 'A mano',
+  lista: 'Lista',
+  indice: 'Índice',
 };
 
 /**
@@ -90,10 +108,13 @@ export function precioDeFila(item: ItemValorizable): PrecioPlanilla | null {
   const precio = item.precioJson;
   const subtotal = subtotalDeItem(item);
   if (precio === null || subtotal === null) return null;
+  const fecha = fechaDePrecio(precio.fechaPrecio);
   return {
     unitario: formatearMonto(precio.moneda, precio.unitario),
     subtotal: formatearMonto(precio.moneda, subtotal),
-    detalle: `${ETIQUETA_FUENTE_PRECIO[precio.fuente]} · ${fechaDePrecio(precio.fechaPrecio)}`,
+    detalle: `${ETIQUETA_FUENTE_PRECIO[precio.fuente]} · ${fecha}`,
+    fuenteCorta: ETIQUETA_FUENTE_PRECIO_CORTA[precio.fuente],
+    fecha,
   };
 }
 
@@ -143,5 +164,5 @@ export function detalleDeOrigen(origen: Origen, laminas: readonly string[]): str
   if (origen === 'inferido') {
     return `Se midió sobre el dibujo a escala (medición gráfica): es la más débil de las evidencias.${citadas}`;
   }
-  return `Se computó sobre un supuesto declarado de la plantilla del rubro.${citadas}`;
+  return `Ninguna lámina lo dice: se computó sobre un supuesto declarado, que queda a la vista para que lo confirmes.${citadas}`;
 }
