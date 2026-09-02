@@ -64,8 +64,7 @@
       "atributos": {
         "tipo": "durlock",
         "largoM": 4,
-        "caras": 2,
-        "nivel": "PB"
+        "caras": 2
       }
     },
     {
@@ -82,8 +81,7 @@
       "atributos": {
         "tipo": "durlock",
         "largoM": 3,
-        "caras": 2,
-        "nivel": "PB"
+        "caras": 2
       }
     },
     {
@@ -100,8 +98,7 @@
       "atributos": {
         "tipo": "durlock",
         "largoM": 2,
-        "caras": 2,
-        "nivel": "PB"
+        "caras": 2
       }
     },
     {
@@ -118,8 +115,7 @@
       "atributos": {
         "tipo": "durlock",
         "largoM": 3,
-        "caras": 2,
-        "nivel": "PB"
+        "caras": 2
       }
     },
     {
@@ -135,8 +131,7 @@
       "estadoReforma": "na",
       "atributos": {
         "tipo": "mamposteria",
-        "largoM": 6,
-        "nivel": "PB"
+        "largoM": 6
       }
     },
     {

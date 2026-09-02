@@ -23,8 +23,7 @@
       "estadoReforma": "nueva",
       "atributos": {
         "tipo": "mamposteria",
-        "largoM": 3,
-        "nivel": "PB"
+        "largoM": 3
       }
     }
   ]

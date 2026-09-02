@@ -1,6 +1,6 @@
 [
   {
-    "clave": "dato_obra.altura_local.general",
+    "clave": "dato_obra.altura_local.PB",
     "campo": "valor",
     "valor": "2,60",
     "bbox": [

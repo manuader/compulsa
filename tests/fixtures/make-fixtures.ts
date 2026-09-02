@@ -472,7 +472,7 @@ const F1: AnalisisLamina = {
       bbox: [0.2, 0.2, 0.02, 0.3],
       confianza: 0.9,
       estadoReforma: 'nueva',
-      atributos: { tipo: 'durlock', largoM: 4, caras: 2, nivel: 'PB' },
+      atributos: { tipo: 'durlock', largoM: 4, caras: 2 },
     },
     {
       tipo: 'tabique',
@@ -480,7 +480,7 @@ const F1: AnalisisLamina = {
       bbox: [0.5, 0.2, 0.02, 0.24],
       confianza: 0.9,
       estadoReforma: 'nueva',
-      atributos: { tipo: 'durlock', largoM: 3, caras: 2, nivel: 'PB' },
+      atributos: { tipo: 'durlock', largoM: 3, caras: 2 },
     },
     {
       // Sin `largoM`: el muro está dibujado y no acotado. En planta, el ancho
@@ -490,7 +490,7 @@ const F1: AnalisisLamina = {
       bbox: [0.06, 0.8, 0.5, 0.02],
       confianza: 0.88,
       estadoReforma: 'nueva',
-      atributos: { tipo: 'mamposteria', alturaM: 2.6, nivel: 'PB' },
+      atributos: { tipo: 'mamposteria', alturaM: 2.6 },
     },
   ],
 };
@@ -514,7 +514,7 @@ const F2: AnalisisLamina = {
       bbox: [0.15, 0.3, 0.3, 0.2476],
       confianza: 0.87,
       estadoReforma: 'nueva',
-      atributos: { tipo: 'mamposteria', largoM: 3, nivel: 'PB' },
+      atributos: { tipo: 'mamposteria', largoM: 3 },
     },
   ],
 };
@@ -712,7 +712,7 @@ const C1: AnalisisLamina = {
       bbox: [0.38, 0.2, 0.015, 0.4],
       confianza: 0.9,
       estadoReforma: 'na',
-      atributos: { tipo: 'durlock', largoM: 4, caras: 2, nivel: 'PB' },
+      atributos: { tipo: 'durlock', largoM: 4, caras: 2 },
     },
     {
       tipo: 'tabique',
@@ -720,7 +720,7 @@ const C1: AnalisisLamina = {
       bbox: [0.42, 0.42, 0.16, 0.015],
       confianza: 0.9,
       estadoReforma: 'na',
-      atributos: { tipo: 'durlock', largoM: 3, caras: 2, nivel: 'PB' },
+      atributos: { tipo: 'durlock', largoM: 3, caras: 2 },
     },
     {
       tipo: 'tabique',
@@ -728,7 +728,7 @@ const C1: AnalisisLamina = {
       bbox: [0.62, 0.2, 0.015, 0.2],
       confianza: 0.88,
       estadoReforma: 'na',
-      atributos: { tipo: 'durlock', largoM: 2, caras: 2, nivel: 'PB' },
+      atributos: { tipo: 'durlock', largoM: 2, caras: 2 },
     },
     {
       tipo: 'tabique',
@@ -736,7 +736,7 @@ const C1: AnalisisLamina = {
       bbox: [0.62, 0.44, 0.015, 0.24],
       confianza: 0.88,
       estadoReforma: 'na',
-      atributos: { tipo: 'durlock', largoM: 3, caras: 2, nivel: 'PB' },
+      atributos: { tipo: 'durlock', largoM: 3, caras: 2 },
     },
     {
       // El muro de mampostería, también sin altura: la misma del local.
@@ -745,7 +745,7 @@ const C1: AnalisisLamina = {
       bbox: [0.06, 0.18, 0.02, 0.44],
       confianza: 0.9,
       estadoReforma: 'na',
-      atributos: { tipo: 'mamposteria', largoM: 6, nivel: 'PB' },
+      atributos: { tipo: 'mamposteria', largoM: 6 },
     },
     {
       // Dibujada y no acotada: sus medidas están en la planilla A-05.

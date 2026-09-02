@@ -57,8 +57,7 @@
       "estadoReforma": "nueva",
       "atributos": {
         "tipo": "mamposteria",
-        "alturaM": 2.6,
-        "nivel": "PB"
+        "alturaM": 2.6
       }
     }
   ]
