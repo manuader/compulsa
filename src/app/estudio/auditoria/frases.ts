@@ -1,10 +1,10 @@
 /**
  * Cada acción de la auditoría, dicha en es-AR.
  *
- * Vive en su propio archivo y no adentro de `page.tsx` por dos razones, y la
- * segunda es la que importa: un `page.tsx` es de los dos archivos cuyos exports
- * valida Next (CLAUDE.md §9), así que desde ahí este mapa no se puede exportar
- * — y sin exportarlo no hay test que verifique que está completo. Lo verifica
+ * Vive en su propio archivo y no adentro de `page.tsx` por una razón concreta:
+ * un `page.tsx` es de los dos archivos cuyos exports valida Next (CLAUDE.md
+ * §9), así que desde ahí este mapa no se puede exportar — y sin exportarlo no
+ * hay test que verifique que está completo. Lo verifica
  * `tests/unit/auditoria-frases.test.ts`, que barre el código buscando acciones
  * y falla si alguna no tiene frase.
  *
@@ -18,11 +18,13 @@
  * una ola un comentario que daba `hallazgo_reabierto` como ejemplo de acción
  * "que ya no emite nadie" — y para cuando alguien lo leyó, el recompute había
  * vuelto a emitirla (§5.8: una consulta que cerró el propio recompute se reabre
- * si el dato que la resolvía se va). Después la ola del expediente agregó once
- * acciones nuevas sin frase, y once de ellas eran **las de falla**: justo las
- * filas que se van a leer con apuro. La auditoría es la pantalla donde se va a
- * mirar qué pasó. Si agregás una acción nueva a `registrarAuditoria`, agregala
- * también acá, en el mismo commit — y ahora el test te lo cobra.
+ * si el dato que la resolvía se va). Después la ola del expediente dejó once
+ * acciones nuevas sin frase, y eran justo **las de falla** —`cruce_fallido`,
+ * `medicion_fallida`, `lamina_extraccion_fallida`—: las filas que alguien va a
+ * leer con apuro, mostradas como `lamina extraccion fallida`. La auditoría es
+ * la pantalla donde se va a mirar qué pasó. Si agregás una acción nueva a
+ * `registrarAuditoria`, agregala también acá, en el mismo commit — y ahora el
+ * test te lo cobra.
  *
  * Módulo puro: sin React, sin imports de la app.
  */
