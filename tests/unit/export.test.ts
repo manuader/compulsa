@@ -20,6 +20,7 @@ import {
   type ObraExport,
 } from '@/lib/export/xlsx';
 import { PLANTILLAS } from '@/lib/rubros';
+import { RUBROS } from '@/types/domain';
 
 const OBRA: ObraExport = {
   nombre: 'Casa Pérez',
@@ -50,6 +51,7 @@ const PLACAS: ItemExport = {
     { laminaId: 'lam-1', bbox: [0.1, 0.2, 0.3, 0.4] },
     { laminaId: 'lam-2', bbox: [0.5, 0.1, 0.2, 0.2] },
   ],
+  precioJson: { unitario: 12_500, moneda: 'ARS', fuente: 'lista', fechaPrecio: '2026-08-20' },
 };
 
 const LATEX: ItemExport = {
@@ -65,6 +67,9 @@ const LATEX: ItemExport = {
   confianza: 0.72,
   estado: 'activo',
   fuentesJson: [{ laminaId: 'lam-1', bbox: [0.1, 0.6, 0.4, 0.3] }],
+  // Sin precio a propósito: es lo que hace que los totales tengan que declarar
+  // qué no están contando.
+  precioJson: null,
 };
 
 /** Anulado (no se borra: `src/db/CLAUDE.md` §7). Jamás puede aparecer en el export. */
@@ -109,13 +114,21 @@ describe('generarXlsx', () => {
   it('arma una hoja por rubro, la consolidada y las referencias', async () => {
     const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
 
+    // Contra `RUBROS` y no contra una lista escrita a mano: la regla de
+    // `generarXlsx` es «una hoja por rubro, SIEMPRE» —un rubro sin ítems se ve
+    // vacío, que es información— así que lo que hay que pinnear es la regla, no
+    // cuántos rubros había el día que se escribió el test.
     expect(wb.worksheets.map((h) => h.name)).toEqual([
+      ...RUBROS.map((rubro) => PLANTILLAS[rubro].nombre),
+      'Consolidado',
+      'Referencias',
+    ]);
+    // Y los cuatro de F0 siguen estando, en orden y con su nombre de siempre.
+    expect(wb.worksheets.slice(0, 4).map((h) => h.name)).toEqual([
       PLANTILLAS.aberturas.nombre,
       HOJA_SECO,
       HOJA_PINTURA,
       PLANTILLAS.gruesa.nombre,
-      'Consolidado',
-      'Referencias',
     ]);
   });
 
@@ -130,10 +143,17 @@ describe('generarXlsx', () => {
       'Desp. %',
       'Cant. compra',
       'Presentación',
+      // Nivel de evidencia (§5.5) y su respaldo: las dos columnas que hacen que
+      // el archivo se pueda auditar sin abrir la app.
       'Origen',
       'Confianza',
       'Estado rubro',
       'Lámina(s) fuente',
+      // Las del precio van al final: las once de siempre no se mueven de lugar.
+      'Precio unit.',
+      'Subtotal',
+      'Fuente del precio',
+      'Fecha del precio',
     ]);
     expect(fila(wb.getWorksheet(HOJA_SECO)!, 1)).toEqual([...COLUMNAS_ITEM]);
   });
@@ -160,6 +180,54 @@ describe('generarXlsx', () => {
     expect(seco.getCell('K2').value).toBe('A-01, Corte A-A');
   });
 
+  it('escribe el precio con su fuente y su fecha, y el subtotal como número', async () => {
+    const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
+    const seco = wb.getWorksheet(HOJA_SECO)!;
+
+    expect(seco.getCell('L2').value).toBe(12_500);
+    // 12.500 × 34,85 de compra: el subtotal es sobre lo que se compra, no sobre
+    // lo neto — es lo que va a salir la factura del corralón.
+    expect(seco.getCell('M2').value).toBe(435_625);
+    expect(typeof seco.getCell('M2').value).toBe('number');
+    expect(seco.getCell('M2').numFmt).toBe('0.00');
+    expect(seco.getCell('N2').value).toBe('Lista del estudio');
+    expect(seco.getCell('O2').value).toBe('2026-08-20');
+  });
+
+  it('un ítem sin precio deja las cuatro celdas vacías, nunca un cero', async () => {
+    const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
+    const pintura = wb.getWorksheet(HOJA_PINTURA)!;
+
+    for (const columna of ['L', 'M', 'N', 'O']) {
+      expect(pintura.getCell(`${columna}2`).value).toBeNull();
+    }
+  });
+
+  it('cierra cada rubro con su total y la consolidada con el general', async () => {
+    const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
+
+    const seco = wb.getWorksheet(HOJA_SECO)!;
+    expect(seco.getCell('A3').value).toBe('Total construcción en seco');
+    expect(seco.getCell('M3').value).toBe(435_625);
+    // Todos los ítems del rubro tienen precio: no hay nada que aclarar.
+    expect(seco.getCell('O3').value).toBeNull();
+
+    // En la consolidada todo corre una columna (la de rubro va adelante).
+    const cons = wb.getWorksheet('Consolidado')!;
+    expect(cons.getCell('A5').value).toBe('Total general');
+    expect(cons.getCell('N5').value).toBe(435_625);
+    expect(cons.getCell('P5').value).toBe('No incluye 1 ítem sin precio.');
+  });
+
+  it('sin ningún ítem con precio no dibuja fila de total: el cero mentiría', async () => {
+    const sinPrecio: ItemExport[] = [{ ...PLACAS, precioJson: null }];
+    const wb = await releer(
+      await generarXlsx(OBRA, sinPrecio, ESTADOS, LAMINAS, { fecha: FECHA, rubro: 'seco' }),
+    );
+
+    expect(wb.getWorksheet(HOJA_SECO)!.rowCount).toBe(2); // encabezado + el ítem
+  });
+
   it('deja el rubro sin estado en borrador y traduce el estado de revisión', async () => {
     const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
 
@@ -172,12 +240,20 @@ describe('generarXlsx', () => {
     const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
     const seco = wb.getWorksheet(HOJA_SECO)!;
 
-    expect(seco.rowCount).toBe(2); // encabezado + placas, nada más
-    expect(seco.getCell('A3').value).toBeNull();
+    // Encabezado + placas + la fila de total del rubro. El anulado no está.
+    expect(seco.rowCount).toBe(3);
+    expect(seco.getCell('A3').value).toBe('Total construcción en seco');
 
     const claves: unknown[] = [];
     wb.getWorksheet('Consolidado')!.eachRow((row) => claves.push(row.getCell(2).value));
-    expect(claves).toEqual(['Clave', 'seco.placas', 'pintura.latex_interior']);
+    // Las filas de total no traen clave: el rótulo va en la primera columna.
+    expect(claves).toEqual([
+      'Clave',
+      'seco.placas',
+      null,
+      'pintura.latex_interior',
+      null,
+    ]);
   });
 
   it('la consolidada suma la columna Rubro adelante y mantiene el resto', async () => {
@@ -189,8 +265,13 @@ describe('generarXlsx', () => {
     expect(cons.getCell('C2').value).toBe('Placas de roca de yeso 12,5 mm (durlock)');
     expect(cons.getCell('E2').value).toBe(31.68);
     expect(cons.getCell('G2').value).toBe(34.85);
-    expect(cons.getCell('A3').value).toBe(HOJA_PINTURA);
-    expect(cons.rowCount).toBe(3);
+    expect(cons.getCell('A3').value).toBe('Total construcción en seco');
+    expect(cons.getCell('A4').value).toBe(HOJA_PINTURA);
+    // 1 encabezado + 2 ítems + total de seco + TOTAL GENERAL. Pintura no tiene
+    // fila de total: ninguno de sus ítems tiene precio, y un total en cero
+    // sería una afirmación que nadie hizo.
+    expect(cons.rowCount).toBe(5);
+    expect(cons.getCell('A5').value).toBe('Total general');
   });
 
   it('deja el disclaimer profesional, la obra y la leyenda de orígenes en Referencias', async () => {
@@ -215,6 +296,22 @@ describe('generarXlsx', () => {
     expect(plano).toContain('Supuesto');
   });
 
+  it('el total estimado se escribe en es-AR, no en formato máquina', async () => {
+    // Salía `ARS 396000.00` —punto decimal, sin separador de miles, la moneda
+    // en código ISO— en el único lugar del libro donde se lee el total de la
+    // obra, mientras toda la app escribe `$ 396.000`.
+    const wb = await releer(await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA }));
+    const ref = wb.getWorksheet('Referencias')!;
+
+    const valores: string[] = [];
+    ref.eachRow((row) => row.eachCell((cell) => valores.push(String(cell.value ?? ''))));
+
+    const total = valores.find((valor) => valor.startsWith('$'));
+    expect(total).toBeDefined();
+    expect(total).toMatch(/^\$ [\d.]+(,\d{2})?$/);
+    expect(valores.some((valor) => valor.startsWith('ARS '))).toBe(false);
+  });
+
   it('con un rubro pedido exporta solo esa hoja y las referencias', async () => {
     const wb = await releer(
       await generarXlsx(OBRA, ITEMS, ESTADOS, LAMINAS, { fecha: FECHA, rubro: 'pintura' }),
@@ -222,6 +319,7 @@ describe('generarXlsx', () => {
 
     expect(wb.worksheets.map((h) => h.name)).toEqual([HOJA_PINTURA, 'Referencias']);
     expect(wb.getWorksheet(HOJA_PINTURA)!.getCell('B2').value).toBe('Látex interior, 2 manos');
+    // Sin fila de total: el único ítem del rubro no tiene precio.
     expect(wb.getWorksheet(HOJA_PINTURA)!.rowCount).toBe(2);
   });
 

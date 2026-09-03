@@ -45,6 +45,10 @@ import {
   type ResultadoLote,
 } from '@/lib/bandeja/resolver';
 import { buscarDatosFaltantes } from '@/lib/pipeline/busqueda';
+import {
+  rechazarDatoDeObra,
+  type EntradaDatoObra,
+} from '@/lib/datos-obra/persistencia';
 
 /**
  * La bandeja, la planilla y el tablero muestran las mismas consultas desde el
@@ -207,4 +211,36 @@ export async function buscarEnDocumentacionAction(
 
   await revalidar(obraId);
   return { ok: true };
+}
+
+/**
+ * Rechaza un **dato de obra que escribió el sistema**: la fila se va y la
+ * consulta agrupada vuelve a «Preguntas» (§5.2, §5.4).
+ *
+ * Va acá y no en `deducciones/actions.ts` porque la solapa que lo ofrece es la
+ * de la bandeja, y porque el rol que exige es el mismo que resolver una
+ * consulta: quien puede contestar la altura de local puede decir que la que el
+ * sistema leyó está mal.
+ *
+ * Todo lo que muta la base vive en `@/lib/datos-obra/persistencia`: acá solo
+ * están la sesión, la obra, el actor con el rol de la sesión y la revalidación.
+ */
+export async function rechazarDatoDeObraAction(
+  entrada: EntradaDatoObra,
+): Promise<ResultadoAccion> {
+  const ctx = await contexto(entrada);
+  if (!ctx) return { ok: false, error: PAYLOAD_ILEGIBLE };
+  if (esRechazo(ctx)) return { ok: false, error: ctx.error };
+  const { obraId, usuarioId, email } = ctx;
+
+  // El rol vuelve a salir de la sesión, no del payload: `contexto` ya lo
+  // verificó con `requireAccion`, y el núcleo lo vuelve a exigir por su cuenta
+  // porque es invocable desde cualquier otro llamador.
+  const { usuario } = await requireUser();
+  const resultado = await rechazarDatoDeObra(
+    { obraId, datoId: entrada.datoId },
+    { usuarioId, email, rol: usuario.rol },
+  );
+  if (resultado.ok) await revalidar(obraId);
+  return resultado;
 }

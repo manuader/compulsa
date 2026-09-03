@@ -1,0 +1,188 @@
+{
+  "rotulo": {
+    "titulo": "PLANTA SANITARIA",
+    "codigo": "IS-01",
+    "disciplina": "instalaciones",
+    "tipoLamina": "planta",
+    "escala": "1:50",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.9
+  },
+  "entidades": [
+    {
+      "tipo": "tramo",
+      "nombre": "TR1",
+      "bbox": [
+        0.1,
+        0.24,
+        0.18,
+        0.012
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "sistema": "ac",
+        "diametro": "20",
+        "longitudM": 2,
+        "ambiente": "Baño"
+      }
+    },
+    {
+      "tipo": "tramo",
+      "nombre": "TR2",
+      "bbox": [
+        0.1,
+        0.3,
+        0.26,
+        0.012
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "sistema": "ac",
+        "diametro": "Ø20",
+        "longitudM": 3,
+        "ambiente": "Baño"
+      }
+    },
+    {
+      "tipo": "tramo",
+      "nombre": "TR3",
+      "bbox": [
+        0.1,
+        0.36,
+        0.14,
+        0.012
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "sistema": "ac",
+        "diametro": "20mm",
+        "longitudM": 1.5,
+        "ambiente": "Baño"
+      }
+    },
+    {
+      "tipo": "tramo",
+      "nombre": "TR4",
+      "bbox": [
+        0.1,
+        0.42,
+        0.32,
+        0.012
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "sistema": "af",
+        "diametro": "20",
+        "longitudM": 4,
+        "ambiente": "Baño"
+      }
+    },
+    {
+      "tipo": "tramo",
+      "nombre": "TR5",
+      "bbox": [
+        0.1,
+        0.5,
+        0.44,
+        0.016
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "sistema": "cloacal",
+        "diametro": "Ø110",
+        "longitudM": 6,
+        "ambiente": "Baño"
+      }
+    },
+    {
+      "tipo": "accesorio",
+      "nombre": "A1",
+      "bbox": [
+        0.28,
+        0.236,
+        0.016,
+        0.02
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "codo90",
+        "sistema": "ac",
+        "diametro": "20"
+      }
+    },
+    {
+      "tipo": "accesorio",
+      "nombre": "A2",
+      "bbox": [
+        0.36,
+        0.296,
+        0.016,
+        0.02
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "codo90",
+        "sistema": "ac",
+        "diametro": "20"
+      }
+    },
+    {
+      "tipo": "accesorio",
+      "nombre": "A3",
+      "bbox": [
+        0.24,
+        0.356,
+        0.016,
+        0.02
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "codo90",
+        "sistema": "ac",
+        "diametro": "Ø20"
+      }
+    },
+    {
+      "tipo": "accesorio",
+      "nombre": "A4",
+      "bbox": [
+        0.18,
+        0.296,
+        0.016,
+        0.02
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "te",
+        "sistema": "ac",
+        "diametro": "20"
+      }
+    },
+    {
+      "tipo": "artefacto",
+      "nombre": "Inodoro",
+      "bbox": [
+        0.56,
+        0.48,
+        0.06,
+        0.06
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "inodoro",
+        "ambiente": "Baño"
+      }
+    }
+  ]
+}

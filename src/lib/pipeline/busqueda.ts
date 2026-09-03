@@ -75,10 +75,11 @@ import {
   type DatoEncontrado,
   type ObjetivoBusqueda,
 } from '@/lib/analysis/busqueda-tipos';
+import type { RelecturaPedida } from '@/lib/analysis/cruce-tipos';
 import { registrarAuditoria } from '@/lib/audit';
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { camposDelTarget } from '@/lib/hallazgos/target';
-import { leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
+import { CAMPO_DATO_OBRA, leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
 import { PREFIJO_ESCALA, PREFIJO_VERIFICACION } from '@/lib/pipeline/claves';
 import { igualJson } from '@/lib/pipeline/json';
 import { ACTOR_PIPELINE, comoEntidadPersistida, ObraInexistenteError } from '@/lib/pipeline/recomputar';
@@ -89,6 +90,7 @@ import {
   type LaminaInput,
   type MarcaBusqueda,
   type ObraContexto,
+  type TargetDato,
   type ValorPropuesto,
 } from '@/types/domain';
 
@@ -111,6 +113,14 @@ import {
  */
 export const MAX_LAMINAS_POR_BUSQUEDA = 8;
 
+/**
+ * Las claves de dato de obra que se responden mirando un **corte**:
+ * `altura_local.PB`, `altura_revestimiento.Baño`. Es lo que hace que la fase de
+ * relectura abra el corte antes que la planilla cuando lo que falta es una
+ * altura.
+ */
+const PREFIJO_ALTURA = 'altura_';
+
 /** Acción de auditoría de la corrida completa. */
 export const ACCION_BUSQUEDA = 'busqueda_dirigida';
 
@@ -129,6 +139,19 @@ export interface DepsBusqueda {
   storage?: StorageAdapter;
   /** El provider de la búsqueda. Default: `getBusquedaProvider()`. */
   provider?: BusquedaProvider;
+  /**
+   * Las láminas que el **cruce** pidió releer, con qué buscar en cada una.
+   *
+   * Cambian el **orden** de las candidatas —van primero— y quedan en la
+   * auditoría de la corrida con su `queBuscar`. Lo que no hacen es agregar
+   * objetivos: un objetivo es la clave de una consulta abierta, y una relectura
+   * no tiene ninguna. Sin consulta no hay dónde escribir lo que se encuentre
+   * (P4: la búsqueda propone sobre un hallazgo, jamás sobre la entidad), así
+   * que fabricar un objetivo con el texto del cruce sería salir a pagarle al
+   * modelo por una respuesta que después se tira. Lo que sí aporta el cruce es
+   * **dónde mirar**, y eso es exactamente lo que se usa.
+   */
+  relecturas?: readonly RelecturaPedida[];
 }
 
 /**
@@ -227,10 +250,45 @@ function etiquetaEntidad(entidad: EntidadPersistida): string {
 interface Pedido {
   hallazgo: Hallazgo;
   objetivo: ObjetivoBusqueda;
+  /** Seteado ⇒ la consulta pide un **dato de obra**, no un campo de una entidad. */
+  dato?: TargetDato;
+}
+
+/**
+ * El único campo de un objetivo de dato de obra, re-exportado.
+ *
+ * La constante vive en `@/lib/hallazgos/taxonomia` —el módulo puro de la
+ * taxonomía— porque son tres los que tienen que coincidir en la misma cadena:
+ * esta búsqueda, el resolver de la bandeja (que lee `valores.valor` al
+ * responder) y la pantalla (que nombra su input con eso). Se re-exporta acá
+ * para no romper a quien la venía leyendo de este módulo.
+ */
+export { CAMPO_DATO_OBRA };
+
+/**
+ * Cómo se le pide al modelo un hecho de la obra.
+ *
+ * El texto nombra **el dato** (su clave y su unidad) y **a quiénes afecta**: eso
+ * último ya viene en la descripción del hallazgo, que `hallazgoDatoObraFaltante`
+ * arma con los nombres de las entidades ("Afecta a T1, T2 y T3").
+ */
+export function descripcionDeDato(dato: TargetDato, descripcionHallazgo: string): string {
+  const unidad = dato.unidad === undefined ? '' : ` (en ${dato.unidad})`;
+  return `Dato de obra ${dato.clave}${unidad} — ${descripcionHallazgo}`;
 }
 
 /**
  * Los hallazgos abiertos, con target y sin propuesta, traducidos a pedidos.
+ *
+ * Dos clases de target, y las dos se buscan:
+ *
+ *  - **`targetRef`**: le falta un campo a una entidad (el ancho de FP01). Se
+ *    piden los campos que la entidad todavía no tiene.
+ *  - **`targetDato`**: le falta un hecho a la **obra** (la altura de local de
+ *    PB, que afecta a los cuatro tabiques). Se pide un solo campo,
+ *    `CAMPO_DATO_OBRA`. Desde que la altura dejó de preguntarse entidad por
+ *    entidad (§5.2), estas son las únicas consultas que piden una altura: sin
+ *    esta rama, **nadie vuelve a leer un corte buscando una altura nunca más**.
  *
  * El orden es el de la base filtrado por clave, que es estable dentro de una
  * obra: la lista que se le manda al modelo no cambia entre corridas idénticas.
@@ -243,6 +301,20 @@ function armarPedidos(
 
   for (const fila of filas) {
     if (!esClaveBuscable(fila.clave)) continue;
+
+    const dato = fila.targetDato;
+    if (dato) {
+      pedidos.push({
+        hallazgo: fila,
+        objetivo: {
+          clave: fila.clave,
+          descripcion: descripcionDeDato(dato, fila.descripcion),
+          campos: [CAMPO_DATO_OBRA],
+        },
+        dato,
+      });
+      continue;
+    }
 
     const target = fila.targetRef;
     if (!target) continue;
@@ -264,6 +336,39 @@ function armarPedidos(
   }
 
   return pedidos;
+}
+
+/**
+ * La propuesta de un dato de obra, con su valor en el tipo que corresponde, o
+ * `null` si lo que volvió no sirve para ese dato.
+ *
+ * **El contrato que T11 va a leer al confirmar**: la propuesta de un hallazgo
+ * con `targetDato` lleva `valores: { valor }` —una sola clave,
+ * `CAMPO_DATO_OBRA`—, la `fuente` donde se leyó y su `confianza`, con `origen:
+ * 'busqueda_dirigida'`. Confirmarla escribe **`datos_obra`** (clave, valor,
+ * unidad del `targetDato`, fuentes y origen declarado), no
+ * `entidades.atributos_json`: el hecho es de la obra y el recompute lo propaga
+ * a todas las entidades que lo necesitaban. Como siempre, la búsqueda **jamás**
+ * escribe el dato (P4): lo deja propuesto y el arquitecto confirma.
+ *
+ * Un dato **con unidad** es una medida y su valor tiene que ser un número
+ * positivo: `esCampoDeMedida('valor')` es `false` —el nombre no lleva sufijo de
+ * unidad— así que el saneo del provider lo dejó pasar como texto, y un "no
+ * figura" o un "2,05 m" propuesto como altura es una tarjeta que el arquitecto
+ * no puede confirmar. Sin unidad es un texto y se acepta tal cual (`solado`,
+ * `revestimiento`).
+ */
+export function propuestaDeDato(
+  propuesta: ValorPropuesto,
+  dato: TargetDato,
+): ValorPropuesto | null {
+  const crudo = propuesta.valores[CAMPO_DATO_OBRA];
+  if (crudo === undefined) return null;
+  if (dato.unidad === undefined) return propuesta;
+
+  const numero = typeof crudo === 'number' ? crudo : Number(String(crudo).replace(',', '.'));
+  if (!Number.isFinite(numero) || numero <= 0) return null;
+  return { ...propuesta, valores: { [CAMPO_DATO_OBRA]: numero } };
 }
 
 // ---------------------------------------------------------------------------
@@ -302,19 +407,79 @@ function armarPedidos(
  * una afirmación sobre láminas que nadie abrió — que además hace que la corrida
  * siguiente ni siquiera vuelva a intentar.
  */
+export interface OrdenDeBusqueda {
+  /**
+   * Láminas que el **cruce** pidió releer: miró el expediente entero y dijo
+   * dónde mirar, que es más información que la que tiene esta función.
+   */
+  prioritarias?: readonly string[];
+  /**
+   * `true` si entre los objetivos hay una **altura de obra**. Una altura de
+   * local está acotada en el corte, no en una tabla de carpinterías.
+   */
+  cortes?: boolean;
+  cap?: number;
+}
+
+/**
+ * Cuántos lugares del cap se les **reservan** a las láminas dirigidas —las que
+ * pidió el cruce y los cortes cuando falta una altura—.
+ *
+ * Es una reserva y no una inversión de prioridad, y la diferencia importa: con
+ * el cap en 8, poner todos los cortes adelante deja a una obra con nueve cortes
+ * sin abrir una sola planilla, que es exactamente donde están escritas las
+ * medidas de las carpinterías (la decisión 2 de este módulo). Con dos lugares
+ * alcanza —una altura está en el primer corte que se mire— y el resto de la
+ * lista sigue como estaba.
+ */
+export const RESERVA_DIRIGIDAS = 2;
+
 export function laminasCandidatas(
   todas: readonly LaminaCandidata[],
   citadas: ReadonlySet<string>,
-  cap: number = MAX_LAMINAS_POR_BUSQUEDA,
+  orden: OrdenDeBusqueda | number = {},
 ): { laminas: LaminaCandidata[]; truncado: boolean } {
+  // El tercer parámetro era el cap a secas; se sigue aceptando así para no
+  // romper a quien ya lo llamaba (y porque el cap es lo único que se pisa en
+  // los tests del truncado).
+  const opciones: OrdenDeBusqueda = typeof orden === 'number' ? { cap: orden } : orden;
+  const cap = opciones.cap ?? MAX_LAMINAS_POR_BUSQUEDA;
+
+  const analizada = (lamina: LaminaCandidata): boolean => lamina.estadoAnalisis === 'analizada';
   const esPlanilla = (lamina: LaminaCandidata): boolean =>
-    lamina.tipo === 'planilla' && lamina.estadoAnalisis === 'analizada';
+    lamina.tipo === 'planilla' && analizada(lamina);
+  const esCorte = (lamina: LaminaCandidata): boolean => lamina.tipo === 'corte' && analizada(lamina);
+
+  const pedidas = new Set(opciones.prioritarias ?? []);
+  const cortes = opciones.cortes === true ? todas.filter(esCorte) : [];
+  // Las dirigidas entran hasta la reserva; las que sobran **no son candidatas**,
+  // igual que antes de que esta prioridad existiera. No entran al final de la
+  // lista a propósito: engordarían el conteo del truncado y una obra con muchos
+  // cortes no volvería a marcar nunca un objetivo como "buscado y no está",
+  // pagándolo de nuevo en cada corrida (decisión 6).
+  const dirigidas = sinRepetir([
+    ...todas.filter((lamina) => pedidas.has(lamina.id)),
+    ...cortes,
+  ]).slice(0, RESERVA_DIRIGIDAS);
 
   const planillas = todas.filter(esPlanilla);
-  const otras = todas.filter((lamina) => !esPlanilla(lamina) && citadas.has(lamina.id));
+  const otras = todas.filter((lamina) => citadas.has(lamina.id));
 
-  const ordenadas = [...planillas, ...otras];
+  // Sin repetir: una lámina que es corte, está citada y además la pidió el
+  // cruce se lee una sola vez, en la posición más temprana que le toque.
+  const ordenadas = sinRepetir([...dirigidas, ...planillas, ...otras]);
   return { laminas: ordenadas.slice(0, cap), truncado: ordenadas.length > cap };
+}
+
+function sinRepetir(laminas: readonly LaminaCandidata[]): LaminaCandidata[] {
+  const vistas = new Set<string>();
+  const unicas: LaminaCandidata[] = [];
+  for (const lamina of laminas) {
+    if (vistas.has(lamina.id)) continue;
+    vistas.add(lamina.id);
+    unicas.push(lamina);
+  }
+  return unicas;
 }
 
 // ---------------------------------------------------------------------------
@@ -624,7 +789,14 @@ export async function buscarDatosFaltantes(
     for (const fuente of pedido.hallazgo.laminasJson) citadas.add(fuente.laminaId);
   }
 
-  const { laminas: candidatas, truncado } = laminasCandidatas(todasLasLaminas, citadas);
+  // Una altura de obra está acotada en el corte: si hay alguna en la lista, los
+  // cortes se leen antes que las planillas (ver `laminasCandidatas`).
+  const hayAlturas = pedidos.some(
+    (pedido) => pedido.dato !== undefined && pedido.dato.clave.startsWith(PREFIJO_ALTURA),
+  );
+  const prioritarias = (deps.relecturas ?? []).map((relectura) => relectura.laminaId);
+  const orden = { prioritarias, cortes: hayAlturas };
+  const { laminas: candidatas, truncado } = laminasCandidatas(todasLasLaminas, citadas, orden);
 
   // El contexto de obra que ve el prompt. `indiceLaminas` sale de las láminas
   // que ya se leyeron: saber que existe una "DET00 — PLANILLA DE CARPINTERÍAS"
@@ -708,8 +880,11 @@ export async function buscarDatosFaltantes(
     }
 
     // El contrato de `valor_propuesto_json` se aplica acá, antes de escribir:
-    // el pipeline no confía en que el provider ya haya saneado.
-    const propuesta = propuestaValida(armada);
+    // el pipeline no confía en que el provider ya haya saneado. Y el de un dato
+    // de obra tiene una vuelta más: `valor` no es un campo de medida por su
+    // nombre, así que un "no figura" propuesto como altura llega hasta acá.
+    const deDato = pedido.dato === undefined ? armada : propuestaDeDato(armada, pedido.dato);
+    const propuesta = deDato === null ? null : propuestaValida(deDato);
     if (propuesta === null) {
       invalidas.push(pedido.objetivo.clave);
       continue;
@@ -799,14 +974,24 @@ export async function buscarDatosFaltantes(
     ...(truncado
       ? {
           truncadaPorCap: true,
-          laminasCandidatas: laminasCandidatas(todasLasLaminas, citadas, Number.MAX_SAFE_INTEGER)
-            .laminas.length,
+          // Con el MISMO ordenamiento de la corrida y solo el cap suelto: si
+          // acá se recalculara con otro criterio, el número diría cuántas
+          // candidatas habría tenido **otra** búsqueda.
+          laminasCandidatas: laminasCandidatas(todasLasLaminas, citadas, {
+            ...orden,
+            cap: Number.MAX_SAFE_INTEGER,
+          }).laminas.length,
           sinMarcarPorTruncado: vacios.length,
         }
       : {}),
     ...(omitidos > 0 ? { omitidosPorMarca: omitidos } : {}),
     ...(invalidas.length > 0 ? { descartadasPorContrato: invalidas } : {}),
     ...(cerradasEnVuelo.length > 0 ? { cerradasEnVuelo } : {}),
+    // Lo que el cruce pidió releer: queda escrito aunque de esa lámina no salga
+    // nada, que es la única manera de saber después si el cruce apuntó bien.
+    ...(deps.relecturas !== undefined && deps.relecturas.length > 0
+      ? { relecturasDelCruce: deps.relecturas.map((r) => `${r.laminaId}: ${r.queBuscar}`) }
+      : {}),
   });
 
   return resultado;

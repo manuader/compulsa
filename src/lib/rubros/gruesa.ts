@@ -6,16 +6,35 @@
  * 12 kg/m² de cal (bolsa de 25 kg) y 0,04 m³/m² de arena, que se compra a
  * granel en múltiplos de 0,5 m³.
  *
- * Reforma: los muros marcados `demoler` no aportan materiales, solo m² de
- * demolición (sin desperdicio, se contrata global). Un muro que no es de
- * mampostería no se computa con esta plantilla: si es estructural, la respuesta
- * es consultar al profesional competente (RF-506), nunca un número automático.
+ * Reforma: los muros marcados `demoler` **salieron de este rubro**. Lo que se
+ * tira no es obra gruesa: es demolición, y desde que existe el rubro
+ * `demolicion` (§5.7) esos m² se computan una sola vez ahí — `gruesa.demolicion`
+ * y `demolicion.muros` conviviendo habrían hecho que la obra pidiera dos veces
+ * la misma tarea. Un muro que no es de mampostería no se computa con esta
+ * plantilla: si es estructural, la respuesta es consultar al profesional
+ * competente (RF-506), nunca un número automático.
+ *
+ * La altura pasa por la cadena de respaldo (`respaldo.ts`): atributo del muro →
+ * dato de obra `altura_local.<nivel|general>` → UNA consulta agrupada.
  */
-import type { EntidadPersistida } from '@/lib/computo/engine';
+import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import { armarItem, type Presentacion } from '@/lib/computo/presentacion';
 import { redondear2 } from '@/lib/computo/unidades';
-import { alcanceDeReforma, hallazgoDatoFaltante, leerMedida, leerTexto } from '@/lib/hallazgos/taxonomia';
+import {
+  alcanceDeReforma,
+  datoEnFrase,
+  hallazgoDatoFaltante,
+  leerMedida,
+  leerTexto,
+} from '@/lib/hallazgos/taxonomia';
 import type { PlantillaRubro, ResultadoComputo } from '@/lib/rubros/index';
+import {
+  ALTURA_LOCAL,
+  cadenaDeRespaldo,
+  conFuentesDeDato,
+  conOrigenes,
+  type DatosObra,
+} from '@/lib/rubros/respaldo';
 import type { HallazgoDetectado, ItemComputo, TipoObra } from '@/types/domain';
 
 const RUBRO = 'gruesa';
@@ -46,20 +65,24 @@ export const plantillaGruesa = {
   nombre: 'Obra gruesa',
   desperdicioDefaultPct: DESPERDICIO_LADRILLOS_PCT,
 
-  computar(entidades: readonly EntidadPersistida[], _tipoObra: TipoObra): ResultadoComputo {
+  computar(
+    entidades: readonly EntidadPersistida[],
+    _tipoObra: TipoObra,
+    _laminas?: readonly LaminaDeComputo[],
+    datosObra?: DatosObra,
+  ): ResultadoComputo {
     const hallazgos: HallazgoDetectado[] = [];
     const nuevos: EntidadPersistida[] = [];
-    const demolidos: EntidadPersistida[] = [];
+    const cadena = cadenaDeRespaldo(datosObra);
     let m2Nuevos = 0;
-    let m2Demolicion = 0;
 
     for (const entidad of entidades) {
       if (entidad.tipo !== 'muro') continue;
-      const alcance = alcanceDeReforma(entidad.estadoReforma);
-      if (alcance === 'ninguno') continue; // lo existente no se computa
+      // Lo existente no se computa; lo que se demuele es del rubro demolición.
+      if (alcanceDeReforma(entidad.estadoReforma) !== 'completo') continue;
 
       const sistema = leerTexto(entidad, 'tipo');
-      if (alcance === 'completo' && sistema !== null && normalizar(sistema) !== SISTEMA_ESPERADO) {
+      if (sistema !== null && normalizar(sistema) !== SISTEMA_ESPERADO) {
         hallazgos.push(
           hallazgoDatoFaltante({
             rubro: RUBRO,
@@ -75,22 +98,8 @@ export const plantillaGruesa = {
         continue;
       }
 
-      const altura = leerMedida(entidad, 'alturaM');
-      if (altura === null) {
-        hallazgos.push(
-          hallazgoDatoFaltante({
-            rubro: RUBRO,
-            clave: `${RUBRO}.altura_muros.${entidad.nombre}`,
-            checklistItem: `${RUBRO}.altura_muros`,
-            descripcion:
-              `No encontré la altura del muro ${entidad.nombre}. Sin altura no computo sus m²: ` +
-              'cargá el dato o indicá el corte donde está acotada.',
-            entidad,
-            campos: ['alturaM'],
-          }),
-        );
-        continue;
-      }
+      const altura = cadena.medida(entidad, 'alturaM', ALTURA_LOCAL);
+      if (altura === null) continue; // la consulta agrupada sale al final
 
       const largo = leerMedida(entidad, 'largoM');
       if (largo === null) {
@@ -109,78 +118,83 @@ export const plantillaGruesa = {
         continue;
       }
 
-      if (alcance === 'demolicion') {
-        m2Demolicion += largo * altura;
-        demolidos.push(entidad);
-      } else {
-        m2Nuevos += largo * altura;
-        nuevos.push(entidad);
-      }
+      m2Nuevos += largo * altura;
+      nuevos.push(entidad);
     }
 
     const items: ItemComputo[] = [];
 
     if (nuevos.length > 0 && m2Nuevos > 0) {
       const m2 = redondear2(m2Nuevos);
+      // Los cuatro materiales salen de los mismos m²: si la altura la puso un
+      // dato de obra, los cuatro citan su lámina (P1).
+      const conAltura = (item: ItemComputo): ItemComputo =>
+        conFuentesDeDato(item, cadena.fuentesDe(nuevos, 'alturaM'));
       items.push(
-        armarItem({
-          rubro: RUBRO,
-          claveItem: `${RUBRO}.ladrillos`,
-          descripcion: 'Ladrillo hueco 12',
-          unidad: 'u',
-          cantNeta: redondear2(m2 * LADRILLOS_POR_M2),
-          desperdicioPct: DESPERDICIO_LADRILLOS_PCT,
-          compra: { tipo: 'bulto', presentacion: PALLET },
-          entidades: nuevos,
-        }),
-        armarItem({
-          rubro: RUBRO,
-          claveItem: `${RUBRO}.cemento`,
-          descripcion: 'Cemento de albañilería',
-          unidad: 'kg',
-          cantNeta: redondear2(m2 * CEMENTO_KG_POR_M2),
-          desperdicioPct: 0,
-          compra: { tipo: 'bulto', presentacion: BOLSA_CEMENTO },
-          entidades: nuevos,
-        }),
-        armarItem({
-          rubro: RUBRO,
-          claveItem: `${RUBRO}.cal`,
-          descripcion: 'Cal hidratada',
-          unidad: 'kg',
-          cantNeta: redondear2(m2 * CAL_KG_POR_M2),
-          desperdicioPct: 0,
-          compra: { tipo: 'bulto', presentacion: BOLSA_CAL },
-          entidades: nuevos,
-        }),
-        armarItem({
-          rubro: RUBRO,
-          claveItem: `${RUBRO}.arena`,
-          descripcion: 'Arena para mortero',
-          unidad: 'm3',
-          cantNeta: redondear2(m2 * ARENA_M3_POR_M2),
-          desperdicioPct: 0,
-          compra: { tipo: 'granel', multiplo: MULTIPLO_ARENA_M3 },
-          entidades: nuevos,
-        }),
+        conAltura(
+          armarItem({
+            rubro: RUBRO,
+            claveItem: `${RUBRO}.ladrillos`,
+            descripcion: 'Ladrillo hueco 12',
+            unidad: 'u',
+            cantNeta: redondear2(m2 * LADRILLOS_POR_M2),
+            desperdicioPct: DESPERDICIO_LADRILLOS_PCT,
+            compra: { tipo: 'bulto', presentacion: PALLET },
+            entidades: nuevos,
+          }),
+        ),
+        conAltura(
+          armarItem({
+            rubro: RUBRO,
+            claveItem: `${RUBRO}.cemento`,
+            descripcion: 'Cemento de albañilería',
+            unidad: 'kg',
+            cantNeta: redondear2(m2 * CEMENTO_KG_POR_M2),
+            desperdicioPct: 0,
+            compra: { tipo: 'bulto', presentacion: BOLSA_CEMENTO },
+            entidades: nuevos,
+          }),
+        ),
+        conAltura(
+          armarItem({
+            rubro: RUBRO,
+            claveItem: `${RUBRO}.cal`,
+            descripcion: 'Cal hidratada',
+            unidad: 'kg',
+            cantNeta: redondear2(m2 * CAL_KG_POR_M2),
+            desperdicioPct: 0,
+            compra: { tipo: 'bulto', presentacion: BOLSA_CAL },
+            entidades: nuevos,
+          }),
+        ),
+        conAltura(
+          armarItem({
+            rubro: RUBRO,
+            claveItem: `${RUBRO}.arena`,
+            descripcion: 'Arena para mortero',
+            unidad: 'm3',
+            cantNeta: redondear2(m2 * ARENA_M3_POR_M2),
+            desperdicioPct: 0,
+            compra: { tipo: 'granel', multiplo: MULTIPLO_ARENA_M3 },
+            entidades: nuevos,
+          }),
+        ),
       );
     }
 
-    if (demolidos.length > 0 && m2Demolicion > 0) {
-      items.push(
-        armarItem({
-          rubro: RUBRO,
-          claveItem: `${RUBRO}.demolicion`,
-          descripcion: 'Demolición de muros',
-          unidad: 'm2',
-          cantNeta: redondear2(m2Demolicion),
-          desperdicioPct: 0,
-          compra: { tipo: 'global' },
-          entidades: demolidos,
-        }),
-      );
-    }
+    // Va al final porque bloquea según lo que el rubro haya emitido: un muro
+    // que quedó afuera de un `gruesa.ladrillos` que igual salió lo dejó corto.
+    hallazgos.push(
+      ...cadena.hallazgosFaltantes({
+        rubro: RUBRO,
+        unidad: 'm',
+        computados: items,
+        descripcion: (clave) =>
+          `No encontré la altura de estos muros y en el expediente tampoco hay ${datoEnFrase(clave)}. ` +
+          'Cargá la altura del local una sola vez y la aplico a todos, o indicá el corte donde está acotada.',
+      }),
+    );
 
-    return { items, hallazgos };
+    return { items, hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
   },
 } satisfies PlantillaRubro;

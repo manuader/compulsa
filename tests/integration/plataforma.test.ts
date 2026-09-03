@@ -77,7 +77,7 @@ import {
   type ActorPlataforma,
 } from '@/lib/plataforma/usuarios';
 import type { StorageAdapter } from '@/lib/storage/index';
-import { RUBROS } from '@/types/domain';
+import { RUBROS, type RubroId } from '@/types/domain';
 
 import { createTestDb } from '../helpers/test-db';
 
@@ -822,7 +822,9 @@ describe('configuración del estudio', () => {
 describe('checklists por estudio', () => {
   it('los defaults cubren todos los checklistItem que emiten las plantillas', async () => {
     const emitidos = new Set<string>();
-    for (const archivo of ['aberturas', 'seco', 'pintura', 'gruesa']) {
+    // Sobre `RUBROS` y no sobre una lista escrita a mano: un rubro nuevo trae su
+    // archivo de plantilla, y con la lista fija el guard no lo miraba nunca.
+    for (const archivo of RUBROS) {
       const fuente = await readFile(new URL(`../../src/lib/rubros/${archivo}.ts`, import.meta.url), 'utf8');
       for (const match of fuente.matchAll(/checklistItem:\s*`\$\{RUBRO\}\.([a-z_]+)`/g)) {
         emitidos.add(`${archivo}.${match[1]}`);
@@ -843,7 +845,7 @@ describe('checklists por estudio', () => {
   it('sin filas en la base, el checklist efectivo es el de las plantillas', async () => {
     const efectivo = await checklistEfectivo(db, estudioId, 'seco');
 
-    expect(efectivo.get('seco.altura_tabiques')).toEqual({ activo: true, bloqueante: true });
+    expect(efectivo.get('seco.largo_tabiques')).toEqual({ activo: true, bloqueante: true });
     expect(efectivo.get('pintura.vanos_sin_descontar')).toBeUndefined();
 
     const pintura = await checklistEfectivo(db, estudioId, 'pintura');
@@ -852,23 +854,23 @@ describe('checklists por estudio', () => {
   });
 
   it('el toggle se persiste y cambia el checklist efectivo', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
 
     const efectivo = await checklistEfectivo(db, estudioId, 'seco');
-    expect(efectivo.get('seco.altura_tabiques')).toEqual({ activo: false, bloqueante: true });
+    expect(efectivo.get('seco.largo_tabiques')).toEqual({ activo: false, bloqueante: true });
 
     const [fila] = await db
       .select()
       .from(checklistsEstudio)
       .where(and(eq(checklistsEstudio.estudioId, estudioId), eq(checklistsEstudio.rubro, 'seco')));
-    expect(fila.itemId).toBe('seco.altura_tabiques');
+    expect(fila.itemId).toBe('seco.largo_tabiques');
     expect(fila.descripcion).not.toBe('');
     expect(await acciones()).toContain('checklist_item_actualizado');
   });
 
   it('volver a guardar el mismo ítem actualiza la fila, no agrega otra', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', {
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', {
       activo: true,
       bloqueante: false,
     });
@@ -883,10 +885,10 @@ describe('checklists por estudio', () => {
   });
 
   it('el toggle de un estudio no toca al otro', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
 
     const ajeno = await checklistEfectivo(db, otroEstudioId, 'seco');
-    expect(ajeno.get('seco.altura_tabiques')).toEqual({ activo: true, bloqueante: true });
+    expect(ajeno.get('seco.largo_tabiques')).toEqual({ activo: true, bloqueante: true });
   });
 
   it('un ítem de checklist que no existe en la plantilla se rechaza', async () => {
@@ -897,7 +899,7 @@ describe('checklists por estudio', () => {
 
   it('un lectura no edita checklists', async () => {
     await expect(
-      guardarItemChecklist(db, comoRol('lectura'), 'seco', 'seco.altura_tabiques', {
+      guardarItemChecklist(db, comoRol('lectura'), 'seco', 'seco.largo_tabiques', {
         activo: false,
       }),
     ).rejects.toThrow(RolInsuficienteError);
@@ -910,14 +912,14 @@ describe('checklists por estudio', () => {
     expect(lista.map((i) => i.itemId)).toEqual(CHECKLIST_DEFAULT.seco.map((i) => i.itemId));
     const largo = lista.find((i) => i.itemId === 'seco.largo_tabiques');
     expect(largo).toMatchObject({ activo: true, bloqueante: false, personalizado: true });
-    const altura = lista.find((i) => i.itemId === 'seco.altura_tabiques');
-    expect(altura).toMatchObject({ activo: true, bloqueante: true, personalizado: false });
+    const sistema = lista.find((i) => i.itemId === 'seco.sistema_tabique');
+    expect(sistema).toMatchObject({ activo: true, bloqueante: true, personalizado: false });
   });
 });
 
 describe('el checklist manda sobre el gate de aprobación', () => {
   const HALLAZGOS = [
-    { rubro: 'seco' as const, bloqueante: true, estado: 'abierto' as const, checklistItem: 'seco.altura_tabiques' },
+    { rubro: 'seco' as const, bloqueante: true, estado: 'abierto' as const, checklistItem: 'seco.largo_tabiques' },
     { rubro: null, bloqueante: true, estado: 'abierto' as const, checklistItem: 'escala' },
   ];
 
@@ -929,7 +931,7 @@ describe('el checklist manda sobre el gate de aprobación', () => {
   });
 
   it('desactivar el ítem lo deja de frenar, y no toca al bloqueo por escala', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const efectivo = await checklistEfectivo(db, estudioId, 'seco');
     const ajustados = ajustarHallazgosAlChecklist(HALLAZGOS, efectivo);
 
@@ -939,7 +941,7 @@ describe('el checklist manda sobre el gate de aprobación', () => {
   });
 
   it('marcarlo no bloqueante también lo libera, sin sacarlo de la bandeja', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { bloqueante: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { bloqueante: false });
     const efectivo = await checklistEfectivo(db, estudioId, 'seco');
 
     expect(ajustarHallazgosAlChecklist(HALLAZGOS, efectivo)[0].bloqueante).toBe(false);
@@ -979,7 +981,26 @@ describe('aprobarRubroCore: el aislamiento va adentro del núcleo (RNF-4)', () =
 
   const actor = () => ({ usuarioId: titular.usuarioId, email: titular.email, estudioId });
 
+  /** Un ítem activo del rubro: sin eso no hay cómputo que aprobar. */
+  async function sembrarItem(obraId: string, rubro: RubroId = 'seco'): Promise<void> {
+    await db.insert(computoItems).values({
+      obraId,
+      rubro,
+      claveItem: `${rubro}.placas`,
+      unidad: 'm2',
+      descripcion: 'Placa de roca de yeso (1,20 × 2,40 m)',
+      cantNeta: 10,
+      cantCompra: 12,
+      desperdicioPct: 12,
+      presentacion: 'placa 1,20 × 2,40',
+      fuentesJson: [],
+      confianza: 0.9,
+      origen: 'explicito',
+    });
+  }
+
   it('aprueba el rubro de una obra del estudio', async () => {
+    await sembrarItem(obraPropiaId);
     expect(await aprobarRubroCore(db, actor(), obraPropiaId, 'seco')).toEqual({ ok: true });
 
     const [fila] = await db
@@ -1004,6 +1025,98 @@ describe('aprobarRubroCore: el aislamiento va adentro del núcleo (RNF-4)', () =
     // Y tampoco deja rastro: el guard corta antes de escribir.
     expect(await acciones()).not.toContain('rubro_aprobado');
   });
+
+  /**
+   * Un rubro sin ítems no es un rubro aprobado: es un rubro vacío.
+   *
+   * Y aprobado es la llave de `lanzarCompulsa`, así que la compulsa salía sin
+   * una sola línea. Pasa de verdad cuando el expediente **sí** tiene los
+   * elementos del rubro y falta un dato para computarlos: la pantalla dice
+   * «todavía no hay ítems computados… aparecen solos cuando el análisis detecta
+   * las entidades», que en ese caso no es cierto, y el botón aprobaba igual.
+   */
+  it('no aprueba un rubro sin un solo ítem computado', async () => {
+    const resultado = await aprobarRubroCore(db, actor(), obraPropiaId, 'seco');
+
+    expect(resultado.ok).toBe(false);
+    expect(resultado.ok === false && resultado.error).toContain('no hay ningún ítem computado');
+    expect(
+      await db.select().from(computoRubros).where(eq(computoRubros.obraId, obraPropiaId)),
+    ).toEqual([]);
+    expect(await acciones()).not.toContain('rubro_aprobado');
+  });
+
+  it('los ítems de otro rubro no habilitan a este', async () => {
+    await sembrarItem(obraPropiaId, 'aberturas');
+    const resultado = await aprobarRubroCore(db, actor(), obraPropiaId, 'seco');
+
+    expect(resultado.ok).toBe(false);
+  });
+
+  it('un ítem anulado tampoco: la aprobación es sobre lo que quedó en la planilla', async () => {
+    await sembrarItem(obraPropiaId);
+    await db
+      .update(computoItems)
+      .set({ estado: 'anulado' })
+      .where(eq(computoItems.obraId, obraPropiaId));
+
+    expect((await aprobarRubroCore(db, actor(), obraPropiaId, 'seco')).ok).toBe(false);
+  });
+
+  /**
+   * RF-404 con lo que agregó §5.4: el gate no cambió —cero bloqueantes—, pero
+   * ahora un rubro puede aprobarse apoyado en datos que el sistema dedujo o
+   * midió sobre el dibujo. Cuántos eran queda en la aprobación: sin eso,
+   * «aprobé seco» no dice si lo aprobó sobre cotas escritas o sobre un
+   * rectángulo medido a escala.
+   */
+  it('la aprobación audita cuántos ítems deducidos e inferidos incluía', async () => {
+    const base = {
+      obraId: obraPropiaId,
+      rubro: 'seco' as const,
+      unidad: 'm2' as const,
+      descripcion: 'Placas de durlock',
+      desperdicioPct: 12,
+      presentacion: 'placa 1,20 × 2,40',
+      fuentesJson: [],
+      confianza: 0.9,
+    };
+    await db.insert(computoItems).values([
+      { ...base, claveItem: 'seco.placas', cantNeta: 10, cantCompra: 12, origen: 'deducido' },
+      { ...base, claveItem: 'seco.perfiles', cantNeta: 8, cantCompra: 9, origen: 'inferido' },
+      { ...base, claveItem: 'seco.tornillos', cantNeta: 5, cantCompra: 6, origen: 'explicito' },
+      // Un anulado no cuenta: la aprobación es sobre lo que quedó en la planilla.
+      {
+        ...base,
+        claveItem: 'seco.masilla',
+        cantNeta: 2,
+        cantCompra: 3,
+        origen: 'deducido',
+        estado: 'anulado' as const,
+      },
+      // Y otro rubro tampoco: se aprueba seco, no aberturas.
+      {
+        ...base,
+        rubro: 'aberturas' as const,
+        claveItem: 'aberturas.V1',
+        cantNeta: 1,
+        cantCompra: 1,
+        origen: 'inferido',
+      },
+    ]);
+
+    expect(await aprobarRubroCore(db, actor(), obraPropiaId, 'seco')).toEqual({ ok: true });
+
+    const [fila] = await db
+      .select()
+      .from(auditoria)
+      .where(and(eq(auditoria.obraId, obraPropiaId), eq(auditoria.accion, 'rubro_aprobado')));
+    expect(fila?.diffJson).toEqual({
+      estado: { antes: 'borrador', despues: 'aprobado' },
+      deducidos: 1,
+      inferidos: 1,
+    });
+  });
 });
 
 /**
@@ -1018,7 +1131,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
       rubro: 'seco' as const,
       bloqueante: true,
       estado: 'abierto' as const,
-      checklistItem: 'seco.altura_tabiques',
+      checklistItem: 'seco.largo_tabiques',
     },
     {
       rubro: 'aberturas' as const,
@@ -1042,7 +1155,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
 
     const total = RUBROS.reduce((suma, rubro) => suma + CHECKLIST_DEFAULT[rubro].length, 0);
     expect(efectivo.size).toBe(total);
-    expect(efectivo.get('seco.altura_tabiques')).toEqual({ activo: true, bloqueante: true });
+    expect(efectivo.get('seco.largo_tabiques')).toEqual({ activo: true, bloqueante: true });
     expect(efectivo.get('aberturas.medidas_vano')).toEqual({ activo: true, bloqueante: true });
   });
 
@@ -1053,7 +1166,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
   });
 
   it('desactivar un ítem de checklist baja el contador', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const efectivo = await checklistEfectivoDeTodos(db, estudioId);
 
     expect(contarBloqueantes(CONSULTAS, efectivo)).toBe(2);
@@ -1063,7 +1176,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
     await guardarItemChecklist(db, titular, 'aberturas', 'aberturas.medidas_vano', {
       bloqueante: false,
     });
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const efectivo = await checklistEfectivoDeTodos(db, estudioId);
 
     // Queda solo la de escala, que no está en ningún checklist.
@@ -1071,7 +1184,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
   });
 
   it('el checklist de otro estudio no afecta el contador de este (RNF-4)', async () => {
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const ajeno = await checklistEfectivoDeTodos(db, otroEstudioId);
 
     expect(contarBloqueantes(CONSULTAS, ajeno)).toBe(3);
@@ -1082,7 +1195,7 @@ describe('los contadores de bloqueantes miran el checklist del estudio', () => {
     // `HallazgoParaGate` y tira la identidad de la fila, así que no sirve para
     // decidir qué mostrar. Con el `bloqueante` crudo, el encabezado decía «2
     // bloqueantes» y el filtro seguía listando tres.
-    await guardarItemChecklist(db, titular, 'seco', 'seco.altura_tabiques', { activo: false });
+    await guardarItemChecklist(db, titular, 'seco', 'seco.largo_tabiques', { activo: false });
     const efectivo = await checklistEfectivoDeTodos(db, estudioId);
 
     // La bandeja aplica primero el filtro de estado (por defecto, «abiertas») y
@@ -1313,7 +1426,7 @@ describe('matriz de roles contra los cores que mutan', () => {
       nombre: 'guardarItemChecklist',
       minimo: 'colaborador',
       correr: (actor) =>
-        guardarItemChecklist(db, actor, 'seco', 'seco.altura_tabiques', { activo: false }),
+        guardarItemChecklist(db, actor, 'seco', 'seco.largo_tabiques', { activo: false }),
     },
     {
       nombre: 'eliminarObra',

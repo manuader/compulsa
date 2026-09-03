@@ -460,6 +460,61 @@ describe('buscarDatosFaltantes', () => {
     });
   });
 
+  /**
+   * La prioridad de los cortes es una **reserva**, no una inversión.
+   *
+   * Cuando falta una altura de obra conviene abrir un corte —ahí está acotada—,
+   * pero poner todos los cortes adelante deja a una obra con nueve cortes sin
+   * abrir una sola planilla, que es donde están escritas las medidas de las
+   * carpinterías (la decisión 2 del módulo). Con dos lugares alcanza: una
+   * altura está en el primer corte que se mire.
+   */
+  it('los cortes reservan lugares, no le ganan el cap a las planillas', () => {
+    const lamina = (n: number, tipo: 'corte' | 'planilla') => ({
+      id: `id-${n}`,
+      numeroPagina: n,
+      archivoRef: `ref-${n}`,
+      codigo: `L-${n}`,
+      titulo: null,
+      tipo,
+      estadoAnalisis: 'analizada',
+      textoExtraido: null,
+      documentoNombre: 'x.pdf',
+    });
+    const cortes = Array.from({ length: 9 }, (_, i) => lamina(i + 1, 'corte'));
+    const planilla = lamina(10, 'planilla');
+    const todas = [...cortes, planilla];
+
+    const { laminas, truncado } = laminasCandidatas(todas, new Set([planilla.id]), {
+      cortes: true,
+    });
+
+    // Dos cortes y la planilla: con la prioridad invertida, la planilla ni
+    // aparecía y el dato que sí está escrito no se leía nunca.
+    expect(laminas.map((l) => l.id)).toEqual(['id-1', 'id-2', 'id-10']);
+    // Y no cuenta como truncada: los cortes que sobran no son candidatos —igual
+    // que antes de que esta prioridad existiera—, así que la corrida sí puede
+    // marcar lo que buscó y no estaba.
+    expect(truncado).toBe(false);
+  });
+
+  it('sin objetivos de altura, los cortes no entran a la lista', () => {
+    const corte = {
+      id: 'id-1',
+      numeroPagina: 1,
+      archivoRef: 'ref-1',
+      codigo: 'C-01',
+      titulo: null,
+      tipo: 'corte' as const,
+      estadoAnalisis: 'analizada',
+      textoExtraido: null,
+      documentoNombre: 'x.pdf',
+    };
+
+    expect(laminasCandidatas([corte], new Set(), {}).laminas).toEqual([]);
+    expect(laminasCandidatas([corte], new Set(), { cortes: true }).laminas).toEqual([corte]);
+  });
+
   it('una obra sin consultas con target no gasta una llamada ni una auditoría', async () => {
     await db.update(hallazgos).set({ estado: 'descartado' }).where(eq(hallazgos.obraId, obraId));
     const antes = (await todaLaAuditoria()).length;

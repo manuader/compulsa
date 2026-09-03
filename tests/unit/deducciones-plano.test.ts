@@ -9,8 +9,10 @@
  * deducción que ya no existe. Mostrar el fantasma de una decisión ya tomada es
  * peor que no mostrar nada: invita a validar dos veces lo mismo.
  *
- * `seleccionVigente` es puro y vive en el `ui.tsx` de deducciones, que es un
- * `'use client'`: acá se testea sin render, que es donde está la lógica.
+ * `seleccionVigente` es puro y vive en `bandeja/revisar-ui.tsx`, que es un
+ * `'use client'`: acá se testea sin render, que es donde está la lógica. La
+ * pantalla se mudó a la solapa «Para revisar» de la bandeja (§5.8) y la función
+ * se mudó con ella; `/obras/[obraId]/deducciones` redirige a esa solapa.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -19,7 +21,7 @@ import {
   type DeduccionVista,
   type GrupoElemento,
   type Seleccion,
-} from '@/app/obras/[obraId]/deducciones/ui';
+} from '@/app/obras/[obraId]/bandeja/revisar-ui';
 import type { BBox } from '@/types/domain';
 
 const A01 = '11111111-1111-4111-8111-111111111111';

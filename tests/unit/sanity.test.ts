@@ -132,7 +132,7 @@ describe('computarObra: plantillas + sanity + confianza', () => {
 
   const obra = [tabique, ambiente, muro, ventana, pisoLiving, cieloLiving(15)];
 
-  it('corre los cuatro rubros en orden y suma los sanity checks de obra', () => {
+  it('corre los rubros en orden y suma los sanity checks de obra', () => {
     const { items, hallazgos } = computarObra(obra, 'nueva');
 
     expect(items.map((i) => i.rubro)).toEqual([
@@ -149,10 +149,15 @@ describe('computarObra: plantillas + sanity + confianza', () => {
       'gruesa',
       'gruesa',
       'gruesa',
+      // El piso del Living declara su material: solado + contrapiso + carpeta.
+      'terminaciones',
+      'terminaciones',
+      'terminaciones',
     ]);
     expect(items.find((i) => i.claveItem === 'seco.placas')!.cantCompra).toBe(31.68);
     expect(items.find((i) => i.claveItem === 'pintura.latex_paredes')!.cantCompra).toBe(7);
     expect(items.find((i) => i.claveItem === 'gruesa.ladrillos')!.cantCompra).toBe(396);
+    expect(items.find((i) => i.claveItem === 'terminaciones.solado.porcelanato')!.cantNeta).toBe(12);
 
     expect(hallazgos.map((h) => h.clave)).toEqual(['sanity.piso_cielo.Living']);
     expect(hallazgos[0]!.rubro).toBeNull();
@@ -174,16 +179,19 @@ describe('computarObra: plantillas + sanity + confianza', () => {
   });
 
   it('no repite hallazgos con la misma clave (idempotencia)', () => {
-    const sinAltura = terminacion({
+    // Dos tabiques con el mismo nombre y sin largo dan la misma clave: el
+    // engine la deduplica. (La altura ya no genera una clave por entidad: la
+    // agrupa la cadena de respaldo, que es otra cosa y se prueba en su rubro.)
+    const sinLargo = terminacion({
       id: 't2',
       tipo: 'tabique',
       nombre: 'T9',
-      atributos: { largoM: 4, tipo: 'durlock' },
+      atributos: { alturaM: 2.6, tipo: 'durlock' },
     });
-    const otroSinAltura = { ...sinAltura, id: 't3', bbox: [0.4, 0.4, 0.2, 0.02] as EntidadPersistida['bbox'] };
-    const { hallazgos } = computarObra([sinAltura, otroSinAltura], 'nueva', ['seco']);
+    const otroSinLargo = { ...sinLargo, id: 't3', bbox: [0.4, 0.4, 0.2, 0.02] as EntidadPersistida['bbox'] };
+    const { hallazgos } = computarObra([sinLargo, otroSinLargo], 'nueva', ['seco']);
 
-    expect(hallazgos.map((h) => h.clave)).toEqual(['seco.altura_tabiques.T9']);
+    expect(hallazgos.map((h) => h.clave)).toEqual(['seco.largo_tabiques.T9']);
   });
 
   it('una obra sin entidades no computa nada ni inventa hallazgos', () => {

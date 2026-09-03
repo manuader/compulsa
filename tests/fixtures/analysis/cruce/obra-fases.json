@@ -1,0 +1,48 @@
+{
+  "datosObra": [
+    {
+      "clave": "nivel.PB",
+      "valor": "0,00",
+      "unidad": "m",
+      "laminaCodigo": "A-02",
+      "bbox": [
+        0.62,
+        0.72,
+        0.12,
+        0.04
+      ],
+      "confianza": 0.9
+    },
+    {
+      "clave": "altura_revestimiento.general",
+      "valor": "2,10",
+      "unidad": "m",
+      "laminaCodigo": "A-02",
+      "confianza": 0.5
+    }
+  ],
+  "completados": [
+    {
+      "laminaCodigo": "A-01",
+      "entidadNombre": "T1",
+      "campo": "alturaM",
+      "valor": "2,60",
+      "fuenteLaminaCodigo": "A-02",
+      "bbox": [
+        0.15,
+        0.3,
+        0.3,
+        0.25
+      ],
+      "confianza": 0.85
+    }
+  ],
+  "identidades": [],
+  "conflictos": [],
+  "relecturas": [
+    {
+      "laminaCodigo": "A-02",
+      "queBuscar": "la altura de local, acotada en el corte"
+    }
+  ]
+}

@@ -120,6 +120,15 @@ const ESCRITURAS_DE_DATOS = new Set([
   // fantasma que le cuesta créditos al usuario.
   'hallazgo_valor_propuesto',
   'hallazgo_sin_resultado',
+  // Las cinco que trajo el pipeline por fases: el rótulo que persiste el
+  // inventario, los hechos de obra y las deducciones que aplica el cruce, y las
+  // entidades que unifica. Todas tienen que ser idempotentes por la misma razón
+  // que las de arriba — una obra que no cambió no puede reescribirse sola.
+  'lamina_inventariada',
+  'dato_obra_escrito',
+  'dato_obra_actualizado',
+  'deduccion_aplicada',
+  'entidades_unificadas',
 ]);
 
 function todosLosItems() {
@@ -163,23 +172,42 @@ function providerSinEntidades(): AnalysisProvider {
  * anotado. Es la única manera de ver qué le llega al prompt sin salir a la red
  * (`tests/CLAUDE.md` §2), y de contar cuántas veces se llamó al modelo.
  */
+/** Qué contexto vio cada llamada, con la lámina que la motivó. */
+interface LlamadaEspiada {
+  laminaId: string;
+  ctx: ObraContexto | undefined;
+}
+
+/**
+ * El espía anota **por lámina** y no por orden de llegada: la fase de
+ * extracción corre en paralelo (cap 4), así que el orden en el que las láminas
+ * llaman al provider no es el de las páginas.
+ */
 function providerEspia() {
   const real = getAnalysisProvider();
-  const rotulos: (ObraContexto | undefined)[] = [];
-  const extracciones: ObraContexto[] = [];
+  const inventarios: LlamadaEspiada[] = [];
+  const rotulos: LlamadaEspiada[] = [];
+  const extracciones: LlamadaEspiada[] = [];
 
   const provider: AnalysisProvider = {
+    async inventariar(lamina, ctx) {
+      inventarios.push({ laminaId: lamina.laminaId, ctx });
+      return real.leerRotulo(lamina, ctx);
+    },
     async leerRotulo(lamina, ctx) {
-      rotulos.push(ctx);
+      rotulos.push({ laminaId: lamina.laminaId, ctx });
       return real.leerRotulo(lamina, ctx);
     },
     async extraerEntidades(lamina, ctx) {
-      extracciones.push(ctx);
+      extracciones.push({ laminaId: lamina.laminaId, ctx });
       return real.extraerEntidades(lamina, ctx);
     },
   };
 
-  return { provider, rotulos, extracciones };
+  const ctxDe = (llamadas: readonly LlamadaEspiada[], laminaId: string): ObraContexto =>
+    llamadas.find((llamada) => llamada.laminaId === laminaId)?.ctx as ObraContexto;
+
+  return { provider, inventarios, rotulos, extracciones, ctxDe };
 }
 
 /** Cuántas veces arrancó el análisis de esta lámina (una por llamada al modelo). */
@@ -716,16 +744,24 @@ describe('el contexto de obra llega al prompt', () => {
       await archivoFixture('obra-demo.pdf'),
     );
     await procesarDocumento(documento.id, { db, storage, provider: espia.provider });
+    const paginas = await laminasDe(documento.id);
 
+    // Una pasada de inventario y una de extracción por lámina: el inventario no
+    // reemplaza al rótulo de la extracción, lo adelanta.
+    expect(espia.inventarios).toHaveLength(3);
     expect(espia.rotulos).toHaveLength(3);
     expect(espia.extracciones).toHaveLength(3);
+    // RNF-7: el inventario también sabe de qué obra es, o su costo no se ve.
+    expect(espia.inventarios.every(({ ctx }) => ctx?.obraId === obraId)).toBe(true);
     // El rótulo se pide CON contexto, y es el mismo objeto que ve la extracción.
-    expect(espia.rotulos.every((ctx) => ctx !== undefined)).toBe(true);
-    expect(espia.rotulos[0]).toEqual(espia.extracciones[0]);
+    expect(espia.rotulos.every(({ ctx }) => ctx !== undefined)).toBe(true);
+    expect(espia.ctxDe(espia.rotulos, paginas[2].id)).toEqual(
+      espia.ctxDe(espia.extracciones, paginas[2].id),
+    );
 
     // La tercera lámina: las otras dos ya están leídas, así que el índice tiene
     // sus códigos y títulos de verdad.
-    const ctx = espia.extracciones[2];
+    const ctx = espia.ctxDe(espia.extracciones, paginas[2].id);
     expect(ctx.obraId).toBe(obraId);
     expect(ctx.tipoObra).toBe('nueva');
     // Las **otras** láminas del expediente: la que se está leyendo no entra a su
@@ -738,6 +774,31 @@ describe('el contexto de obra llega al prompt', () => {
       'Las cotas de nuestros planos están en centímetros.\n' +
         'Aberturas: Las medidas de las carpinterías están en la planilla DET00.',
     );
+  });
+
+  /**
+   * Para esto existe la fase de inventario: hasta acá, la **primera** lámina de
+   * la primera subida se analizaba sin saber que existía ninguna otra —el
+   * índice se llenaba a medida que se analizaba— y el prompt no podía decirle
+   * al modelo "no copies acá un dato que está escrito en otra lámina". Ahora
+   * los rótulos se leen todos antes de extraer nada.
+   */
+  it('la primera lámina ya ve el índice completo del expediente', async () => {
+    const espia = providerEspia();
+    const documento = await subirDocumento(
+      db,
+      storage,
+      obraId,
+      usuarioId,
+      await archivoFixture('obra-demo.pdf'),
+    );
+    await procesarDocumento(documento.id, { db, storage, provider: espia.provider });
+    const paginas = await laminasDe(documento.id);
+
+    expect(espia.ctxDe(espia.extracciones, paginas[0].id).indiceLaminas).toEqual([
+      { codigo: 'A-02', titulo: 'CORTE A-A', tipo: 'corte' },
+      { codigo: 'A-03', titulo: 'PLANILLA DE CARPINTERÍAS', tipo: 'planilla' },
+    ]);
   });
 
   it('sin instrucciones ni resumen, el ctx queda como el de siempre', async () => {
@@ -754,8 +815,8 @@ describe('el contexto de obra llega al prompt', () => {
     // Un estudio que no escribió instrucciones no le agrega una sección vacía
     // al prompt, y la primera lámina de la primera subida se analiza cuando
     // todavía no hay resumen ejecutivo: eso no es un error, es el orden.
-    expect(espia.extracciones[0].instruccionesEstudio).toBeUndefined();
-    expect(espia.extracciones[0].resumen).toBeUndefined();
+    expect(espia.extracciones[0].ctx?.instruccionesEstudio).toBeUndefined();
+    expect(espia.extracciones[0].ctx?.resumen).toBeUndefined();
   });
 
   it('el titular del resumen ejecutivo entra al ctx en cuanto existe', async () => {
@@ -768,7 +829,7 @@ describe('el contexto de obra llega al prompt', () => {
     const espia = providerEspia();
     await procesarDocumento(documento.id, { db, storage, provider: espia.provider });
 
-    expect(espia.extracciones[0].resumen).toBe(titular);
+    expect(espia.extracciones[0].ctx?.resumen).toBe(titular);
   });
 });
 

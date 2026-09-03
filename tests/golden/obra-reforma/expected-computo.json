@@ -50,8 +50,8 @@
     "derivacion": "Cielorraso de la Cocina = su superficie, 9 m². 2 manos a 10 m²/L = 1,80 L netos; +5 % = 1,89 L; latas 2×1 = 2 L."
   },
   {
-    "claveItem": "gruesa.demolicion",
+    "claveItem": "demolicion.muros",
     "cantCompra": 10.4,
-    "derivacion": "M1 está marcado 'demoler': no aporta ladrillos, cemento, cal ni arena, solo m² de demolición. 4 m × 2,60 m = 10,40 m², sin desperdicio y contratada global ⇒ 10,40 m²."
+    "derivacion": "M1 está marcado 'demoler': no aporta ladrillos, cemento, cal ni arena, solo m² de demolición. 4 m × 2,60 m = 10,40 m², sin desperdicio y contratada global ⇒ 10,40 m². El número no se movió: el ítem cambió de rubro (era «gruesa.demolicion» hasta que la ola del expediente le dio a demolición su propio rubro con tres ítems)."
   }
 ]

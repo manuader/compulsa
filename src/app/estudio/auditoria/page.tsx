@@ -21,6 +21,9 @@ import { esRolSuficiente } from '@/lib/plataforma/roles';
 
 import { SinPermiso } from '../ui';
 
+import { detalle, objeto } from './detalle';
+import { frase } from './frases';
+
 export const metadata: Metadata = { title: 'Auditoría' };
 
 /** Filas por página. El cursor es `(at, id)`, no un offset: ver `condicionCursor`. */
@@ -35,104 +38,6 @@ const FECHA = new Intl.DateTimeFormat('es-AR', {
   second: '2-digit',
 });
 
-/**
- * Cada acción, dicha en es-AR.
- *
- * La columna `accion` guarda verbos en `snake_case` porque es una clave estable
- * que se filtra y se agrupa; esta tabla es la traducción para leerla. Una acción
- * que no esté acá se muestra humanizada (`hallazgo_reabierto` → "hallazgo
- * reabierto"): mejor un texto imperfecto que una fila que no se entiende.
- *
- * Ese ejemplo es literal: `hallazgo_reabierto` **ya no lo emite nadie** y por
- * eso salió de la tabla. Reabrir una consulta cerrada era la excepción que
- * necesitaba el bloqueo por escala, y desde "proponer en vez de bloquear" lo que
- * el arquitecto cerró no se reabre (`upsertHallazgoEscala`). Las filas viejas
- * que la tengan siguen siendo legibles, humanizadas, que es justo para lo que
- * está el fallback.
- */
-const FRASE_ACCION: Record<string, string> = {
-  analisis_llm: 'Analizó una lámina con el modelo',
-  checklist_item_actualizado: 'Cambió un ítem del checklist',
-  computo_item_actualizado: 'El recompute actualizó un ítem',
-  computo_item_anulado: 'Anuló un ítem del cómputo',
-  computo_item_creado: 'Agregó un ítem al cómputo',
-  computo_item_desvinculado: 'Un ítem perdió su entidad de origen',
-  computo_item_editado: 'Editó un ítem del cómputo',
-  computo_recalculado: 'Recalculó el cómputo de la obra',
-  config_estudio_actualizada: 'Cambió la configuración del estudio',
-  documento_eliminado: 'Eliminó un documento',
-  documento_subido: 'Subió un documento',
-  entidad_actualizada: 'Completó un dato de una entidad',
-  hallazgo_abierto: 'Se abrió una consulta',
-  hallazgo_actualizado: 'Cambió una consulta',
-  hallazgo_descartado: 'Descartó una consulta',
-  hallazgo_respondido: 'Respondió una consulta',
-  invitacion_creada: 'Generó una invitación',
-  invitacion_usada: 'Se sumó al estudio con una invitación',
-  lamina_analizada: 'Terminó de analizar una lámina',
-  lamina_bloqueada_escala: 'Bloqueó una lámina por escala no verificable',
-  lamina_clasificada: 'Clasificó una lámina',
-  lamina_creada: 'Separó una lámina del PDF',
-  lamina_error: 'Falló el análisis de una lámina',
-  lamina_escala_confirmada: 'Confirmó la escala de una lámina',
-  lamina_procesamiento_omitido: 'Salteó una lámina ya tomada',
-  lamina_procesando: 'Tomó una lámina para analizar',
-  obra_archivada: 'Archivó la obra',
-  obra_archivos_pendientes: 'Quedaron archivos sin borrar en el storage',
-  obra_creada: 'Creó la obra',
-  obra_desarchivada: 'Desarchivó la obra',
-  obra_editada: 'Editó los datos de la obra',
-  obra_eliminada: 'Eliminó la obra definitivamente',
-  rubro_aprobado: 'Aprobó el cómputo de un rubro',
-  usuario_activo_cambiado: 'Activó o dio de baja a un usuario',
-  usuario_rol_cambiado: 'Cambió el rol de un usuario',
-};
-
-function frase(accion: string): string {
-  return FRASE_ACCION[accion] ?? accion.replace(/_/g, ' ');
-}
-
-/** "computo_items:seco.placas" → "seco.placas". El prefijo es la tabla, no el objeto. */
-function objeto(targetRef: string | null): string {
-  if (!targetRef) return '—';
-  const corte = targetRef.indexOf(':');
-  return corte === -1 ? targetRef : targetRef.slice(corte + 1);
-}
-
-/**
- * El diff, en una línea legible.
- *
- * Los diffs del repo tienen dos formas: `{ campo: { antes, despues } }` para las
- * ediciones y `{ campo: valor }` para las metadatas. Se muestran las dos sin
- * pretender que son la misma cosa, y se corta a tres campos: el detalle completo
- * está en la base, esta columna es para reconocer la fila.
- */
-function detalle(diff: Record<string, unknown> | null): string {
-  if (!diff) return '—';
-
-  const partes: string[] = [];
-  for (const [campo, valor] of Object.entries(diff)) {
-    if (partes.length === 3) {
-      partes.push('…');
-      break;
-    }
-    if (valor !== null && typeof valor === 'object' && 'antes' in valor && 'despues' in valor) {
-      const cambio = valor as { antes: unknown; despues: unknown };
-      partes.push(`${campo}: ${corto(cambio.antes)} → ${corto(cambio.despues)}`);
-    } else {
-      partes.push(`${campo}: ${corto(valor)}`);
-    }
-  }
-  return partes.join(' · ');
-}
-
-function corto(valor: unknown): string {
-  if (valor === null || valor === undefined) return '—';
-  if (typeof valor === 'string') return valor.length > 40 ? `${valor.slice(0, 39)}…` : valor;
-  if (typeof valor === 'number' || typeof valor === 'boolean') return String(valor);
-  const texto = JSON.stringify(valor);
-  return texto.length > 40 ? `${texto.slice(0, 39)}…` : texto;
-}
 
 /**
  * Keyset por `(at, id)`, no `OFFSET`.
@@ -151,6 +56,33 @@ function condicionCursor(cursor: string | undefined): SQL | undefined {
   if (Number.isNaN(at.getTime())) return undefined;
 
   return or(lt(auditoria.at, at), and(eq(auditoria.at, at), lt(auditoria.id, id)));
+}
+
+/** Miles con punto: `1.284.503`. Es un conteo, no plata (`formatearImporte` es para plata). */
+function contar(n: number): string {
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+/**
+ * Lo que gastó en tokens una obra, sumando **todas** las llamadas al modelo.
+ *
+ * RNF-7 pide que el costo se mida y se vea. Medido estaba: los seis proveedores
+ * escriben `obra_id` y los cuatro campos de tokens en su fila de auditoría.
+ * Verse, no se veía en ningún lado — y la columna «Detalle» tampoco ayudaba,
+ * porque cortaba a tres campos por el orden que devolvía `jsonb` y
+ * `tokensEntrada` casi nunca entraba.
+ *
+ * Se cuentan **tokens y llamadas, no pesos**: el precio por token depende del
+ * modelo y de la fecha, y nada de eso está guardado. Poner un peso acá sería
+ * inventarlo, que es exactamente lo que el producto no hace (P4).
+ */
+interface GastoDeObra {
+  obraId: string | null;
+  llamadas: number;
+  entrada: number;
+  salida: number;
+  cacheLectura: number;
+  cacheEscritura: number;
 }
 
 interface Props {
@@ -209,6 +141,35 @@ export default async function AuditoriaPage({ searchParams }: Props) {
           : undefined,
       ) ?? sql`false`;
 
+  // El gasto en modelo por obra: una sola pasada agregada sobre las filas
+  // `*_llm`, con el MISMO alcance que la tabla de abajo. Los `->>` devuelven
+  // texto —la columna es `jsonb`— y el `::bigint` los suma; una fila sin el
+  // campo suma cero, que es lo correcto para las llamadas viejas.
+  const numero = (campo: string) =>
+    sql<number>`coalesce(sum((${auditoria.diffJson} ->> ${campo})::bigint), 0)`.mapWith(Number);
+
+  const gastos: GastoDeObra[] = await db
+    .select({
+      obraId: auditoria.obraId,
+      llamadas: sql<number>`count(*)`.mapWith(Number),
+      entrada: numero('tokensEntrada'),
+      salida: numero('tokensSalida'),
+      cacheLectura: numero('tokensCacheLectura'),
+      cacheEscritura: numero('tokensCacheEscritura'),
+    })
+    .from(auditoria)
+    // Por sufijo y no por una lista de acciones: el día que aparezca una
+    // familia nueva de llamadas al modelo, su costo se cuenta solo. `like` con
+    // un guion bajo pediría escaparlo, que es una trampa que no hace falta.
+    .where(and(alcance, sql`right(${auditoria.accion}, 4) = '_llm'`))
+    .groupBy(auditoria.obraId)
+    .orderBy(auditoria.obraId);
+
+  const totalTokens = gastos.reduce(
+    (suma, gasto) => suma + gasto.entrada + gasto.salida + gasto.cacheLectura + gasto.cacheEscritura,
+    0,
+  );
+
   // Se piden 51 para saber si hay página siguiente sin contar la tabla entera.
   const filas = await db
     .select({
@@ -248,6 +209,66 @@ export default async function AuditoriaPage({ searchParams }: Props) {
           Toda escritura del sistema y de las personas deja rastro acá. No se edita ni se borra.
         </p>
       </header>
+
+      {/* RNF-7: el costo del análisis, medido y **a la vista**. Va arriba de la
+          tabla porque es la pregunta que se le hace a esta pantalla antes que
+          «qué pasó»: cuánto salió analizar esta obra. */}
+      <Card>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold text-neutral-900">Consumo de modelo</h2>
+            <p className="text-sm text-neutral-600 tabular-nums">
+              {totalTokens === 0
+                ? 'Todavía no se llamó al modelo en el alcance elegido.'
+                : `${contar(totalTokens)} tokens en total`}
+            </p>
+          </div>
+
+          {totalTokens === 0 ? null : (
+            <>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableHeaderCell>Obra</TableHeaderCell>
+                    <TableHeaderCell numeric>Llamadas</TableHeaderCell>
+                    <TableHeaderCell numeric>Entrada</TableHeaderCell>
+                    <TableHeaderCell numeric>Salida</TableHeaderCell>
+                    <TableHeaderCell numeric>Caché leído</TableHeaderCell>
+                    <TableHeaderCell numeric>Caché escrito</TableHeaderCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {gastos.map((gasto) => (
+                    <TableRow key={gasto.obraId ?? 'sin-obra'}>
+                      <TableCell>
+                        {gasto.obraId === null
+                          ? 'Sin obra'
+                          : (nombreDeObra.get(gasto.obraId) ?? 'obra eliminada')}
+                      </TableCell>
+                      <TableCell numeric>{contar(gasto.llamadas)}</TableCell>
+                      <TableCell numeric className="font-medium">
+                        {contar(gasto.entrada)}
+                      </TableCell>
+                      <TableCell numeric>{contar(gasto.salida)}</TableCell>
+                      <TableCell numeric>{contar(gasto.cacheLectura)}</TableCell>
+                      <TableCell numeric>{contar(gasto.cacheEscritura)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              {/* Tokens y no pesos, y se dice por qué: el precio depende del
+                  modelo y de la fecha, y eso no está guardado en ningún lado.
+                  Un número en pesos acá sería inventado. */}
+              <p className="text-xs text-neutral-500">
+                Cuenta todas las llamadas al modelo: inventario, análisis de láminas, cruce del
+                expediente, búsqueda dirigida, Q&amp;A y lectura de presupuestos. Son tokens, no
+                pesos: el precio por token depende del modelo y de la
+                fecha, y eso no se guarda. La entrada es la que manda en la factura.
+              </p>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent className="flex flex-col gap-4">

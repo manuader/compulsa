@@ -17,6 +17,18 @@
  *    especificación y un ítem sin cotizar, que deja una repregunta en
  *    borrador—, el índice de precios del mes poblado y una ronda de negociación
  *    propuesta.
+ *  · **Casa Conjunta — demo** (`obra-conjunta.pdf`): el expediente como
+ *    conjunto. Seis láminas donde la planta no acota una sola altura y el corte
+ *    la declara una vez; la bandeja abre UNA consulta de dato de obra por los
+ *    siete elementos que la esperan, el seed la responde como lo haría el
+ *    arquitecto y el recompute propaga los 2,60 m a todos. Trae además los
+ *    cuatro rubros nuevos poblados (terminaciones, sanitaria, eléctrica) y deja
+ *    abierta la otra consulta agrupada —hasta dónde llega el revestimiento del
+ *    baño— para que la bandeja tenga algo que mostrar.
+ *
+ * A nivel estudio siembra también la **lista de precios**: diez renglones que
+ * cubren los rubros viejos y los nuevos, para que la planilla salga con la
+ * columna de precio llena y con su fuente («lista») a la vista.
  *
  * Cinco reglas de este archivo:
  *
@@ -58,6 +70,7 @@ import {
   computoItems,
   contactosCompulsa,
   cotizaciones,
+  datosObra,
   deducciones,
   documentos,
   entidades,
@@ -68,6 +81,7 @@ import {
   negociaciones,
   notificaciones,
   obras,
+  preciosReferencia,
   priceIndex,
   proveedores,
   usuarios,
@@ -89,11 +103,13 @@ import {
 } from '@/lib/compulsa/flujo';
 import { validarDeduccion, type ActorDeduccion } from '@/lib/deduccion/persistencia';
 import { claveEscala } from '@/lib/pipeline/claves';
+import { guardarPrecio, type ActorPrecios } from '@/lib/precios/gestion';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
 import { crearNotificacion } from '@/lib/plataforma/notificaciones';
 import { crearInvitacion, type ActorPlataforma } from '@/lib/plataforma/usuarios';
 import { crearProveedor, marcarOptOut, type ActorProveedor } from '@/lib/proveedores/gestion';
 import { getStorage } from '@/lib/storage/index';
+import type { Unidad } from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Qué siembra el seed
@@ -118,6 +134,22 @@ const OBRA_COMPULSA = {
   tipo: 'reforma',
 } as const;
 
+/**
+ * La tercera obra: el expediente como conjunto.
+ *
+ * El nombre **no** matchea ningún fixture de cruce (`slug('Casa Conjunta —
+ * demo')` no es `obra-conjunta`), y eso es a propósito: sin el cruce, la altura
+ * de local no aparece sola y la bandeja abre la consulta agrupada que el seed
+ * después responde. Es la demo del camino que le importa al arquitecto —una
+ * pregunta, una respuesta, siete elementos computados—, no la del cruce, que ya
+ * tiene el golden 3.
+ */
+const OBRA_CONJUNTA = {
+  nombre: 'Casa Conjunta — demo',
+  zona: 'Caballito, CABA',
+  tipo: 'nueva',
+} as const;
+
 const DIR_PDFS = path.join(process.cwd(), 'tests', 'fixtures', 'pdfs');
 const DIR_PRESUPUESTOS = path.join(process.cwd(), 'tests', 'fixtures', 'presupuestos');
 
@@ -136,6 +168,7 @@ const DIR_PRESUPUESTOS = path.join(process.cwd(), 'tests', 'fixtures', 'presupue
 const DOC_OBRA = 'obra-demo.pdf';
 const DOC_SIN_ESCALA = 'sin-escala.pdf';
 const DOC_REFORMA = 'obra-reforma.pdf';
+const DOC_CONJUNTA = 'obra-conjunta.pdf';
 
 const DOCUMENTOS: readonly { nombre: string; copias: number }[] = [
   { nombre: DOC_OBRA, copias: 1 },
@@ -144,6 +177,52 @@ const DOCUMENTOS: readonly { nombre: string; copias: number }[] = [
 
 const DOCUMENTOS_COMPULSA: readonly { nombre: string; copias: number }[] = [
   { nombre: DOC_REFORMA, copias: 1 },
+];
+
+const DOCUMENTOS_CONJUNTA: readonly { nombre: string; copias: number }[] = [
+  { nombre: DOC_CONJUNTA, copias: 1 },
+];
+
+/**
+ * La consulta agrupada que el seed responde: la altura de local de PB.
+ *
+ * Es UNA sola para los cuatro tabiques, el muro y los dos ambientes de la
+ * planta. Antes de la ola del expediente eran siete preguntas con la misma
+ * respuesta; ahora se contesta una vez y el recompute la propaga.
+ */
+const ALTURA_DE_LOCAL = { clave: 'dato_obra.altura_local.PB', valor: '2,60' } as const;
+
+/**
+ * La lista de precios del estudio: diez renglones, cinco de los rubros de
+ * siempre y cinco de los que trajo esta ola.
+ *
+ * La fecha es **fija** y no `fechaHoyIso()`: el seed promete que la segunda
+ * corrida no cambia una fila, y una fecha que se mueve con el reloj rompería
+ * esa promesa al día siguiente (`guardarPrecio` vería un diff y auditaría).
+ *
+ * Los precios son de referencia, redondos y a propósito no realistas al peso:
+ * lo que la demo tiene que mostrar es la **cascada** —el ítem sale con
+ * `fuente: 'lista'` y la fecha del renglón— y no una lista de precios de
+ * corralón que quedaría vieja en un mes.
+ */
+const FECHA_LISTA = '2026-08-01';
+
+const LISTA_PRECIOS: readonly {
+  claveItem: string;
+  descripcion: string;
+  unidad: Unidad;
+  precio: number;
+}[] = [
+  { claveItem: 'seco.placas', descripcion: 'Placa de roca de yeso (1,20 × 2,40 m)', unidad: 'm2', precio: 9800 },
+  { claveItem: 'seco.soleras', descripcion: 'Solera de 70 mm', unidad: 'ml', precio: 3900 },
+  { claveItem: 'seco.montantes', descripcion: 'Montante de 70 mm', unidad: 'u', precio: 5200 },
+  { claveItem: 'pintura.latex_paredes', descripcion: 'Látex interior para paredes', unidad: 'l', precio: 4300 },
+  { claveItem: 'gruesa.cemento', descripcion: 'Cemento de albañilería', unidad: 'kg', precio: 260 },
+  { claveItem: 'terminaciones.solado.porcelanato', descripcion: 'Porcelanato 60 × 60', unidad: 'm2', precio: 22500 },
+  { claveItem: 'terminaciones.zocalo.madera', descripcion: 'Zócalo de madera', unidad: 'ml', precio: 6400 },
+  { claveItem: 'terminaciones.contrapiso', descripcion: 'Contrapiso bajo solado', unidad: 'm2', precio: 7800 },
+  { claveItem: 'sanitaria.canieria.ac.20', descripcion: 'Caño de termofusión Ø 20 (agua caliente)', unidad: 'ml', precio: 3100 },
+  { claveItem: 'electrica.boca.luz', descripcion: 'Boca de luz completa', unidad: 'u', precio: 18500 },
 ];
 
 /**
@@ -654,6 +733,57 @@ async function asegurarNegociacion(db: Db, obra: Obra, actor: ActorCompulsa): Pr
 }
 
 /** Una invitación de colaborador vigente, para poder probar el alta con código. */
+/**
+ * La lista de precios del estudio, renglón por renglón, con el mismo núcleo que
+ * la pantalla `/estudio/precios` (`guardarPrecio`, origen `manual`).
+ *
+ * Idempotente por construcción: `guardarPrecio` compara contra la fila que ya
+ * está y, si nada cambió, no escribe ni audita. Devuelve cuántos renglones
+ * tocó, que en la segunda corrida es cero.
+ */
+async function asegurarPrecios(db: Db, actor: ActorPrecios): Promise<number> {
+  let tocados = 0;
+  for (const fila of LISTA_PRECIOS) {
+    const resultado = await guardarPrecio(db, actor, { ...fila, fecha: FECHA_LISTA }, 'manual');
+    if (!resultado.ok) {
+      throw new Error(
+        `No pude sembrar el precio de ${fila.claveItem}: ${Object.values(resultado.errores).join(' ')}`,
+      );
+    }
+    if (resultado.creado || Object.keys(resultado.cambios).length > 0) tocados += 1;
+  }
+  return tocados;
+}
+
+/**
+ * Responde la consulta agrupada de la altura de local de PB, como lo haría el
+ * arquitecto en la bandeja: un número, una vez.
+ *
+ * Es el gesto que resume la ola. La consulta apunta a un **dato de obra**, no a
+ * una entidad: responderla escribe `datos_obra.altura_local.PB` y el recompute
+ * la propaga a los cuatro tabiques, al muro y a los dos ambientes que la
+ * estaban esperando. Todo eso lo hace `responderHallazgo`, que es el mismo
+ * núcleo que la pantalla.
+ *
+ * Si la consulta ya está respondida (segunda corrida) no hace nada.
+ */
+async function asegurarAlturaDeLocal(db: Db, obra: Obra, usuario: Usuario): Promise<boolean> {
+  const [hallazgo] = await db
+    .select()
+    .from(hallazgos)
+    .where(and(eq(hallazgos.obraId, obra.id), eq(hallazgos.clave, ALTURA_DE_LOCAL.clave)));
+  if (!hallazgo || hallazgo.estado !== 'abierto') return false;
+
+  const resultado = await responderHallazgo(
+    { obraId: obra.id, hallazgoId: hallazgo.id, valor: ALTURA_DE_LOCAL.valor },
+    { usuarioId: usuario.id, email: usuario.email },
+  );
+  if (!resultado.ok) {
+    throw new Error(`No pude responder la altura de local: ${resultado.error}`);
+  }
+  return true;
+}
+
 async function asegurarInvitacion(db: Db, actor: ActorPlataforma): Promise<string | null> {
   const abiertas = await db
     .select()
@@ -682,7 +812,7 @@ async function asegurarNotificaciones(db: Db, usuario: Usuario): Promise<number>
 // ---------------------------------------------------------------------------
 
 async function contar(db: Db, obraId: string): Promise<Record<string, number>> {
-  const [docs, lams, ents, items, halls, deducs, audits] = await Promise.all([
+  const [docs, lams, ents, items, halls, deducs, audits, datos] = await Promise.all([
     db.select().from(documentos).where(eq(documentos.obraId, obraId)),
     db.select().from(laminas).where(eq(laminas.obraId, obraId)),
     db.select().from(entidades).where(eq(entidades.obraId, obraId)),
@@ -690,6 +820,7 @@ async function contar(db: Db, obraId: string): Promise<Record<string, number>> {
     db.select().from(hallazgos).where(eq(hallazgos.obraId, obraId)),
     db.select().from(deducciones).where(eq(deducciones.obraId, obraId)),
     db.select().from(auditoria).where(eq(auditoria.obraId, obraId)),
+    db.select().from(datosObra).where(eq(datosObra.obraId, obraId)),
   ]);
 
   return {
@@ -699,6 +830,8 @@ async function contar(db: Db, obraId: string): Promise<Record<string, number>> {
     'ítems de cómputo': items.length,
     'ítems editados a mano': items.filter((i) => i.editadoPor !== null).length,
     'ítems deducidos': items.filter((i) => i.origen === 'deducido').length,
+    'ítems con precio': items.filter((i) => i.precioJson !== null).length,
+    'datos de obra': datos.length,
     consultas: halls.length,
     'consultas abiertas': halls.filter((h) => h.estado === 'abierto').length,
     'consultas respondidas': halls.filter((h) => h.estado === 'respondido').length,
@@ -742,6 +875,10 @@ async function contarCompulsa(db: Db, obraId: string, estudioId: string): Promis
     .select({ total: count() })
     .from(invitaciones)
     .where(eq(invitaciones.estudioId, estudioId));
+  const [lista] = await db
+    .select({ total: count() })
+    .from(preciosReferencia)
+    .where(eq(preciosReferencia.estudioId, estudioId));
 
   return {
     proveedores: agenda?.total ?? 0,
@@ -751,6 +888,7 @@ async function contarCompulsa(db: Db, obraId: string, estudioId: string): Promis
     'cotizaciones conciliadas': cotizaciones_.filter((f) => f.estado === 'conciliada').length,
     negociaciones: rondas.length,
     'índice de precios': indice?.total ?? 0,
+    'lista de precios': lista?.total ?? 0,
     invitaciones: invits?.total ?? 0,
     notificaciones: avisos?.total ?? 0,
   };
@@ -782,6 +920,13 @@ async function main(): Promise<void> {
     estudioId: estudio.id,
   };
 
+  // --- Estudio: la lista de precios -----------------------------------------
+  // Va PRIMERO a propósito: la cascada de precios corre dentro del recompute, y
+  // el recompute de cada obra pasa cuando se procesa su documento. Sembrar la
+  // lista después dejaría la planilla sin precios hasta el próximo recompute.
+  const actorPrecios: ActorPrecios = { ...base, rol: 'titular', activo: true, estudioId: estudio.id };
+  const precios = await asegurarPrecios(db, actorPrecios);
+
   // --- Obra 1: el expediente y la bandeja -----------------------------------
   const { obra, creada: obraCreada } = await asegurarObra(db, estudio.id, OBRA);
   const subidos = await asegurarDocumentos(db, obra, usuario, DOCUMENTOS);
@@ -801,6 +946,15 @@ async function main(): Promise<void> {
   const cotizadas = await asegurarCotizaciones(db, obraCompulsa, actorCompulsa);
   const negociada = await asegurarNegociacion(db, obraCompulsa, actorCompulsa);
 
+  // --- Obra 3: el expediente como conjunto -----------------------------------
+  const { obra: obraConjunta, creada: obraConjuntaCreada } = await asegurarObra(
+    db,
+    estudio.id,
+    OBRA_CONJUNTA,
+  );
+  const subidosConjunta = await asegurarDocumentos(db, obraConjunta, usuario, DOCUMENTOS_CONJUNTA);
+  const alturaRespondida = await asegurarAlturaDeLocal(db, obraConjunta, usuario);
+
   // --- Plataforma -----------------------------------------------------------
   const codigo = await asegurarInvitacion(db, actorPlataforma);
   const avisos = await asegurarNotificaciones(db, usuario);
@@ -810,12 +964,17 @@ async function main(): Promise<void> {
     usuarioCreado ? `usuario ${USUARIO.email}` : null,
     obraCreada ? `obra «${OBRA.nombre}»` : null,
     obraCompulsaCreada ? `obra «${OBRA_COMPULSA.nombre}»` : null,
-    subidos + subidosCompulsa > 0
-      ? `${subidos + subidosCompulsa} ${subidos + subidosCompulsa === 1 ? 'documento subido y procesado' : 'documentos subidos y procesados'}`
+    obraConjuntaCreada ? `obra «${OBRA_CONJUNTA.nombre}»` : null,
+    precios > 0 ? `${precios} renglones en la lista de precios del estudio` : null,
+    subidos + subidosCompulsa + subidosConjunta > 0
+      ? `${subidos + subidosCompulsa + subidosConjunta} ${subidos + subidosCompulsa + subidosConjunta === 1 ? 'documento subido y procesado' : 'documentos subidos y procesados'}`
       : null,
     respondida ? '1 consulta de escala respondida' : null,
     editado ? `1 ítem editado a mano (${EDICION.claveItem})` : null,
     validada ? `1 deducción validada (${DEDUCCION_A_VALIDAR.entidad}.${DEDUCCION_A_VALIDAR.campo})` : null,
+    alturaRespondida
+      ? `1 consulta de dato de obra respondida (altura_local.PB = ${ALTURA_DE_LOCAL.valor} m)`
+      : null,
     agenda.creados > 0 ? `${agenda.creados} proveedores en la agenda (1 con opt-out)` : null,
     lanzada ? `1 compulsa de ${RUBRO_COMPULSA} lanzada a ${CONTACTADOS.length} proveedores` : null,
     cotizadas.registradas > 0
@@ -838,6 +997,10 @@ async function main(): Promise<void> {
   imprimirTabla(
     `Obra «${OBRA_COMPULSA.nombre}» (${obraCompulsa.id}):`,
     await contar(db, obraCompulsa.id),
+  );
+  imprimirTabla(
+    `Obra «${OBRA_CONJUNTA.nombre}» (${obraConjunta.id}):`,
+    await contar(db, obraConjunta.id),
   );
   imprimirTabla('Compulsa y plataforma:', await contarCompulsa(db, obraCompulsa.id, estudio.id));
 

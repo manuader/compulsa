@@ -27,6 +27,7 @@ import {
 } from '@/db/schema';
 import { crearSesion } from '@/lib/auth/session';
 import { PLANTILLAS } from '@/lib/rubros';
+import { RUBROS } from '@/types/domain';
 
 import { createTestDb } from '../helpers/test-db';
 
@@ -225,16 +226,15 @@ describe('GET /api/obras/[obraId]/export: la descarga', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
-  it('sin ?rubro trae las cuatro hojas, la consolidada y las referencias', async () => {
+  it('sin ?rubro trae una hoja por rubro, la consolidada y las referencias', async () => {
     cookieActual = token;
 
     const wb = await libroDe(await pedir());
 
+    // Ver `tests/unit/export.test.ts`: la regla es «una hoja por rubro,
+    // siempre», así que la lista se deriva de `RUBROS`.
     expect(wb.worksheets.map((h) => h.name)).toEqual([
-      PLANTILLAS.aberturas.nombre,
-      PLANTILLAS.seco.nombre,
-      PLANTILLAS.pintura.nombre,
-      PLANTILLAS.gruesa.nombre,
+      ...RUBROS.map((rubro) => PLANTILLAS[rubro].nombre),
       'Consolidado',
       'Referencias',
     ]);
@@ -290,7 +290,7 @@ describe('GET /api/obras/[obraId]/export: la descarga', () => {
 
     const wb = await libroDe(await pedir('?rubro=todos'));
 
-    expect(wb.worksheets).toHaveLength(6);
+    expect(wb.worksheets).toHaveLength(RUBROS.length + 2);
     expect(wb.getWorksheet('Consolidado')!.rowCount).toBe(3);
   });
 
@@ -300,6 +300,6 @@ describe('GET /api/obras/[obraId]/export: la descarga', () => {
     const res = await pedir('?rubro=');
 
     expect(res.status).toBe(200);
-    expect((await libroDe(res)).worksheets).toHaveLength(6);
+    expect((await libroDe(res)).worksheets).toHaveLength(RUBROS.length + 2);
   });
 });

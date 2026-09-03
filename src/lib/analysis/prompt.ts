@@ -34,6 +34,10 @@ const ETIQUETA_RUBRO = {
   seco: 'Construcción en seco',
   pintura: 'Pintura',
   gruesa: 'Obra gruesa',
+  terminaciones: 'Terminaciones',
+  sanitaria: 'Instalación sanitaria',
+  electrica: 'Instalación eléctrica',
+  demolicion: 'Demolición',
 } satisfies Record<RubroId, string>;
 
 /** `undefined`, `''` y `'   '` son lo mismo: no hay dato. */

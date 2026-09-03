@@ -31,6 +31,8 @@ export const TITULO_REGLA: Record<ReglaDeduccion, string> = {
   continuidad: 'Continuidad entre láminas',
   idem_tipologia: 'Ídem tipología',
   cierre_cotas: 'Cierre de cotas',
+  cruce: 'Cruce de información del expediente',
+  medicion_grafica: 'Medición gráfica sobre el dibujo',
 };
 
 const ESTADO_LEGIBLE: Record<EstadoDeduccion, string> = {

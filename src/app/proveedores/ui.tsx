@@ -72,6 +72,10 @@ export const ETIQUETA_RUBRO: Record<RubroId, string> = {
   seco: 'Construcción en seco',
   pintura: 'Pintura',
   gruesa: 'Obra gruesa',
+  terminaciones: 'Terminaciones',
+  sanitaria: 'Instalación sanitaria',
+  electrica: 'Instalación eléctrica',
+  demolicion: 'Demolición',
 };
 
 function mensajeDe(error: unknown): string {

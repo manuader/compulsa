@@ -1,18 +1,23 @@
 /**
- * `computarObra(..., camposDeducidos)`: qué ítems salen con `origen: 'deducido'`.
+ * `computarObra(..., camposDeducidos)`: con qué origen sale cada ítem.
  *
  * La regla del PRD (§11 · P4) es que validar una deducción no la disimula: el
- * ítem que se apoya en ese dato queda marcado como deducido para siempre, en la
- * planilla y en el XLSX. Estos tests pinean las dos mitades de esa regla —lo que
- * se marca y lo que NO se marca— porque un motor que marca de más miente igual
- * que uno que marca de menos.
+ * ítem que se apoya en ese dato queda marcado para siempre, en la planilla y en
+ * el XLSX. Estos tests pinean las dos mitades de esa regla —lo que se marca y lo
+ * que NO se marca— porque un motor que marca de más miente igual que uno que
+ * marca de menos.
+ *
+ * Y pinean la precedencia del §5.5: el mapa lleva el origen **por campo**
+ * (`explicito < supuesto < deducido < inferido`) y el ítem sale con el peor de
+ * los campos que usó. Una altura medida sobre el dibujo contagia `inferido`
+ * aunque el largo esté acotado.
  *
  * Dominio puro: sin base, sin fixtures.
  */
 import { describe, expect, it } from 'vitest';
 
 import { computarObra, type CamposDeducidos, type EntidadPersistida } from '@/lib/computo/engine';
-import type { ItemComputo } from '@/types/domain';
+import type { ItemComputo, Origen } from '@/types/domain';
 
 const LAMINA_PLANTA = 'lam-planta';
 
@@ -35,8 +40,21 @@ function porClave(items: readonly ItemComputo[], clave: string): ItemComputo | u
   return items.find((item) => item.claveItem === clave);
 }
 
+/** Campos que entraron por una deducción validada: todos con origen `deducido`. */
 function deducidos(entradas: readonly (readonly [string, readonly string[]])[]): CamposDeducidos {
-  return new Map(entradas.map(([id, campos]) => [id, new Set(campos)]));
+  return conOrigen(
+    entradas.map(([id, campos]) => [
+      id,
+      Object.fromEntries(campos.map((campo) => [campo, 'deducido' as Origen])),
+    ]),
+  );
+}
+
+/** El mapa completo, con el origen escrito campo por campo. */
+function conOrigen(
+  entradas: readonly (readonly [string, Record<string, Origen>])[],
+): CamposDeducidos {
+  return new Map(entradas.map(([id, campos]) => [id, new Map(Object.entries(campos))]));
 }
 
 describe('camposDeducidos', () => {
@@ -173,5 +191,176 @@ describe('camposDeducidos', () => {
       deducidos([[tabique.id, ['alturaM']]]),
     );
     expect(hallazgos.map((h) => h.clave)).not.toContain('seco.altura_tabiques.T1');
+  });
+});
+
+describe('origen por campo (§5.5)', () => {
+  function tabiqueCompleto(): EntidadPersistida {
+    return entidad({
+      tipo: 'tabique',
+      nombre: 'T1',
+      atributos: { tipo: 'durlock', largoM: 5, alturaM: 2.6, caras: 2 },
+    });
+  }
+
+  it('el ítem sale con el peor origen de los campos que usó', () => {
+    const tabique = tabiqueCompleto();
+
+    const { items } = computarObra(
+      [tabique],
+      'nueva',
+      undefined,
+      conOrigen([[tabique.id, { largoM: 'explicito', alturaM: 'deducido' }]]),
+    );
+
+    // El largo está acotado, la altura no: manda la altura.
+    const placas = porClave(items, 'seco.placas');
+    expect(placas?.origen).toBe('deducido');
+    expect(placas?.cantNeta).toBe(26);
+    expect(placas?.cantCompra).toBe(31.68);
+  });
+
+  it('una altura medida sobre el dibujo deja el ítem inferido, no deducido', () => {
+    const tabique = tabiqueCompleto();
+
+    const { items } = computarObra(
+      [tabique],
+      'nueva',
+      undefined,
+      conOrigen([[tabique.id, { alturaM: 'inferido' }]]),
+    );
+
+    // Los números son los mismos que con la altura escrita: lo único que cambia
+    // es cuánto vale ese 2,60 —acá salió de medir el dibujo, no de una cota—.
+    const placas = porClave(items, 'seco.placas');
+    expect(placas?.origen).toBe('inferido');
+    expect(placas?.cantNeta).toBe(26);
+    expect(placas?.cantCompra).toBe(31.68);
+  });
+
+  it('inferido le gana a deducido cuando el ítem usa los dos campos', () => {
+    const tabique = tabiqueCompleto();
+
+    const { items } = computarObra(
+      [tabique],
+      'nueva',
+      undefined,
+      conOrigen([[tabique.id, { largoM: 'deducido', alturaM: 'inferido' }]]),
+    );
+    expect(porClave(items, 'seco.placas')?.origen).toBe('inferido');
+  });
+
+  it('un campo supuesto contagia supuesto', () => {
+    const tabique = tabiqueCompleto();
+
+    const { items } = computarObra(
+      [tabique],
+      'nueva',
+      undefined,
+      conOrigen([[tabique.id, { alturaM: 'supuesto' }]]),
+    );
+    expect(porClave(items, 'seco.placas')?.origen).toBe('supuesto');
+  });
+
+  it('un campo explícito está en el mapa pero no ensucia nada', () => {
+    const tabique = tabiqueCompleto();
+
+    const { items } = computarObra(
+      [tabique],
+      'nueva',
+      undefined,
+      conOrigen([[tabique.id, { largoM: 'explicito', alturaM: 'explicito' }]]),
+    );
+    expect(porClave(items, 'seco.placas')?.origen).toBe('explicito');
+  });
+
+  it('cada ítem hereda el origen de SU entidad, no el peor de la obra', () => {
+    const v1 = entidad({
+      tipo: 'abertura',
+      nombre: 'V1',
+      atributos: { tag: 'V1', tipologia: 'ventana', anchoM: 1.5, altoM: 1.1 },
+    });
+    const v2 = entidad({
+      tipo: 'abertura',
+      nombre: 'V2',
+      atributos: { tag: 'V2', tipologia: 'ventana', anchoM: 1.2, altoM: 1.1 },
+    });
+
+    const { items } = computarObra(
+      [v1, v2],
+      'nueva',
+      undefined,
+      conOrigen([
+        [v1.id, { anchoM: 'inferido' }],
+        [v2.id, { anchoM: 'deducido' }],
+      ]),
+    );
+
+    expect(porClave(items, 'aberturas.V1')?.origen).toBe('inferido');
+    expect(porClave(items, 'aberturas.V2')?.origen).toBe('deducido');
+  });
+
+  it('un ítem supuesto de la plantilla SÍ se marca inferido: el más débil manda', () => {
+    // Sin `vanosM2` las paredes se computan de más y el ítem nace `supuesto`.
+    // Si además la altura salió de medir el dibujo, el badge honesto es
+    // `inferido`: es la advertencia más débil de las dos y la que hay que ver.
+    const estar = entidad({
+      tipo: 'ambiente',
+      nombre: 'Estar',
+      atributos: { superficieM2: 20, perimetroM: 18, alturaM: 2.6 },
+    });
+
+    const { items } = computarObra(
+      [estar],
+      'nueva',
+      undefined,
+      conOrigen([[estar.id, { alturaM: 'inferido' }]]),
+    );
+
+    const paredes = porClave(items, 'pintura.latex_paredes');
+    expect(paredes?.origen).toBe('inferido');
+    expect(paredes?.cantNeta).toBe(9.36); // (18 × 2,60) × 2 manos / 10, sin vanos
+  });
+
+  it('un campo deducido NO pisa un ítem supuesto: deducir cita una fuente', () => {
+    // La contracara del test de arriba, y del pin de `camposDeducidos`: entre
+    // "supuesto declarado" y "deducido de otra lámina", manda el supuesto.
+    const estar = entidad({
+      tipo: 'ambiente',
+      nombre: 'Estar',
+      atributos: { superficieM2: 20, perimetroM: 18, alturaM: 2.6 },
+    });
+
+    const { items } = computarObra(
+      [estar],
+      'nueva',
+      undefined,
+      conOrigen([[estar.id, { alturaM: 'deducido' }]]),
+    );
+
+    const paredes = porClave(items, 'pintura.latex_paredes');
+    expect(paredes?.origen).toBe('supuesto');
+    expect(paredes?.cantNeta).toBe(9.36); // el mismo número: solo cambia el badge
+  });
+
+  it('un campo inferido que el ítem no usa no lo ensucia', () => {
+    // El cielorraso solo mira la superficie; las paredes miran la altura.
+    const estar = entidad({
+      tipo: 'ambiente',
+      nombre: 'Estar',
+      atributos: { superficieM2: 20, perimetroM: 18, vanosM2: 4, alturaM: 2.6 },
+    });
+
+    const { items } = computarObra(
+      [estar],
+      'nueva',
+      undefined,
+      conOrigen([[estar.id, { alturaM: 'inferido' }]]),
+    );
+
+    expect(porClave(items, 'pintura.latex_paredes')?.origen).toBe('inferido');
+    expect(porClave(items, 'pintura.latex_paredes')?.cantNeta).toBe(8.56);
+    expect(porClave(items, 'pintura.latex_cielorrasos')?.origen).toBe('explicito');
+    expect(porClave(items, 'pintura.latex_cielorrasos')?.cantNeta).toBe(4);
   });
 });

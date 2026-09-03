@@ -12,11 +12,19 @@
  * dato. Confirmar sin ver esa fila es confirmar a ciegas, que es justo lo que
  * la ola entera viene a evitar.
  *
- * Los tres helpers son puros y viven en el `ui.tsx` de la bandeja, que es un
- * `'use client'`: acá se testean sin render, que es donde está la lógica.
+ * Los cinco helpers son puros y se testean sin render, que es donde está la
+ * lógica. Cuatro viven en el `ui.tsx` de la bandeja, que es un `'use client'`;
+ * el quinto, `fuentesDeAfectadas`, vive aparte en `plano.ts` **porque lo llama
+ * el Server Component**: una función que corre de los dos lados no puede vivir
+ * en un archivo con la directiva, o la página tira 500 en runtime con `tsc` y
+ * el build en verde (HANDOFF §7.23).
  */
 import { describe, expect, it } from 'vitest';
 
+import {
+  fuentesDeAfectadas,
+  type FuenteVista,
+} from '@/app/obras/[obraId]/bandeja/plano';
 import {
   armarMirada,
   destacadosDeConsulta,
@@ -48,6 +56,7 @@ function consulta(extra: Partial<ConsultaVista> = {}): ConsultaVista {
     campo: 'anchoM',
     entidad: 'Abertura FP01',
     esEscala: false,
+    datoObra: null,
     laminas: [{ laminaId: A01, etiqueta: 'A-01 · PLANTA PB' }],
     fuentes: [{ laminaId: A01, bbox: HUECO }],
     valorPropuesto: null,
@@ -248,5 +257,46 @@ describe('miradaVigente: la consulta del panel sigue en la lista', () => {
       ...grupos([fila]),
     ];
     expect(miradaVigente(mirada, otros)).toBe(mirada);
+  });
+});
+
+/**
+ * Qué se resalta en una consulta de **dato de obra** (§5.2).
+ *
+ * Nace sin fuentes propias y con razón: el hecho —la altura de local de PB— no
+ * se leyó en ninguna lámina, así que no hay bbox honesto que citar (P1 no se
+ * cumple citando cualquier cosa). Lo que sí existe es dónde está dibujado cada
+ * afectado, y es lo único que el arquitecto puede mirar para contestarla.
+ */
+describe('fuentesDeAfectadas', () => {
+  const T1: FuenteVista = { laminaId: A01, bbox: HUECO };
+  const T2: FuenteVista = { laminaId: A01, bbox: OTRO_HUECO };
+  const T3: FuenteVista = { laminaId: DET00, bbox: FILA_PLANILLA };
+
+  const PLANO = new Map<string, FuenteVista[]>([
+    ['t1', [T1]],
+    ['t2', [T2]],
+    ['t3', [T3]],
+  ]);
+
+  it('junta las fuentes de los afectados en el orden en que se los nombra', () => {
+    expect(fuentesDeAfectadas(['t1', 't2', 't3'], PLANO)).toEqual([T1, T2, T3]);
+  });
+
+  it('no repite un mismo lámina+bbox aunque dos afectados lo compartan', () => {
+    const compartido = new Map<string, FuenteVista[]>([
+      ['t1', [T1]],
+      ['t2', [{ laminaId: A01, bbox: HUECO }]],
+    ]);
+
+    expect(fuentesDeAfectadas(['t1', 't2'], compartido)).toEqual([T1]);
+  });
+
+  it('una entidad que ya no está no rompe: se saltea', () => {
+    expect(fuentesDeAfectadas(['t1', 'borrada'], PLANO)).toEqual([T1]);
+  });
+
+  it('sin afectados no hay nada que resaltar', () => {
+    expect(fuentesDeAfectadas([], PLANO)).toEqual([]);
   });
 });

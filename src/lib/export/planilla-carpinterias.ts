@@ -25,11 +25,20 @@
 import ExcelJS from 'exceljs';
 
 import { DISCLAIMER, fechaIso, fechaLegible, slugObra, type ObraExport } from '@/lib/export/xlsx';
+import type { Origen } from '@/types/domain';
 
 // --- Contrato de datos -----------------------------------------------------
 
-/** De dónde salió la medida de una carpintería. */
-export type OrigenDato = 'explicito' | 'deducido' | 'pendiente';
+/**
+ * De dónde salió la medida de una carpintería.
+ *
+ * `inferido` es el nivel C del §5.5: la medida se sacó midiendo sobre el dibujo
+ * a escala, no leyendo un número escrito. Va separado de `deducido` porque no
+ * es lo mismo cruzar dos láminas que medir con la regla sobre el plano, y quien
+ * fabrica una carpintería con esta planilla tiene derecho a saber cuál de las
+ * dos cosas pasó.
+ */
+export type OrigenDato = 'explicito' | 'deducido' | 'inferido' | 'pendiente';
 
 export interface FilaCarpinteria {
   /** "V2", "P1" — el tag con el que se pide la cotización. */
@@ -44,6 +53,31 @@ export interface FilaCarpinteria {
   laminas: string;
 }
 
+/**
+ * Con qué origen sale una fila, a partir de lo que se sabe de sus medidas.
+ *
+ * Vive acá y no en la route para poder pinnearlo: es una decisión de producto
+ * —qué se le dice a quien va a mandar a fabricar— y no un detalle de un handler.
+ *
+ * El **peor** origen manda, igual que en el ítem de cómputo (§5.5): si el ancho
+ * está acotado y el alto se midió sobre el dibujo, la fila es `inferido`. Decir
+ * «deducido validado» de una medida sacada con la regla sería vender una
+ * medición gráfica como un cruce documental.
+ *
+ * @param faltaAlgunaMedida `true` si el ancho o el alto no están: sin medida no
+ *   hay fila que fabricar, y eso gana sobre todo lo demás.
+ * @param origenes El origen de cada medida que **no** salió de la documentación
+ *   escrita (las explícitas no aportan nada acá).
+ */
+export function origenDeCarpinteria(
+  faltaAlgunaMedida: boolean,
+  origenes: readonly Origen[],
+): OrigenDato {
+  if (faltaAlgunaMedida) return 'pendiente';
+  if (origenes.includes('inferido')) return 'inferido';
+  return origenes.some((origen) => origen !== 'explicito') ? 'deducido' : 'explicito';
+}
+
 export interface OpcionesPlanilla {
   /** Fecha del export. Inyectable para que los tests no dependan del reloj. */
   fecha?: Date;
@@ -55,6 +89,7 @@ export const AVISO_DERIVADA =
 export const ETIQUETA_ORIGEN_DATO: Record<OrigenDato, string> = {
   explicito: 'Explícito',
   deducido: 'Deducido validado',
+  inferido: 'Inferido (medido sobre el dibujo)',
   pendiente: 'Pendiente',
 };
 
@@ -66,6 +101,10 @@ const LEYENDA_ORIGENES: ReadonlyArray<readonly [string, string]> = [
   [
     ETIQUETA_ORIGEN_DATO.deducido,
     'La medida la dedujo el sistema cruzando dos láminas y una persona del estudio la validó.',
+  ],
+  [
+    ETIQUETA_ORIGEN_DATO.inferido,
+    'La medida se sacó midiendo sobre el dibujo a escala, no de una cota. Es la evidencia más débil: verificala antes de mandar a fabricar.',
   ],
   [
     ETIQUETA_ORIGEN_DATO.pendiente,

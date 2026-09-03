@@ -15,11 +15,13 @@
 import type { EntidadPersistida } from '@/lib/computo/engine';
 import { fuentesDeEntidades } from '@/lib/computo/presentacion';
 import type {
+  DatoObraResuelto,
   EstadoReforma,
   Fuente,
   HallazgoDetectado,
   RubroId,
   TipoHallazgo,
+  Unidad,
   ValorPropuesto,
 } from '@/types/domain';
 
@@ -231,6 +233,243 @@ export function hallazgoInconsistencia(entrada: EntradaInconsistencia): Hallazgo
     ...(entrada.checklistItem ? { checklistItem: entrada.checklistItem } : {}),
     bloqueante: false,
     fuentes: entrada.fuentes,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Datos de obra: los hechos que valen para toda la obra
+// ---------------------------------------------------------------------------
+
+/** Namespace de las consultas que apuntan a un dato de obra: `dato_obra.<clave>`. */
+export const PREFIJO_DATO_OBRA = 'dato_obra.';
+
+/**
+ * El único "campo" de una consulta de dato de obra.
+ *
+ * Un `targetRef` pide campos con nombre de dominio (`anchoM`, `altoM`); un
+ * `targetDato` pide **un** valor, y qué valor es lo dice la clave del dato
+ * (`altura_local.PB`). Inventarle un nombre de campo —`alturaM`— sería mentir
+ * sobre a qué entidad pertenece: no pertenece a ninguna, es un hecho de la obra.
+ *
+ * Vive acá, en el módulo puro de la taxonomía, porque son tres los que tienen
+ * que coincidir en la misma cadena y ninguno puede importar a los otros dos: la
+ * búsqueda dirigida la usa para pedir el valor (`valores: { valor }`), el
+ * resolver de la bandeja para leerlo al responder, y la pantalla para nombrar su
+ * input. Si se separan, la tarjeta manda una clave que el server no acepta.
+ */
+export const CAMPO_DATO_OBRA = 'valor';
+
+/** Cómo se llama en castellano cada familia de dato de obra. */
+const FAMILIA_DATO_OBRA: Record<string, string> = {
+  altura_local: 'Altura de local',
+  altura_revestimiento: 'Altura de revestimiento',
+  nivel: 'Nivel',
+};
+
+/**
+ * El nombre del dato para la tarjeta de la bandeja: `altura_local.PB` ⇒
+ * «Altura de local en PB», `altura_local.general` ⇒ «Altura de local».
+ *
+ * La clave es convencional y legible para nosotros, no para el arquitecto: un
+ * input que dice `altura_local.PB` es un identificador de base de datos puesto
+ * adelante de una persona. El sufijo `general` no se nombra —es el hecho que
+ * vale para toda la obra cuando no hay uno más fino— y una familia que no
+ * conozcamos se muestra tal cual, con los guiones bajos abiertos: peor que un
+ * nombre feo es un input sin nombre.
+ */
+export function etiquetaDeDatoObra(clave: string): string {
+  const punto = clave.indexOf('.');
+  const familia = punto === -1 ? clave : clave.slice(0, punto);
+  const sufijo = punto === -1 ? '' : clave.slice(punto + 1);
+  const nombre =
+    FAMILIA_DATO_OBRA[familia] ??
+    familia.replace(/_/g, ' ').replace(/^./, (letra) => letra.toUpperCase());
+  return sufijo === '' || sufijo === 'general' ? nombre : `${nombre} en ${sufijo}`;
+}
+
+/**
+ * La misma etiqueta, pero para meterla adentro de una frase: «no encontré la
+ * altura de estos tabiques y en el expediente tampoco hay **altura de local en
+ * PB**».
+ *
+ * Baja **solo la primera letra**: un `toLowerCase()` entero dejaría «altura de
+ * local en pb», y el sufijo es el nombre del nivel tal como lo escribió el
+ * arquitecto.
+ */
+export function datoEnFrase(clave: string): string {
+  const etiqueta = etiquetaDeDatoObra(clave);
+  return etiqueta.charAt(0).toLowerCase() + etiqueta.slice(1);
+}
+
+/**
+ * El dato de obra que respalda un campo, o `null` si no está.
+ *
+ * Es el **único lector válido** del mapa de datos de obra: una plantilla no
+ * toca la API de `Map` por su cuenta, igual que nadie lee `target_ref` sin
+ * `camposDelTarget()`. Acepta `undefined` porque `datosObra` es un parámetro
+ * opcional de `computar()`: una plantilla llamada sin datos de obra —los tests
+ * de rubro puro, por ejemplo— tiene que comportarse como si la obra no tuviera
+ * ninguno, no romper.
+ */
+export function respaldoDeDatoObra(
+  datosObra: ReadonlyMap<string, DatoObraResuelto> | undefined,
+  clave: string,
+): DatoObraResuelto | null {
+  return datosObra?.get(clave) ?? null;
+}
+
+/**
+ * `"T1"`, `"T1 y T2"`, `"T1, T2 y T3"` — enumeración es-AR.
+ *
+ * Duplicada del `enumerar()` de `src/lib/deduccion/motor.ts` **a propósito**:
+ * ese módulo importa de este (`leerMedida`), así que traerlo de allá arma un
+ * ciclo que `tsc` acepta y que revienta en runtime cuando el orden de
+ * evaluación no acompaña. Tres líneas repetidas valen menos que ese riesgo
+ * (mismo criterio que `normalizarTag` en `computo/tags.ts`).
+ */
+export function enumerar(partes: readonly string[]): string {
+  if (partes.length === 0) return '';
+  if (partes.length === 1) return partes[0]!;
+  return `${partes.slice(0, -1).join(', ')} y ${partes[partes.length - 1]}`;
+}
+
+export interface EntradaDatoObraFaltante {
+  rubro: RubroId | null;
+  /** La clave del dato, sin prefijo: `altura_local.PB`, `nivel.PB`. */
+  claveDato: string;
+  /** Unidad del valor que se pide, si tiene una. */
+  unidad?: Unidad;
+  descripcion: string;
+  /** Las entidades a las que les falta el dato. De acá salen los ids y los nombres. */
+  entidades: readonly EntidadPersistida[];
+  /**
+   * ¿Estas entidades quedaron afuera de un ítem que el rubro **sí** computó?
+   *
+   * No lo decide este constructor: lo sabe quien computó. Ver el docstring de
+   * abajo — es la diferencia entre una planilla corta y un rubro vacío.
+   */
+  bloqueante: boolean;
+}
+
+/**
+ * Un dato que le falta a **la obra**, no a una entidad: una sola consulta para
+ * todos los afectados.
+ *
+ * Es la deduplicación de preguntas hecha contrato. A los cuatro tabiques de PB
+ * les falta la misma altura de local; preguntarla cuatro veces es preguntar lo
+ * mismo cuatro veces, y responderla cuatro veces es trabajo que el arquitecto
+ * hace por un problema nuestro. Por eso el hallazgo apunta a un `targetDato`
+ * —la clave del dato más a quiénes afecta, que es lo que la tarjeta muestra— y
+ * responderlo escribe `datos_obra` una vez: el recompute lo propaga solo.
+ *
+ * ## Cuándo bloquea (RF-404, y es la parte que cuesta plata)
+ *
+ * Bloquea **cuando dejó ítems cortos**, y lo dice el que computó: si el rubro
+ * emitió `seco.placas` con tres de los cuatro tabiques del local porque al
+ * cuarto le falta la altura, el número que sale a compulsa es corto —46,80 m²
+ * donde van 62,40— y aprobarlo es comprar un 25% menos de placa, con la
+ * planilla diciendo `explícito` porque los tres que computaron leyeron su
+ * altura de la lámina.
+ *
+ * No bloquea cuando el rubro **no computó nada**: ahí no hay ítem corto que
+ * frenar, y lo que impide aprobar es no tener ítems (`aprobarRubroCore`).
+ * Deduplicar las **preguntas** —una sola para las N entidades que esperan el
+ * mismo hecho— nunca quiso decir sacar la **compuerta**.
+ *
+ * Sale **sin fuentes**: el dato no se leyó en ninguna lámina, así que no hay
+ * bbox honesto que citar (P1 no se cumple citando cualquier cosa).
+ *
+ * ## La misma clave la emiten varios rubros
+ *
+ * A `dato_obra.altura_local.PB` la abren seco (por los tabiques), gruesa (por
+ * el muro) y pintura (por los ambientes). El conciliador de hallazgos no puede
+ * quedarse con la primera y tirar el resto —la tarjeta diría «Afecta a T1 y T2»
+ * y responderla también computa el muro—: tiene que **fusionarlas** con
+ * `fusionarDatoObraFaltante()`.
+ */
+export function hallazgoDatoObraFaltante(entrada: EntradaDatoObraFaltante): HallazgoDetectado {
+  const nombres = entrada.entidades.map((entidad) => entidad.nombre);
+  return {
+    tipo: 'faltante',
+    rubro: entrada.rubro,
+    descripcion:
+      nombres.length === 0
+        ? entrada.descripcion
+        : `${entrada.descripcion} Afecta a ${enumerar(nombres)}.`,
+    clave: `${PREFIJO_DATO_OBRA}${entrada.claveDato}`,
+    bloqueante: entrada.bloqueante,
+    fuentes: [],
+    targetDato: {
+      clave: entrada.claveDato,
+      ...(entrada.unidad ? { unidad: entrada.unidad } : {}),
+      entidades: entrada.entidades.map((entidad) => entidad.id),
+    },
+  };
+}
+
+/** ¿Es una consulta de dato de obra, o sea de las que se fusionan por clave? */
+export function esDatoObraFaltante(hallazgo: HallazgoDetectado): boolean {
+  return hallazgo.targetDato !== undefined && hallazgo.clave.startsWith(PREFIJO_DATO_OBRA);
+}
+
+/** El texto del fusionado: nombra el dato, nunca la lista de afectados. */
+function descripcionFusionada(claveDato: string): string {
+  return (
+    `Falta «${etiquetaDeDatoObra(claveDato)}»: no está en ninguna lámina y sin ese dato quedan ` +
+    'elementos sin computar. Cargalo una sola vez y lo aplico a todos los que lo esperan, o ' +
+    'indicá la lámina donde está.'
+  );
+}
+
+/**
+ * Dos consultas por el **mismo** dato, hechas una sola.
+ *
+ * Es lo que el conciliador de hallazgos tiene que llamar cuando dos rubros
+ * abren la misma clave, en vez de quedarse con la primera. Tres cosas se
+ * juntan, y las tres importan:
+ *
+ *  - **Los afectados**, sin repetir. Es el número que la tarjeta muestra: con
+ *    la primera lista sola, la tarjeta promete menos de lo que hace.
+ *  - **El bloqueo**, por o lógico. Si a alguno le dejó ítems cortos, la
+ *    consulta frena: una sola de las dos alcanza para que la planilla esté
+ *    corta.
+ *  - **El rubro**. El gate mira `rubro` y nada más, así que un fusionado que se
+ *    quedara con «seco» dejaría a gruesa aprobar el cómputo al que le falta el
+ *    mismo muro que la consulta está pidiendo. Cuando cruza rubros pasa a ser
+ *    de obra (`rubro: null`) — que es lo que un dato de obra **es**— y frena a
+ *    todos. Dos del mismo rubro conservan el rubro.
+ *
+ * La descripción se rearma desde la clave: la del primero enumera a los suyos y
+ * repetirla sería volver a prometer de menos.
+ */
+export function fusionarDatoObraFaltante(
+  a: HallazgoDetectado,
+  b: HallazgoDetectado,
+): HallazgoDetectado {
+  if (a.clave !== b.clave) {
+    throw new Error(
+      `fusionarDatoObraFaltante: son hechos distintos, no se fusionan (${a.clave} vs ${b.clave}).`,
+    );
+  }
+  const targetA = a.targetDato;
+  const targetB = b.targetDato;
+  if (targetA === undefined || targetB === undefined) {
+    throw new Error(`fusionarDatoObraFaltante: ${a.clave} no es una consulta de dato de obra.`);
+  }
+
+  const unidad = targetA.unidad ?? targetB.unidad;
+  return {
+    tipo: 'faltante',
+    rubro: a.rubro === b.rubro ? a.rubro : null,
+    descripcion: descripcionFusionada(targetA.clave),
+    clave: a.clave,
+    bloqueante: a.bloqueante || b.bloqueante,
+    fuentes: [],
+    targetDato: {
+      clave: targetA.clave,
+      ...(unidad ? { unidad } : {}),
+      entidades: [...new Set([...targetA.entidades, ...targetB.entidades])],
+    },
   };
 }
 

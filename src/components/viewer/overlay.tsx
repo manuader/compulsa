@@ -72,6 +72,11 @@ export const COLOR_ENTIDAD: Record<TipoEntidad, string> = {
   // para que se lean como anotación y no compitan con muros y aberturas.
   cota: '#a16207',
   otro: '#525252',
+  // Las tres de instalaciones comparten familia cromática para que se lean como
+  // una capa: cañería y accesorio en la misma rama, la boca eléctrica aparte.
+  tramo: '#0d9488',
+  accesorio: '#4d7c0f',
+  boca: '#c2410c',
 };
 
 export const ETIQUETA_TIPO_ENTIDAD: Record<TipoEntidad, string> = {
@@ -83,6 +88,9 @@ export const ETIQUETA_TIPO_ENTIDAD: Record<TipoEntidad, string> = {
   terminacion: 'Terminación',
   cota: 'Cota',
   otro: 'Otro',
+  tramo: 'Tramo de cañería',
+  accesorio: 'Accesorio',
+  boca: 'Boca',
 };
 
 const ROJO_DESTACADO = '#dc2626';

@@ -58,6 +58,9 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { PanelVisor } from '@/components/viewer/panel-visor';
+import type { FuenteVista } from './plano';
+export type { FuenteVista } from './plano';
+
 import type {
   BBox,
   EstadoHallazgo,
@@ -127,10 +130,6 @@ export interface LaminaCitada {
 }
 
 /** Dónde está lo que la consulta mira: lámina + recuadro, para el visor. */
-export interface FuenteVista {
-  laminaId: string;
-  bbox: BBox;
-}
 
 /**
  * Lo que el sistema propone, **ya formateado en es-AR** por el server: los
@@ -147,8 +146,32 @@ export interface PropuestaVista {
   fuente: (FuenteVista & { etiqueta: string }) | null;
 }
 
+/**
+ * Un dato de obra, listo para la tarjeta. Todo lo arma el server: el nombre en
+ * castellano sale de `etiquetaDeDatoObra()` y el nombre del input de
+ * `CAMPO_DATO_OBRA`, que es la misma clave con la que el resolver lo lee.
+ */
+export interface DatoObraVista {
+  /** `altura_local.PB` — la clave de `datos_obra`, para el rastro. */
+  clave: string;
+  /** "Altura de local en PB" — cómo se lo nombra al arquitecto. */
+  etiqueta: string;
+  /** "m", o `null` si el dato es un texto (un solado, un revestimiento). */
+  unidad: string | null;
+  /** El nombre del input, que es el que el server acepta. */
+  campo: string;
+  /** Cuántas entidades lo están esperando: es el sentido de preguntarlo una vez. */
+  afectadas: number;
+}
+
 export interface ConsultaVista {
   id: string;
+  /**
+   * La clave técnica (`dato_obra.altura_local.PB`). Es el identificador
+   * estable de la consulta y sirve para reconocer una fila entre gente que
+   * conoce el sistema; **no** es un nombre para leer. Todo lo que se muestra o
+   * se lee en voz alta usa `nombreDeConsulta()`.
+   */
   clave: string;
   tipo: TipoHallazgo;
   rubro: RubroId | null;
@@ -163,6 +186,12 @@ export interface ConsultaVista {
   entidad: string | null;
   /** `true` si es el bloqueo por escala de una lámina (RF-201). */
   esEscala: boolean;
+  /**
+   * Puesto ⇒ la consulta pide un **hecho de la obra** y no un campo de una
+   * entidad (§5.2): un solo input, y responderlo escribe `datos_obra` una vez
+   * para todas las entidades que lo estaban esperando.
+   */
+  datoObra: DatoObraVista | null;
   laminas: LaminaCitada[];
   /** Las fuentes con bbox: de acá sale el resaltado del visor. */
   fuentes: FuenteVista[];
@@ -204,6 +233,8 @@ function textoRespuesta(consulta: ConsultaVista): string {
       }
       case 'escala':
         return valor === undefined ? 'Escala confirmada.' : `Escala confirmada: ${String(valor)}`;
+      case 'dato_obra':
+        return `Dato de obra cargado: ${String(valor)}`;
       case 'existente':
         return 'Marcada como existente: no está dentro del alcance de la obra.';
       case 'supuesto_confirmado':
@@ -230,6 +261,9 @@ const CLAVE_NOTA = 'nota';
 /** Qué inputs muestra la tarjeta: la escala, los campos del target, o la nota. */
 function clavesDeInput(consulta: ConsultaVista): string[] {
   if (consulta.esEscala) return [CLAVE_ESCALA];
+  // Un dato de obra pide UN valor y su nombre lo dice la clave del dato, no un
+  // campo de dominio: el input se llama como el server lo espera leer.
+  if (consulta.datoObra) return [consulta.datoObra.campo];
   return consulta.campos.length > 0 ? consulta.campos : [CLAVE_NOTA];
 }
 
@@ -388,6 +422,26 @@ export function destacadosDeConsulta(consulta: ConsultaVista, laminaId: string):
 }
 
 /**
+ * Cómo se llama una consulta cuando hay que nombrarla: en el título del panel,
+ * en el `aria-label` de su checkbox, al lado del recuadro que se está mirando.
+ *
+ * Nunca la clave cruda. `dato_obra.altura_local.PB` es un identificador de base
+ * de datos, y en el `aria-label` era peor todavía: un lector de pantalla leía
+ * «Seleccionar la consulta dato obra punto altura guion bajo local punto PB».
+ * El nombre de la entidad manda —«V5»—, después el del hecho de obra
+ * («Altura de local en PB»), y la clave queda de último recurso para cuando la
+ * consulta no apunta a ninguno de los dos.
+ */
+export function nombreDeConsulta(consulta: ConsultaVista): string {
+  if (consulta.entidad !== null) return consulta.entidad;
+  if (consulta.datoObra !== null) return consulta.datoObra.etiqueta;
+  // La de escala no apunta a ninguna de las dos y su clave es `escala.<uuid>`,
+  // que en el título del panel se leía «A-01 · escala.9f3c…».
+  if (consulta.esEscala) return 'la escala de la lámina';
+  return consulta.clave;
+}
+
+/**
  * Lo que hay que cargar en el panel para ver una consulta en una lámina, o
  * `null` si esa lámina no es una de las que la consulta puede abrir.
  *
@@ -404,7 +458,7 @@ export function armarMirada(consulta: ConsultaVista, laminaId: string): Mirada |
     consultaId: consulta.id,
     laminaId: elegida.laminaId,
     destacados: destacadosDeConsulta(consulta, elegida.laminaId),
-    etiqueta: `${elegida.etiqueta} · ${consulta.entidad ?? consulta.clave}`,
+    etiqueta: `${elegida.etiqueta} · ${nombreDeConsulta(consulta)}`,
   };
 }
 
@@ -472,19 +526,26 @@ function TarjetaConsulta({
   // Responder solo el ancho la cerraría con la abertura igual de incomputable.
   const completa = claves.every((clave) => (valores[clave] ?? '').trim() !== '');
 
+  const dato = consulta.datoObra;
+
   function etiquetaDeClave(clave: string): string {
     if (clave === CLAVE_ESCALA) return 'Escala';
     if (clave === CLAVE_NOTA) return 'Nota';
+    // El dato de obra se nombra por lo que es ("Altura de local en PB (m)"), no
+    // por su clave: `altura_local.PB` es un identificador nuestro.
+    if (dato) return dato.unidad === null ? dato.etiqueta : `${dato.etiqueta} (${dato.unidad})`;
     return etiquetaCampo(clave);
   }
 
   function esNumerica(clave: string): boolean {
+    if (dato) return dato.unidad !== null;
     return clave !== CLAVE_ESCALA && clave !== CLAVE_NOTA && !CAMPOS_DE_TEXTO.has(clave);
   }
 
   function placeholderDe(clave: string): string {
     if (clave === CLAVE_ESCALA) return '1:100';
     if (clave === CLAVE_NOTA) return 'Escribí tu respuesta';
+    if (dato) return dato.unidad === null ? 'Escribí el dato' : '2,60';
     return esNumerica(clave) ? '2,05' : 'Escribí tu respuesta';
   }
 
@@ -508,6 +569,18 @@ function TarjetaConsulta({
           obraId,
           hallazgoId: consulta.id,
           valor: valores[CLAVE_ESCALA] ?? '',
+        }),
+      );
+      return;
+    }
+    // Un dato de obra no es un campo de ninguna entidad: se manda con el
+    // nombre que el resolver espera y escribe `datos_obra`, no un atributo.
+    if (dato) {
+      correr(() =>
+        responderHallazgoAction({
+          obraId,
+          hallazgoId: consulta.id,
+          valores: { [dato.campo]: valores[dato.campo] ?? '' },
         }),
       );
       return;
@@ -553,7 +626,7 @@ function TarjetaConsulta({
               type="checkbox"
               checked={seleccionada}
               onChange={(evento) => onSeleccion(consulta.id, evento.target.checked)}
-              aria-label={`Seleccionar la consulta ${consulta.clave}`}
+              aria-label={`Seleccionar la consulta sobre ${nombreDeConsulta(consulta)}`}
               className="size-4 rounded border-neutral-300"
             />
           ) : null}
@@ -580,13 +653,40 @@ function TarjetaConsulta({
           {abierta ? null : (
             <Badge tone={TONO_ESTADO[consulta.estado]}>{ETIQUETA_ESTADO[consulta.estado]}</Badge>
           )}
-          <span className="ml-auto font-mono text-xs text-neutral-400">{consulta.clave}</span>
+          {/* La clave técnica queda —sirve para hablar de una fila con
+              nosotros— pero deja de ser lo único que nombra a la consulta. El
+              nombre legible se agrega solo cuando aporta algo: la entidad ya
+              sale abajo en «Sobre:», así que acá el que faltaba era el del
+              hecho de obra, que no tiene otro lugar donde aparecer. */}
+          <span className="ml-auto flex flex-wrap items-baseline gap-2">
+            {consulta.datoObra ? (
+              <span className="text-xs text-neutral-500">{consulta.datoObra.etiqueta}</span>
+            ) : null}
+            <span
+              className="font-mono text-xs text-neutral-400"
+              title="Identificador de la consulta"
+            >
+              {consulta.clave}
+            </span>
+          </span>
         </div>
 
         <p className="text-sm text-neutral-800">{consulta.descripcion}</p>
 
         {consulta.entidad ? (
           <p className="text-xs text-neutral-500">Sobre: {consulta.entidad}</p>
+        ) : null}
+
+        {/* Por qué esta consulta es una y no N: el hecho es de la obra, no de
+            un elemento. Responderla computa a todos los que lo esperaban. */}
+        {consulta.datoObra ? (
+          <p className="text-xs text-neutral-500">
+            Es un dato de toda la obra: se responde una vez y{' '}
+            {consulta.datoObra.afectadas === 1
+              ? 'el elemento que lo esperaba se computa solo'
+              : `los ${consulta.datoObra.afectadas} elementos que lo esperaban se computan solos`}
+            .
+          </p>
         ) : null}
 
         {/* Cada lámina es un botón, no un link: carga el plano en el panel de
@@ -644,7 +744,9 @@ function TarjetaConsulta({
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-end gap-2">
               {claves.map((clave) => (
-                <div key={clave} className="w-48">
+                // El dato de obra lleva más ancho: su etiqueta es una frase
+                // («Altura de revestimiento en baño (m)»), no dos palabras.
+                <div key={clave} className={dato ? 'w-72' : 'w-48'}>
                   <Input
                     label={etiquetaDeClave(clave)}
                     inputMode={esNumerica(clave) ? 'decimal' : undefined}

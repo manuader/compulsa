@@ -1,0 +1,30 @@
+{
+  "rotulo": {
+    "titulo": "CORTE A-A",
+    "codigo": "A-02",
+    "disciplina": "arquitectura",
+    "tipoLamina": "corte",
+    "escala": "1:50",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.93
+  },
+  "entidades": [
+    {
+      "tipo": "muro",
+      "nombre": "M2",
+      "bbox": [
+        0.15,
+        0.3,
+        0.3,
+        0.2476
+      ],
+      "confianza": 0.87,
+      "estadoReforma": "nueva",
+      "atributos": {
+        "tipo": "mamposteria",
+        "largoM": 3
+      }
+    }
+  ]
+}

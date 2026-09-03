@@ -1,0 +1,7 @@
+{
+  "nombre": "Obra Conjunta",
+  "tipoObra": "nueva",
+  "zona": "CABA",
+  "documentos": ["tests/fixtures/pdfs/obra-conjunta.pdf"],
+  "validarDeducciones": false
+}

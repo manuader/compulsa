@@ -86,26 +86,22 @@ describe('plantilla aberturas: reglas de reforma', () => {
     expect(hallazgos).toEqual([]);
   });
 
-  it('lo que se demuele computa solo su retiro', () => {
+  it('lo que se demuele NO es de este rubro: lo cuenta demolición', () => {
     const aDemoler = abertura({
       id: 'e5',
       nombre: 'V1',
       estadoReforma: 'demoler',
       atributos: { tag: 'V1', tipologia: 'ventana', anchoM: 1, altoM: 1 },
     });
-    const { items } = plantillaAberturas.computar([aDemoler], 'reforma');
+    const { items, hallazgos } = plantillaAberturas.computar([aDemoler], 'reforma');
 
-    expect(items).toHaveLength(1);
-    expect(items[0]!.claveItem).toBe('aberturas.retiro.V1');
-    expect(items[0]!.descripcion).toBe('Retiro de V1');
-    expect(items[0]!.unidad).toBe('u');
-    expect(items[0]!.cantNeta).toBe(1);
-    expect(items[0]!.cantCompra).toBe(1);
-    expect(items[0]!.presentacion).toBe('global');
-    expect(items[0]!.entidadRef).toBe('e5');
+    // Antes salía `aberturas.retiro.V1`; con el rubro `demolicion` (§5.7) eso
+    // pedía el mismo retiro dos veces en la misma planilla.
+    expect(items).toEqual([]);
+    expect(hallazgos).toEqual([]);
   });
 
-  it('el retiro no necesita medidas de vano', () => {
+  it('una carpintería a retirar tampoco pide medidas de vano', () => {
     const aDemoler = abertura({
       id: 'e6',
       nombre: 'P9',
@@ -114,8 +110,22 @@ describe('plantilla aberturas: reglas de reforma', () => {
     });
     const { items, hallazgos } = plantillaAberturas.computar([aDemoler], 'reforma');
 
-    expect(items.map((i) => i.claveItem)).toEqual(['aberturas.retiro.P9']);
+    expect(items).toEqual([]);
     expect(hallazgos).toEqual([]);
+  });
+
+  it('lo nuevo se computa aunque en la obra haya carpinterías a retirar', () => {
+    const aDemoler = abertura({
+      id: 'e7',
+      nombre: 'P9',
+      bbox: [0.6, 0.6, 0.1, 0.1],
+      estadoReforma: 'demoler',
+      atributos: { tag: 'P9', tipologia: 'puerta' },
+    });
+    const { items } = plantillaAberturas.computar([abertura({ id: 'e1' }), aDemoler], 'reforma');
+
+    expect(items.map((i) => i.claveItem)).toEqual(['aberturas.V2']);
+    expect(items[0]!.fuentes).toHaveLength(1); // ni su lámina se cuela
   });
 });
 
@@ -197,7 +207,7 @@ describe('plantilla aberturas: cuántas hay según el tipo de lámina', () => {
     expect(hallazgos).toHaveLength(1); // un solo aviso por tag
   });
 
-  it('el retiro se cuenta con la misma regla', () => {
+  it('lo que se retira no entra al conteo, esté en la planta o en la planilla', () => {
     const demolerEnPlanta = abertura({
       id: 'd1',
       laminaId: 'planta',
@@ -209,14 +219,14 @@ describe('plantilla aberturas: cuántas hay según el tipo de lámina', () => {
       estadoReforma: 'demoler',
       bbox: [0.5, 0.5, 0.1, 0.1],
     });
-    const { items } = plantillaAberturas.computar(
+    const { items, hallazgos } = plantillaAberturas.computar(
       [demolerEnPlanta, demolerEnPlanilla],
       'reforma',
       LAMINAS,
     );
 
-    expect(items.map((i) => i.claveItem)).toEqual(['aberturas.retiro.V2']);
-    expect(items[0]!.cantNeta).toBe(1);
+    expect(items).toEqual([]);
+    expect(hallazgos).toEqual([]);
   });
 
   it('sin láminas, el conteo es el de siempre: una por aparición', () => {

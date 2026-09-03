@@ -8,20 +8,35 @@
  *
  * Los ítems se emiten con clave fija (`seco.placas`, `seco.soleras`, …) sumando
  * todos los tabiques computables de la obra: el corralón cotiza el total del
- * rubro, no tabique por tabique. Un tabique sin altura no se computa: sale como
- * consulta bloqueante y sus metros no entran a ninguna cuenta.
+ * rubro, no tabique por tabique.
+ *
+ * La altura pasa por la **cadena de respaldo** (`respaldo.ts`): el atributo del
+ * tabique, si no está el dato de obra del local (`altura_local.<nivel>`) y, si
+ * tampoco, UNA consulta para todos los tabiques que la esperan — la altura de
+ * un local se dibuja en el corte una vez, y preguntarla por tabique era
+ * preguntar lo mismo cuatro veces. Esa consulta **frena la aprobación cuando
+ * dejó ítems cortos**: si de cuatro tabiques computaron tres, `seco.placas` sale
+ * con un 25% menos de placa que la que la obra necesita.
  */
-import type { EntidadPersistida } from '@/lib/computo/engine';
+import type { EntidadPersistida, LaminaDeComputo } from '@/lib/computo/engine';
 import { armarItem, type Presentacion } from '@/lib/computo/presentacion';
 import { redondear2, redondearEntero } from '@/lib/computo/unidades';
 import {
   alcanceDeReforma,
+  datoEnFrase,
   hallazgoDatoFaltante,
   leerMedida,
   leerNumero,
   leerTexto,
 } from '@/lib/hallazgos/taxonomia';
 import type { PlantillaRubro, ResultadoComputo } from '@/lib/rubros/index';
+import {
+  ALTURA_LOCAL,
+  cadenaDeRespaldo,
+  conFuentesDeDato,
+  conOrigenes,
+  type DatosObra,
+} from '@/lib/rubros/respaldo';
 import type { HallazgoDetectado, ItemComputo, TipoObra } from '@/types/domain';
 
 const RUBRO = 'seco';
@@ -50,9 +65,15 @@ export const plantillaSeco = {
   nombre: 'Construcción en seco',
   desperdicioDefaultPct: DESPERDICIO_PLACAS_PCT,
 
-  computar(entidades: readonly EntidadPersistida[], _tipoObra: TipoObra): ResultadoComputo {
+  computar(
+    entidades: readonly EntidadPersistida[],
+    _tipoObra: TipoObra,
+    _laminas?: readonly LaminaDeComputo[],
+    datosObra?: DatosObra,
+  ): ResultadoComputo {
     const hallazgos: HallazgoDetectado[] = [];
     const usadas: EntidadPersistida[] = [];
+    const cadena = cadenaDeRespaldo(datosObra);
     let m2 = 0;
     let mlSoleras = 0;
     let montantes = 0;
@@ -78,22 +99,8 @@ export const plantillaSeco = {
         continue;
       }
 
-      const altura = leerMedida(entidad, 'alturaM');
-      if (altura === null) {
-        hallazgos.push(
-          hallazgoDatoFaltante({
-            rubro: RUBRO,
-            clave: `${RUBRO}.altura_tabiques.${entidad.nombre}`,
-            checklistItem: `${RUBRO}.altura_tabiques`,
-            descripcion:
-              `No encontré la altura del tabique ${entidad.nombre}. Sin altura no computo sus m² de placa: ` +
-              'cargá la altura o indicá el corte donde está acotada.',
-            entidad,
-            campos: ['alturaM'],
-          }),
-        );
-        continue;
-      }
+      const altura = cadena.medida(entidad, 'alturaM', ALTURA_LOCAL);
+      if (altura === null) continue; // la consulta agrupada sale al final, una sola vez
 
       const largo = leerMedida(entidad, 'largoM');
       if (largo === null) {
@@ -119,20 +126,47 @@ export const plantillaSeco = {
       usadas.push(entidad);
     }
 
-    if (usadas.length === 0) return { items: [], hallazgos };
+    /**
+     * Una sola consulta por dato de obra que falta, con todos los tabiques que
+     * la esperan adentro. Se arma con los ítems ya emitidos porque de eso
+     * depende que bloquee: lo que quedó afuera de un `seco.placas` que igual
+     * salió lo dejó corto, y aprobarlo es comprar de menos.
+     */
+    const consultas = (emitidos: readonly ItemComputo[]): HallazgoDetectado[] =>
+      cadena.hallazgosFaltantes({
+        rubro: RUBRO,
+        unidad: 'm',
+        computados: emitidos,
+        descripcion: (clave) =>
+          `No encontré la altura de estos tabiques y en el expediente tampoco hay ${datoEnFrase(clave)}. ` +
+          'Cargá la altura del local una sola vez y la aplico a todos, o indicá el corte donde está acotada.',
+      });
+
+    if (usadas.length === 0) {
+      hallazgos.push(...consultas([]));
+      return { items: [], hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
+    }
+
+    /** El corte del que salió la altura, si la puso un dato de obra (P1). */
+    const fuentesAltura = cadena.fuentesDe(usadas, 'alturaM');
+    const conAltura = (item: ItemComputo): ItemComputo => conFuentesDeDato(item, fuentesAltura);
 
     const m2Netos = redondear2(m2);
     const items: ItemComputo[] = [
-      armarItem({
-        rubro: RUBRO,
-        claveItem: `${RUBRO}.placas`,
-        descripcion: 'Placa de roca de yeso (1,20 × 2,40 m)',
-        unidad: 'm2',
-        cantNeta: m2Netos,
-        desperdicioPct: DESPERDICIO_PLACAS_PCT,
-        compra: { tipo: 'bulto', presentacion: PLACA },
-        entidades: usadas,
-      }),
+      // Los cuatro que salen de los m² llevan la fuente de la altura; las
+      // soleras y los montantes salen del largo y no la necesitan.
+      conAltura(
+        armarItem({
+          rubro: RUBRO,
+          claveItem: `${RUBRO}.placas`,
+          descripcion: 'Placa de roca de yeso (1,20 × 2,40 m)',
+          unidad: 'm2',
+          cantNeta: m2Netos,
+          desperdicioPct: DESPERDICIO_PLACAS_PCT,
+          compra: { tipo: 'bulto', presentacion: PLACA },
+          entidades: usadas,
+        }),
+      ),
       armarItem({
         rubro: RUBRO,
         claveItem: `${RUBRO}.soleras`,
@@ -153,38 +187,45 @@ export const plantillaSeco = {
         compra: { tipo: 'bulto', presentacion: TIRA },
         entidades: usadas,
       }),
-      armarItem({
-        rubro: RUBRO,
-        claveItem: `${RUBRO}.tornillos`,
-        descripcion: 'Tornillos para placa de roca de yeso',
-        unidad: 'u',
-        cantNeta: redondearEntero(TORNILLOS_POR_M2 * m2Netos),
-        desperdicioPct: 0,
-        compra: { tipo: 'bulto', presentacion: CAJA },
-        entidades: usadas,
-      }),
-      armarItem({
-        rubro: RUBRO,
-        claveItem: `${RUBRO}.masilla`,
-        descripcion: 'Masilla para juntas',
-        unidad: 'kg',
-        cantNeta: redondear2(MASILLA_KG_POR_M2 * m2Netos),
-        desperdicioPct: 0,
-        compra: { tipo: 'bulto', presentacion: BALDE },
-        entidades: usadas,
-      }),
-      armarItem({
-        rubro: RUBRO,
-        claveItem: `${RUBRO}.cinta`,
-        descripcion: 'Cinta de papel para juntas',
-        unidad: 'ml',
-        cantNeta: redondear2(CINTA_ML_POR_M2 * m2Netos),
-        desperdicioPct: 0,
-        compra: { tipo: 'bulto', presentacion: ROLLO },
-        entidades: usadas,
-      }),
+      conAltura(
+        armarItem({
+          rubro: RUBRO,
+          claveItem: `${RUBRO}.tornillos`,
+          descripcion: 'Tornillos para placa de roca de yeso',
+          unidad: 'u',
+          cantNeta: redondearEntero(TORNILLOS_POR_M2 * m2Netos),
+          desperdicioPct: 0,
+          compra: { tipo: 'bulto', presentacion: CAJA },
+          entidades: usadas,
+        }),
+      ),
+      conAltura(
+        armarItem({
+          rubro: RUBRO,
+          claveItem: `${RUBRO}.masilla`,
+          descripcion: 'Masilla para juntas',
+          unidad: 'kg',
+          cantNeta: redondear2(MASILLA_KG_POR_M2 * m2Netos),
+          desperdicioPct: 0,
+          compra: { tipo: 'bulto', presentacion: BALDE },
+          entidades: usadas,
+        }),
+      ),
+      conAltura(
+        armarItem({
+          rubro: RUBRO,
+          claveItem: `${RUBRO}.cinta`,
+          descripcion: 'Cinta de papel para juntas',
+          unidad: 'ml',
+          cantNeta: redondear2(CINTA_ML_POR_M2 * m2Netos),
+          desperdicioPct: 0,
+          compra: { tipo: 'bulto', presentacion: ROLLO },
+          entidades: usadas,
+        }),
+      ),
     ];
 
-    return { items, hallazgos };
+    hallazgos.push(...consultas(items));
+    return { items, hallazgos, ...conOrigenes(cadena.origenPorEntidad()) };
   },
 } satisfies PlantillaRubro;

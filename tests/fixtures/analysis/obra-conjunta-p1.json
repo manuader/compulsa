@@ -1,0 +1,170 @@
+{
+  "rotulo": {
+    "titulo": "PLANTA PB",
+    "codigo": "A-01",
+    "disciplina": "arquitectura",
+    "tipoLamina": "planta",
+    "escala": "1:50",
+    "escalaConfiable": true,
+    "revision": "0",
+    "confianza": 0.95
+  },
+  "entidades": [
+    {
+      "tipo": "ambiente",
+      "nombre": "Estar",
+      "bbox": [
+        0.08,
+        0.2,
+        0.3,
+        0.4
+      ],
+      "confianza": 0.92,
+      "estadoReforma": "na",
+      "atributos": {
+        "superficieM2": 20,
+        "perimetroM": 18,
+        "vanosM2": 4,
+        "nivel": "PB",
+        "solado": "porcelanato",
+        "zocalo": "madera"
+      }
+    },
+    {
+      "tipo": "ambiente",
+      "nombre": "Baño",
+      "bbox": [
+        0.42,
+        0.2,
+        0.16,
+        0.22
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "superficieM2": 6,
+        "perimetroM": 10,
+        "vanosM2": 2,
+        "nivel": "PB",
+        "solado": "porcelanato",
+        "revestimiento": "cerámica"
+      }
+    },
+    {
+      "tipo": "tabique",
+      "nombre": "T1",
+      "bbox": [
+        0.38,
+        0.2,
+        0.015,
+        0.4
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 4,
+        "caras": 2
+      }
+    },
+    {
+      "tipo": "tabique",
+      "nombre": "T2",
+      "bbox": [
+        0.42,
+        0.42,
+        0.16,
+        0.015
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 3,
+        "caras": 2
+      }
+    },
+    {
+      "tipo": "tabique",
+      "nombre": "T3",
+      "bbox": [
+        0.62,
+        0.2,
+        0.015,
+        0.2
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 2,
+        "caras": 2
+      }
+    },
+    {
+      "tipo": "tabique",
+      "nombre": "T4",
+      "bbox": [
+        0.62,
+        0.44,
+        0.015,
+        0.24
+      ],
+      "confianza": 0.88,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "durlock",
+        "largoM": 3,
+        "caras": 2
+      }
+    },
+    {
+      "tipo": "muro",
+      "nombre": "M1",
+      "bbox": [
+        0.06,
+        0.18,
+        0.02,
+        0.44
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tipo": "mamposteria",
+        "largoM": 6
+      }
+    },
+    {
+      "tipo": "abertura",
+      "nombre": "V1",
+      "bbox": [
+        0.16,
+        0.18,
+        0.1,
+        0.02
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tag": "V1",
+        "tipologia": "ventana"
+      }
+    },
+    {
+      "tipo": "abertura",
+      "nombre": "P1",
+      "bbox": [
+        0.2,
+        0.6,
+        0.06,
+        0.02
+      ],
+      "confianza": 0.9,
+      "estadoReforma": "na",
+      "atributos": {
+        "tag": "P1",
+        "tipologia": "puerta"
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "clave": "dato_obra.altura_local.general",
+    "campo": "valor",
+    "valor": "2,60",
+    "bbox": [
+      0.15,
+      0.3,
+      0.3,
+      0.25
+    ],
+    "confianza": 0.8
+  }
+]

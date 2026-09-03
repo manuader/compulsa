@@ -136,9 +136,18 @@ export function unirFuentes(...listas: readonly (readonly Fuente[])[]): Fuente[]
   return fuentes;
 }
 
-/** Fuentes de un conjunto de entidades, deduplicadas por lámina + bbox. */
+/**
+ * Fuentes de un conjunto de entidades, deduplicadas por lámina + bbox.
+ *
+ * Una entidad unificada (§5.3) arrastra además las fuentes de las hermanas con
+ * las que se fusionó: el mismo tabique dibujado en la planta y cortado en el
+ * corte es UN ítem, y ese ítem tiene que citar las dos láminas. Sin esto, la
+ * unificación se llevaba puesta la mitad de la provenance (P1).
+ */
 export function fuentesDeEntidades(entidades: readonly EntidadPersistida[]): Fuente[] {
-  return unirFuentes(entidades.map(fuenteDeEntidad));
+  return unirFuentes(
+    ...entidades.map((entidad) => [fuenteDeEntidad(entidad), ...(entidad.fuentesUnificadas ?? [])]),
+  );
 }
 
 /**

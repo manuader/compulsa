@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { PDFDocument } from 'pdf-lib';
+import { degrees, PDFDocument } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
-import { separarPaginas } from '@/lib/pdf/split';
+import { separarPaginas, separarPaginasConTamano } from '@/lib/pdf/split';
 import { extraerTexto } from '@/lib/pdf/texto';
 
 const OBRA_DEMO = new Uint8Array(readFileSync(new URL('../fixtures/pdfs/obra-demo.pdf', import.meta.url)));
@@ -34,6 +34,50 @@ describe('separarPaginas', () => {
     await separarPaginas(OBRA_DEMO);
 
     expect(await separarPaginas(OBRA_DEMO)).toHaveLength(3);
+  });
+});
+
+describe('separarPaginasConTamano', () => {
+  /**
+   * El tamaño de la hoja es el insumo de la medición gráfica (§5.5): sin él,
+   * un bbox normalizado no se puede convertir a metros. Estos son los puntos
+   * PostScript reales de la A4 apaisada de los fixtures.
+   */
+  it('devuelve cada página con su tamaño en puntos', async () => {
+    const paginas = await separarPaginasConTamano(OBRA_DEMO);
+
+    expect(paginas).toHaveLength(3);
+    for (const pagina of paginas) {
+      expect(pagina.tamanoPts.ancho).toBeCloseTo(841.89, 2);
+      expect(pagina.tamanoPts.alto).toBeCloseTo(595.28, 2);
+    }
+  });
+
+  it('los bytes son los mismos que devuelve `separarPaginas`', async () => {
+    const conTamano = await separarPaginasConTamano(SIN_ESCALA);
+    const sueltas = await separarPaginas(SIN_ESCALA);
+
+    expect(conTamano).toHaveLength(1);
+    expect((await PDFDocument.load(conTamano[0].bytes)).getPageCount()).toBe(
+      (await PDFDocument.load(sueltas[0])).getPageCount(),
+    );
+  });
+
+  /**
+   * Una lámina girada se **ve** apaisada aunque su MediaBox sea vertical, y el
+   * bbox que devuelve el modelo está tomado sobre lo que se ve. Sin aplicar la
+   * rotación, la medición gráfica daría el ancho por el alto: un número
+   * plausible y equivocado.
+   */
+  it('aplica la rotación de la página: mide como se ve, no como está guardada', async () => {
+    const doc = await PDFDocument.create();
+    const pagina = doc.addPage([595.28, 841.89]);
+    pagina.setRotation(degrees(90));
+
+    const [separada] = await separarPaginasConTamano(await doc.save());
+
+    expect(separada.tamanoPts.ancho).toBeCloseTo(841.89, 2);
+    expect(separada.tamanoPts.alto).toBeCloseTo(595.28, 2);
   });
 });
 

@@ -494,6 +494,13 @@ const TIPOS_ENTIDAD_POR_RUBRO: Record<RubroId, readonly TipoEntidad[]> = {
   seco: ['tabique'],
   gruesa: ['muro'],
   pintura: ['ambiente', 'terminacion'],
+  terminaciones: ['ambiente', 'terminacion'],
+  sanitaria: ['tramo', 'accesorio', 'artefacto'],
+  electrica: ['boca'],
+  // Lo que se demuele puede ser cualquier cosa construida: el rubro no lo
+  // define el tipo de entidad sino su `estadoReforma`. El ambiente entra por
+  // sus m² de solado a levantar.
+  demolicion: ['muro', 'tabique', 'abertura', 'terminacion', 'ambiente'],
 };
 
 /**

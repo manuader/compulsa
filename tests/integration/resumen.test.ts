@@ -14,10 +14,22 @@ import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { setDbForTests, type Db } from '@/db/client';
-import { auditoria, estudios, hallazgos, laminas, obras, usuarios } from '@/db/schema';
+import {
+  auditoria,
+  computoItems,
+  datosObra,
+  documentos,
+  entidades,
+  estudios,
+  hallazgos,
+  laminas,
+  obras,
+  usuarios,
+} from '@/db/schema';
 import { crearProviderMock } from '@/lib/analysis/mock';
 import { responderHallazgo } from '@/lib/bandeja/resolver';
 import { procesarDocumento, subirDocumento } from '@/lib/pipeline/procesar';
+import { recomputarObra } from '@/lib/pipeline/recomputar';
 import { leerResumen, persistirResumen, type ResumenObra } from '@/lib/pipeline/resumen';
 import type { StorageAdapter } from '@/lib/storage/index';
 import { crearStorageLocal } from '@/lib/storage/local';
@@ -220,5 +232,99 @@ describe('resumen de una obra con una lámina trabada', () => {
     expect(resumen.titular).toBe(
       'Obra nueva con 1 lámina; sin cómputo todavía; 1 lámina trabada; 1 consulta abierta.',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('el alcance del resumen es el mismo que el de la planilla', () => {
+  /**
+   * Cuatro tabiques de PB sin altura acotada, más la altura de local declarada
+   * una sola vez en `datos_obra` (§5.2). Es el caso que rompía en silencio: el
+   * resumen vuelve a computar la obra en vez de leer `computo_items`, así que si
+   * no recibe los datos de obra, el rubro entero desaparece del resumen mientras
+   * la planilla lo muestra bien.
+   */
+  async function obraConAlturaEnDatosDeObra(): Promise<string> {
+    const [documento] = await db
+      .insert(documentos)
+      .values({
+        obraId,
+        nombreArchivo: 'planta.pdf',
+        tipo: 'plano',
+        archivoRef: 'demo/planta.pdf',
+        mime: 'application/pdf',
+        hash: 'sha256-demo',
+        subidoPor: usuarioId,
+      })
+      .returning();
+    const [lamina] = await db
+      .insert(laminas)
+      .values({
+        documentoId: documento.id,
+        obraId,
+        numeroPagina: 1,
+        codigo: 'A-01',
+        archivoRef: 'demo/planta-p1.pdf',
+        estadoAnalisis: 'analizada',
+        tipo: 'planta',
+        escala: '1:100',
+        escalaConfiable: true,
+      })
+      .returning();
+
+    await db.insert(entidades).values(
+      ['T1', 'T2', 'T3', 'T4'].map((nombre, i) => ({
+        obraId,
+        laminaId: lamina.id,
+        tipo: 'tabique' as const,
+        nombre,
+        atributosJson: { largoM: 3, caras: 2, tipo: 'durlock', nivel: 'PB' },
+        estadoReforma: 'nueva' as const,
+        fuentesJson: [
+          { laminaId: lamina.id, bbox: [0.1, 0.1 + i * 0.1, 0.3, 0.02] as [number, number, number, number] },
+        ],
+        confianza: 0.9,
+      })),
+    );
+    return lamina.id;
+  }
+
+  it('incluye el rubro que solo computa gracias a un dato de obra', async () => {
+    const laminaId = await obraConAlturaEnDatosDeObra();
+    await db.insert(datosObra).values({
+      obraId,
+      clave: 'altura_local.PB',
+      valorJson: { valor: 2.6, unidad: 'm' },
+      origen: 'deducido',
+      fuentesJson: [{ laminaId, bbox: [0.2, 0.3, 0.5, 0.4] }],
+      confianza: 0.9,
+    });
+
+    await recomputarObra(obraId, { db });
+
+    const resumen = await resumenGuardado();
+    const seco = resumen.alcance.find((rubro) => rubro.rubro === 'seco');
+    expect(seco?.items).toBe(6);
+    // Y cuenta lo mismo que la planilla, que es el invariante entero.
+    const items = await db
+      .select({ clave: computoItems.claveItem })
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.estado, 'activo')));
+    expect(items).toHaveLength(6);
+  });
+
+  it('sin el dato de obra el rubro no está en ninguno de los dos lados', async () => {
+    await obraConAlturaEnDatosDeObra();
+
+    await recomputarObra(obraId, { db });
+
+    const resumen = await resumenGuardado();
+    expect(resumen.alcance.find((rubro) => rubro.rubro === 'seco')).toBeUndefined();
+    const items = await db
+      .select({ clave: computoItems.claveItem })
+      .from(computoItems)
+      .where(and(eq(computoItems.obraId, obraId), eq(computoItems.estado, 'activo')));
+    expect(items).toEqual([]);
   });
 });

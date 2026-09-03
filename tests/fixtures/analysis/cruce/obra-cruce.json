@@ -1,0 +1,47 @@
+{
+  "datosObra": [
+    {
+      "clave": "altura_local.PB",
+      "valor": "2,60",
+      "unidad": "m",
+      "laminaCodigo": "CO01",
+      "bbox": [0.62, 0.41, 0.08, 0.03],
+      "confianza": 0.88
+    }
+  ],
+  "completados": [
+    {
+      "laminaCodigo": "PL01",
+      "entidadNombre": "FP01",
+      "campo": "anchoM",
+      "valor": "0,90",
+      "fuenteLaminaCodigo": "DET00",
+      "bbox": [0.31, 0.22, 0.06, 0.02],
+      "confianza": 0.92
+    },
+    {
+      "laminaCodigo": "PL01",
+      "entidadNombre": "FP01",
+      "campo": "altoM",
+      "valor": "2,05",
+      "fuenteLaminaCodigo": "DET00",
+      "confianza": 0.9
+    }
+  ],
+  "conflictos": [
+    {
+      "descripcion": "El ancho de FP01 no coincide entre la planta y la planilla de carpinterías.",
+      "datoA": "planta: vano de 0,90",
+      "laminaCodigoA": "PL01",
+      "datoB": "planilla: ancho 1,00",
+      "laminaCodigoB": "DET00",
+      "causaPosible": "La planta puede estar acotando el vano de albañilería y la planilla la hoja."
+    }
+  ],
+  "relecturas": [
+    {
+      "laminaCodigo": "DET00",
+      "queBuscar": "la fila de FP01: ancho, alto y tipo de vidrio"
+    }
+  ]
+}

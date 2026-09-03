@@ -10,12 +10,31 @@ import { z } from 'zod';
 
 export type BBox = [number, number, number, number]; // [x, y, ancho, alto] normalizados 0–1, origen arriba-izquierda
 export interface Fuente { laminaId: string; bbox: BBox; detalle?: string }
-export type Origen = 'explicito' | 'deducido' | 'supuesto';
+export type Origen = 'explicito' | 'deducido' | 'supuesto' | 'inferido';
 export type EstadoReforma = 'existente' | 'demoler' | 'nueva' | 'na';
 export type TipoObra = 'nueva' | 'reforma' | 'ampliacion';
-export type RubroId = 'aberturas' | 'seco' | 'pintura' | 'gruesa';
+export type RubroId =
+  | 'aberturas'
+  | 'seco'
+  | 'pintura'
+  | 'gruesa'
+  | 'terminaciones'
+  | 'sanitaria'
+  | 'electrica'
+  | 'demolicion';
 export type Unidad = 'u' | 'm' | 'ml' | 'm2' | 'm3' | 'l' | 'kg';
-export type TipoEntidad = 'ambiente' | 'muro' | 'tabique' | 'abertura' | 'artefacto' | 'terminacion' | 'cota' | 'otro';
+export type TipoEntidad =
+  | 'ambiente'
+  | 'muro'
+  | 'tabique'
+  | 'abertura'
+  | 'artefacto'
+  | 'terminacion'
+  | 'cota'
+  | 'otro'
+  | 'tramo'
+  | 'accesorio'
+  | 'boca';
 export type Disciplina = 'arquitectura' | 'estructura' | 'instalaciones' | 'otra';
 export type TipoLamina = 'planta' | 'corte' | 'vista' | 'detalle' | 'planilla' | 'otra';
 export type EstadoAnalisis = 'pendiente' | 'procesando' | 'analizada' | 'bloqueada_escala' | 'error';
@@ -32,11 +51,20 @@ export interface EntidadDetectada {
   atributos: Record<string, number | string | boolean | null>;
 }
 // Atributos convencionales por tipo (claves exactas):
-//   ambiente:  superficieM2, perimetroM, alturaM?, vanosM2?
+//   ambiente:  superficieM2, perimetroM, alturaM?, vanosM2?,
+//              nivel?, solado?, zocalo?, cielorraso?, revestimiento?, alturaRevestimientoM?
 //   abertura:  tag, tipologia ('ventana'|'puerta'|'paño fijo'), anchoM?, altoM?, material?, vidrio?
 //   tabique:   largoM, alturaM?, caras? (default 2), tipo ('durlock')
 //   muro:      largoM, alturaM?, espesorM?, tipo ('mamposteria')
 //   terminacion: superficieM2, ubicacion ('piso'|'cielorraso'|'pared'), ambiente (nombre), material?
+//   tramo:     sistema ('af'|'ac'|'cloacal'|'pluvial'), diametro (string, ej. "20", "110"), longitudM?, material?,
+//              ambiente? (nombre del local que atraviesa o al que sirve, solo si es evidente)
+//   accesorio: tipo ('codo90'|'codo45'|'te'|'valvula'), sistema, diametro
+//   artefacto: ambiente? (nombre del local donde está)
+//   boca:      tipo ('toma'|'luz'|'caja'|'tablero'|'datos'), circuito?
+// `ambiente` de artefacto y de tramo es el mismo nombre de local, escrito igual:
+// es lo que hace correr el control del §22 (un artefacto sin desagüe que le
+// corresponda en su propio local). Nombres distintos = control que no dispara.
 
 export interface RotuloDetectado {
   titulo: string | null; codigo: string | null;
@@ -69,11 +97,11 @@ export interface LaminaIndice {
 /**
  * Lo que el análisis sabe de la obra cuando mira UNA lámina.
  *
- * `obraId` y `tipoObra` son obligatorios desde F0. Los tres campos nuevos son
- * **aditivos y opcionales**: un provider que no los mire se comporta igual que
- * antes, y el mock los ignora. Los arma el pipeline (`analizarLamina`) leyendo
- * el resumen ejecutivo, el índice de láminas de la obra y la configuración del
- * estudio (`ConfigEstudio.instruccionesExtraccion`).
+ * `obraId` y `tipoObra` son obligatorios desde F0. Todo lo demás es **aditivo y
+ * opcional**: un provider que no lo mire se comporta igual que antes, y el mock
+ * de láminas lo ignora. Lo arma el pipeline (`analizarLamina`) leyendo la obra,
+ * su resumen ejecutivo, su índice de láminas y la configuración del estudio
+ * (`ConfigEstudio.instruccionesExtraccion`).
  */
 export interface ObraContexto {
   obraId: string;
@@ -84,6 +112,14 @@ export interface ObraContexto {
   indiceLaminas?: LaminaIndice[];
   /** Instrucciones de extracción del estudio, ya resueltas a texto plano. */
   instruccionesEstudio?: string;
+  /**
+   * Nombre de la obra (`obras.nombre`). Aditivo y opcional como los tres de
+   * arriba: los providers de lámina lo ignoran. Lo usa el **cruce**, que es una
+   * llamada por obra y no por lámina, para dos cosas: nombrarla en el prompt y
+   * —en el mock— resolver la clave de su fixture (`slug(nombreObra)`). Sin él,
+   * el mock del cruce no encuentra fixture y devuelve vacío.
+   */
+  nombreObra?: string;
 }
 
 export interface ItemComputo {
@@ -180,6 +216,75 @@ export interface HallazgoDetectado {
   checklistItem?: string; bloqueante: boolean; fuentes: Fuente[];
   targetRef?: TargetRef;            // si responderlo actualiza una entidad
   valorPropuesto?: ValorPropuesto;  // lo que el sistema propone para esos campos
+  targetDato?: TargetDato;          // si responderlo escribe un dato de obra en vez de una entidad
+}
+
+// ---------------------------------------------------------------------------
+// El expediente como conjunto: datos de obra, precios y fases del análisis.
+// Contratos copiados verbatim del plan (`task-1-brief.md` §«Contratos
+// compartidos nuevos»): los consumen T2–T11. No los renombres.
+// ---------------------------------------------------------------------------
+
+/** Un hecho que vale para toda la obra. Clave convencional: `altura_local.PB`, `nivel.PB`, `altura_revestimiento.general`. */
+export interface DatoObraValor { valor: number | string; unidad?: Unidad }
+
+/**
+ * Un dato de obra ya resuelto, listo para que una plantilla lo use como
+ * respaldo: trae su origen, sus fuentes y su confianza, que se suman al ítem
+ * que se apoye en él (P1: nada entra al cómputo sin provenance).
+ */
+export interface DatoObraResuelto { clave: string; valor: number | string; unidad?: Unidad; origen: Origen; fuentes: Fuente[]; confianza: number; metodo?: string }
+
+/** Un hallazgo puede apuntar a un dato de obra en vez de a una entidad. Responderlo escribe `datos_obra` y el recompute propaga. */
+export interface TargetDato { clave: string; unidad?: Unidad; entidades: string[] }  // entidades = ids afectadas (informativo, para la tarjeta)
+
+/**
+ * El precio unitario que el sistema le pone a un ítem, con de dónde salió.
+ *
+ * La IA **jamás** pone un precio: `fuente` solo puede ser el precio manual del
+ * ítem, la lista de referencia del estudio o el índice de precios propio.
+ */
+export interface PrecioEstimado { unitario: number; moneda: string; fuente: 'manual' | 'lista' | 'indice'; fechaPrecio: string }
+
+/**
+ * Fase del análisis en curso, para la UI del expediente (`obras.analisis_json`).
+ *
+ * `desde` es el ISO del momento en que la fase se marcó, y existe porque el
+ * único escritor de esta columna es `procesarDocumento`, que corre **adentro
+ * del POST del upload** con `maxDuration = 300`. Un expediente de veinticinco
+ * láminas sobre el provider real se pasa de esos cinco minutos y el proceso
+ * muere en el medio de una fase: sin timestamp, `analisis_json` queda diciendo
+ * «Analizando las láminas · 12 de 25» para siempre y la pantalla pide un
+ * refresh cada cuatro segundos, también para siempre. Es opcional porque las
+ * filas escritas antes de esta columna no lo tienen: sin `desde`, una fase se
+ * lee como en curso, que es el comportamiento de siempre.
+ */
+export interface FaseAnalisis { fase: 'inventario' | 'extraccion' | 'cruce' | 'relectura' | 'listo' | 'error'; total?: number; completadas?: number; detalle?: string; desde?: string }
+
+/**
+ * Cuánto puede quedarse quieta una fase antes de que se lea como abandonada.
+ *
+ * Diez minutos: el doble del `maxDuration` del upload, que es el techo real de
+ * una corrida. Una fase más vieja que eso no está trabajando —el proceso que la
+ * escribió ya no existe—, así que la pantalla tiene que ofrecer reintentar en
+ * vez de seguir esperando.
+ */
+export const TTL_FASE_ANALISIS_MS = 10 * 60 * 1000;
+
+/**
+ * `true` si la fase quedó colgada: dice que está trabajando y hace rato que no
+ * se mueve.
+ *
+ * Lo usa la pantalla del expediente para no dejar un progreso eterno, y es lo
+ * único que separa «esto está tardando» de «esto se murió y nadie lo sabe».
+ * Una fase terminada (`listo` / `error`) nunca vence: ya llegó a donde iba.
+ */
+export function faseVencida(fase: FaseAnalisis | null, ahora: number = Date.now()): boolean {
+  if (fase === null || fase.fase === 'listo' || fase.fase === 'error') return false;
+  if (fase.desde === undefined) return false;
+  const desde = Date.parse(fase.desde);
+  if (!Number.isFinite(desde)) return false;
+  return ahora - desde > TTL_FASE_ANALISIS_MS;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,7 +298,14 @@ export type EstadoContacto = 'pendiente' | 'contactado' | 'cotizo' | 'negociando
 export type Canal = 'manual' | 'whatsapp' | 'voz' | 'email';
 export type MatchConciliacion = 'exacto' | 'parcial' | 'sustituto' | 'no_cotizado' | 'extra';
 export type EstadoDeduccion = 'propuesta' | 'validada' | 'rechazada';
-export type ReglaDeduccion = 'planilla_plano' | 'planta_corte' | 'continuidad' | 'idem_tipologia' | 'cierre_cotas';
+export type ReglaDeduccion =
+  | 'planilla_plano'
+  | 'planta_corte'
+  | 'continuidad'
+  | 'idem_tipologia'
+  | 'cierre_cotas'
+  | 'cruce'
+  | 'medicion_grafica';
 export type RolUsuario = 'titular' | 'colaborador' | 'lectura'; // ya existe como enum de DB; exportar acá
 
 export interface CondicionesRfq {
@@ -269,16 +381,42 @@ export interface ConfigEstudio {
 // providers para sus schemas Zod: una sola lista por tipo, en un solo lugar.
 // ---------------------------------------------------------------------------
 
-export const ORIGENES = ['explicito', 'deducido', 'supuesto'] as const satisfies readonly Origen[];
+// Todas estas listas son el orden de valores de su `pgEnum`: lo nuevo va
+// SIEMPRE al final (`ALTER TYPE … ADD VALUE`). Reordenarlas rompe la migración
+// sobre datos vivos.
+export const ORIGENES = ['explicito', 'deducido', 'supuesto', 'inferido'] as const satisfies readonly Origen[];
 export const ESTADOS_REFORMA = ['existente', 'demoler', 'nueva', 'na'] as const satisfies readonly EstadoReforma[];
 export const TIPOS_OBRA = ['nueva', 'reforma', 'ampliacion'] as const satisfies readonly TipoObra[];
-export const RUBROS = ['aberturas', 'seco', 'pintura', 'gruesa'] as const satisfies readonly RubroId[];
+export const RUBROS = [
+  'aberturas',
+  'seco',
+  'pintura',
+  'gruesa',
+  'terminaciones',
+  'sanitaria',
+  'electrica',
+  'demolicion',
+] as const satisfies readonly RubroId[];
 export const UNIDADES = ['u', 'm', 'ml', 'm2', 'm3', 'l', 'kg'] as const satisfies readonly Unidad[];
-// `'cota'` va al final a propósito: el orden de esta lista es el orden de valores
-// del `pgEnum` `tipo_entidad`, y agregar al final es lo que hace que la migración
-// sea un `ALTER TYPE … ADD VALUE` y no una recreación del tipo (F1, regla de
-// cierre de cotas). Reordenarla rompería la migración sobre datos vivos.
-export const TIPOS_ENTIDAD = ['ambiente', 'muro', 'tabique', 'abertura', 'artefacto', 'terminacion', 'otro', 'cota'] as const satisfies readonly TipoEntidad[];
+// Lo que se agregó después va al final a propósito —`'cota'` en F1 (regla de
+// cierre de cotas), los tres de instalaciones ahora—: el orden de esta lista es
+// el orden de valores del `pgEnum` `tipo_entidad`, y agregar al final es lo que
+// hace que la migración sea un `ALTER TYPE … ADD VALUE` y no una recreación del
+// tipo. Reordenarla rompería la migración sobre datos vivos.
+export const TIPOS_ENTIDAD = [
+  'ambiente',
+  'muro',
+  'tabique',
+  'abertura',
+  'artefacto',
+  'terminacion',
+  'otro',
+  'cota',
+  // Los tres de instalaciones, después de `cota` y por la misma razón.
+  'tramo',
+  'accesorio',
+  'boca',
+] as const satisfies readonly TipoEntidad[];
 export const DISCIPLINAS = ['arquitectura', 'estructura', 'instalaciones', 'otra'] as const satisfies readonly Disciplina[];
 export const TIPOS_LAMINA = ['planta', 'corte', 'vista', 'detalle', 'planilla', 'otra'] as const satisfies readonly TipoLamina[];
 export const ESTADOS_ANALISIS = ['pendiente', 'procesando', 'analizada', 'bloqueada_escala', 'error'] as const satisfies readonly EstadoAnalisis[];
@@ -298,7 +436,17 @@ export const ESTADOS_CONTACTO = ['pendiente', 'contactado', 'cotizo', 'negociand
 export const CANALES = ['manual', 'whatsapp', 'voz', 'email'] as const satisfies readonly Canal[];
 export const MATCHES_CONCILIACION = ['exacto', 'parcial', 'sustituto', 'no_cotizado', 'extra'] as const satisfies readonly MatchConciliacion[];
 export const ESTADOS_DEDUCCION = ['propuesta', 'validada', 'rechazada'] as const satisfies readonly EstadoDeduccion[];
-export const REGLAS_DEDUCCION = ['planilla_plano', 'planta_corte', 'continuidad', 'idem_tipologia', 'cierre_cotas'] as const satisfies readonly ReglaDeduccion[];
+export const REGLAS_DEDUCCION = [
+  'planilla_plano',
+  'planta_corte',
+  'continuidad',
+  'idem_tipologia',
+  'cierre_cotas',
+  // Las dos que no son reglas documentales del §11: la primera la propone el
+  // provider de cruce, la segunda la medición gráfica sobre el dibujo.
+  'cruce',
+  'medicion_grafica',
+] as const satisfies readonly ReglaDeduccion[];
 export const PALANCAS = ['volumen', 'plazo_pago', 'fecha', 'adjudicacion_inmediata'] as const satisfies readonly Mandato['palancas'][number][];
 
 // ---------------------------------------------------------------------------
@@ -378,6 +526,27 @@ export const zEntidadDetectada = z.object({
   confianza: z.number().min(0).max(1),
   estadoReforma: z.enum(ESTADOS_REFORMA),
   atributos: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])),
+});
+
+/** `datos_obra.valor_json`: el hecho, con su unidad si la tiene. */
+export const zDatoObraValor = z.object({
+  valor: z.union([z.number(), z.string()]),
+  unidad: z.enum(UNIDADES).optional(),
+});
+
+/** `hallazgos.target_dato`: a qué dato de obra apunta la consulta y a quiénes afecta. */
+export const zTargetDato = z.object({
+  clave: z.string().min(1),
+  unidad: z.enum(UNIDADES).optional(),
+  entidades: z.array(z.string()),
+});
+
+/** `computo_items.precio_json`: el precio con su procedencia. La IA no entra acá. */
+export const zPrecioEstimado = z.object({
+  unitario: z.number(),
+  moneda: z.string(),
+  fuente: z.enum(['manual', 'lista', 'indice']),
+  fechaPrecio: z.string(),
 });
 
 export const zRotuloDetectado = z.object({
@@ -512,6 +681,9 @@ type Difiere<A, B, Nombre extends string> = [A] extends [B]
 type _SchemasAlineados = Assert<
   | Difiere<z.infer<typeof zFuente>, Fuente, 'zFuente'>
   | Difiere<z.infer<typeof zValorPropuesto>, ValorPropuesto, 'zValorPropuesto'>
+  | Difiere<z.infer<typeof zDatoObraValor>, DatoObraValor, 'zDatoObraValor'>
+  | Difiere<z.infer<typeof zTargetDato>, TargetDato, 'zTargetDato'>
+  | Difiere<z.infer<typeof zPrecioEstimado>, PrecioEstimado, 'zPrecioEstimado'>
   | Difiere<z.infer<typeof zInstruccionesExtraccion>, InstruccionesExtraccion, 'zInstruccionesExtraccion'>
   | Difiere<z.infer<typeof zEntidadDetectada>, EntidadDetectada, 'zEntidadDetectada'>
   | Difiere<z.infer<typeof zRotuloDetectado>, RotuloDetectado, 'zRotuloDetectado'>

@@ -14,9 +14,9 @@
  *   2. `requireObra()` — la obra es del estudio del usuario (RNF-4). El `obraId`
  *      que vale es el que devuelve el guard, no el del JSON.
  *   3. el núcleo, con el actor sacado de la sesión.
- *   4. `revalidatePath()` de las pantallas que cambian: la bandeja de
- *      deducciones, la de consultas (validar cierra la consulta del faltante),
- *      la planilla y el tablero.
+ *   4. `revalidatePath()` de las pantallas que cambian: la bandeja —sus dos
+ *      solapas comparten ruta, y validar o rechazar mueve las dos—, la planilla
+ *      y el tablero.
  */
 import { z } from 'zod';
 
@@ -43,7 +43,8 @@ const PAYLOAD_ILEGIBLE = 'No pude leer la obra de la deducción.';
  */
 async function revalidar(obraId: string): Promise<void> {
   const { revalidatePath } = await import('next/cache');
-  revalidatePath(`/obras/${obraId}/deducciones`);
+  // La pantalla es la bandeja: sus dos solapas comparten ruta (§5.8) y
+  // `/obras/[obraId]/deducciones` es hoy una redirección.
   revalidatePath(`/obras/${obraId}/bandeja`);
   revalidatePath(`/obras/${obraId}/computo`);
   revalidatePath(`/obras/${obraId}`);

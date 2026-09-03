@@ -6,10 +6,13 @@
  *
  *  - **La corrida real:** cada obra de `tests/golden/` se procesa con el
  *    pipeline completo sobre PGlite en memoria y se compara contra su
- *    `expected-computo.json`, escrito a mano. Hoy el error es CERO en los 15
- *    ítems: el 2 % de RNF-1 es el techo del contrato, no el objetivo. Si este
- *    test se pone en rojo, o el cambio está mal o el esperado está mal —
- *    decidilo y dejalo escrito en el commit (`tests/CLAUDE.md` §3).
+ *    `expected-computo.json`, escrito a mano. Hoy el error es CERO en los 54
+ *    ítems de los tres casos: el 2 % de RNF-1 es el techo del contrato, no el
+ *    objetivo. Si este test se pone en rojo, o el cambio está mal o el esperado
+ *    está mal — decidilo y dejalo escrito en el commit (`tests/CLAUDE.md` §3).
+ *    El tercer caso, `obra-conjunta`, mide algo que los otros dos no: que la
+ *    bandeja quede **sin** consultas de altura, que es de lo que se trató la
+ *    ola del expediente como conjunto.
  *  - **El harness en sí:** los tres modos de fallo (ítem esperado ausente, ítem
  *    extra, rubro por encima del umbral) se ejercitan sobre el núcleo puro. Un
  *    harness que no sabe ponerse en rojo no protege nada.
@@ -62,7 +65,7 @@ describe('golden set — corrida real del pipeline', () => {
     'todos los casos quedan dentro del contrato de precisión (RNF-1)',
     async () => {
       const casos = await listarCasosGolden();
-      expect(casos).toEqual(['obra-demo', 'obra-reforma']);
+      expect(casos).toEqual(['obra-conjunta', 'obra-demo', 'obra-reforma']);
 
       for (const caso of casos) {
         const resultado = await correr(caso);
@@ -130,7 +133,7 @@ describe('golden set — corrida real del pipeline', () => {
         ['aberturas', 2],
         ['seco', 6],
         ['pintura', 2],
-        ['gruesa', 1],
+        ['demolicion', 1],
       ]);
       expect(resultado.comparaciones.filter((c) => c.error !== 0)).toEqual([]);
 
@@ -143,15 +146,85 @@ describe('golden set — corrida real del pipeline', () => {
       // distingue "salió de la deducción" de "salió solo de la planilla".
       expect(resultado.origenes['aberturas.V5']).toBe('deducido');
       expect(resultado.origenes['aberturas.P3']).toBe('deducido');
-      expect(resultado.origenes['gruesa.demolicion']).toBe('explicito');
+      expect(resultado.origenes['demolicion.muros']).toBe('explicito');
       // El tabique existente no aporta un metro: 4 × 2,50 × 2 = 20 m², no 35.
       expect(reales.get('seco.placas')).toBe(23.04);
       expect(reales.get('seco.montantes')).toBe(11);
       // El muro a demoler no compra materiales, solo m² de demolición.
-      expect(reales.get('gruesa.demolicion')).toBe(10.4);
+      expect(reales.get('demolicion.muros')).toBe(10.4);
       expect(reales.get('gruesa.ladrillos')).toBeUndefined();
       expect(reales.get('pintura.latex_paredes')).toBe(6);
       expect(reales.get('pintura.latex_cielorrasos')).toBe(2);
+    },
+    TIMEOUT_MS,
+  );
+
+  /**
+   * El golden 3: la obra del expediente como conjunto.
+   *
+   * Los otros dos casos miden cuánto material sale de una lámina. Este mide
+   * otra cosa: **cuánto sale de cruzar seis**. La planta no acota una sola
+   * altura, y sin embargo los cuatro tabiques, el muro y los dos ambientes se
+   * computan, porque el corte la declara una vez y el cruce la escribe como un
+   * hecho de la obra.
+   *
+   * Antes de esta ola, la misma documentación producía cuatro consultas
+   * idénticas de altura de tabique (más las del muro y los ambientes) y ningún
+   * ítem de seco. La prueba de la ola no son los 72 m² de placa: es el cero de
+   * `dato_obra.altura_local.PB` en la bandeja.
+   */
+  it(
+    'obra-conjunta computa los 28 ítems del expediente sin una sola consulta de altura',
+    async () => {
+      const resultado = await correr('obra-conjunta');
+
+      expect(resultado.comparaciones).toHaveLength(28);
+      expect(resultado.porRubro.map((f) => [f.rubro, f.items])).toEqual([
+        ['aberturas', 2],
+        ['seco', 6],
+        ['pintura', 2],
+        ['gruesa', 4],
+        ['terminaciones', 6],
+        ['sanitaria', 6],
+        ['electrica', 2],
+      ]);
+      expect(resultado.comparaciones.filter((c) => c.error !== 0)).toEqual([]);
+
+      const reales = new Map(resultado.comparaciones.map((c) => [c.claveItem, c.real]));
+      // Los cuatro tabiques, con la altura del corte: 12 m × 2,60 × 2 caras.
+      expect(reales.get('seco.placas')).toBe(72);
+      expect(reales.get('seco.montantes')).toBe(35);
+      // El muro, con la MISMA altura: un solo hecho alcanza para los dos rubros.
+      expect(reales.get('gruesa.ladrillos')).toBe(396);
+      // Los rubros nuevos de la ola, con sus números pinneados.
+      expect(reales.get('terminaciones.solado.porcelanato')).toBe(29);
+      expect(reales.get('terminaciones.revestimiento.ceramica')).toBe(24);
+      expect(reales.get('sanitaria.canieria.ac.20')).toBe(8);
+      expect(reales.get('sanitaria.accesorio.codo90.20')).toBe(3);
+      expect(reales.get('electrica.boca.luz')).toBe(3);
+
+      // El nivel de evidencia: lo que se apoyó en el dato de obra del corte sale
+      // `deducido`, y lo que estaba escrito en su propia lámina sigue
+      // `explicito`. La cantidad sola no distingue una cosa de la otra.
+      expect(resultado.origenes['seco.placas']).toBe('deducido');
+      expect(resultado.origenes['gruesa.ladrillos']).toBe('deducido');
+      expect(resultado.origenes['pintura.latex_paredes']).toBe('deducido');
+      expect(resultado.origenes['terminaciones.revestimiento.ceramica']).toBe('deducido');
+      expect(resultado.origenes['aberturas.V1']).toBe('deducido');
+      expect(resultado.origenes['sanitaria.canieria.ac.20']).toBe('explicito');
+      expect(resultado.origenes['electrica.boca.luz']).toBe('explicito');
+      expect(resultado.origenes['terminaciones.cielorraso.yeso']).toBe('explicito');
+      // Nada salió de medir el dibujo: cada número tiene una cota detrás.
+      expect(Object.values(resultado.origenes)).not.toContain('inferido');
+
+      // Lo que esta ola vino a arreglar, en una línea: cero preguntas de altura.
+      const altura = resultado.hallazgosAbiertos.filter((clave) =>
+        clave.startsWith('dato_obra.altura_local'),
+      );
+      expect(altura).toEqual([]);
+      expect(resultado.hallazgosAbiertos).not.toContain('dato_obra.altura_revestimiento.general');
+      // Y ninguna consulta abierta pide una altura por entidad, tampoco.
+      expect(resultado.hallazgosAbiertos.filter((c) => c.includes('altura'))).toEqual([]);
     },
     TIMEOUT_MS,
   );
@@ -241,7 +314,9 @@ describe('el harness sabe ponerse en rojo', () => {
 describe('núcleo del harness', () => {
   it('deriva el rubro del prefijo de la clave y rechaza una clave sin rubro', () => {
     expect(rubroDeClave('seco.placas')).toBe('seco');
-    expect(rubroDeClave('aberturas.retiro.V2')).toBe('aberturas');
+    // Una clave de tres tramos: el rubro es el primero, no la clave entera.
+    expect(rubroDeClave('demolicion.carpinterias')).toBe('demolicion');
+    expect(rubroDeClave('terminaciones.solado.porcelanato')).toBe('terminaciones');
     expect(() => rubroDeClave('zocalos.madera')).toThrow(/no empieza con un rubro conocido/);
   });
 

@@ -125,10 +125,16 @@ export function crearProviderBusquedaClaude(): BusquedaProvider {
       // El cable es laxo a propósito (ver `busqueda-tipos.ts`): acá se aplica el
       // contrato y se descarta lo que no se pidió, lo que no se puede ubicar en
       // la lámina y lo que no es un número donde tiene que haber una medida.
+      //
+      // Pero una salida que **no parsea** no es "esta lámina no tenía nada":
+      // devolver `[]` hacía que una truncada por `max_tokens` fuera idéntica a
+      // una lámina limpia, y encima marcaba los objetivos como "ya buscados"
+      // para no re-pagarlos. Misma disciplina que `claude.ts`: se audita con el
+      // `stop_reason` y se levanta. `buscarTolerante` lo anota y el documento
+      // queda analizado igual.
+      const cruda = respuesta.parsed_output;
       const saneo =
-        respuesta.parsed_output === null
-          ? { datos: [], descartados: 0 }
-          : sanearBusqueda(respuesta.parsed_output.datos, objetivos);
+        cruda === null ? { datos: [], descartados: 0 } : sanearBusqueda(cruda.datos, objetivos);
 
       // RNF-7: el costo por obra se mide desde acá. La búsqueda dirigida es la
       // única familia de llamadas que el sistema dispara sola al terminar de
@@ -151,8 +157,17 @@ export function crearProviderBusquedaClaude(): BusquedaProvider {
           objetivos: objetivos.map((objetivo) => objetivo.clave),
           encontrados: saneo.datos.length,
           descartados: saneo.descartados,
+          // Las dos que separan "no encontró nada" de "la llamada se rompió".
+          stopReason: respuesta.stop_reason,
+          salidaInvalida: cruda === null,
         },
       });
+
+      if (cruda === null) {
+        throw new Error(
+          `Claude no devolvió una búsqueda que valide contra el contrato (lámina ${lamina.laminaId}, stop_reason: ${respuesta.stop_reason}).`,
+        );
+      }
 
       return saneo.datos;
     },

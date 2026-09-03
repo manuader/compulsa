@@ -2,9 +2,9 @@
  * Checklists por rubro, editables por estudio (RF-405).
  *
  * Un **ítem de checklist** es la familia de un hallazgo: la clave del hallazgo
- * es `seco.altura_tabiques.T1` (única por obra, para idempotencia) y su
- * `checklistItem` es `seco.altura_tabiques` (la familia, común a todos los
- * tabiques sin altura). Las plantillas de rubro escriben ese campo desde F0;
+ * es `seco.largo_tabiques.T1` (única por obra, para idempotencia) y su
+ * `checklistItem` es `seco.largo_tabiques` (la familia, común a todos los
+ * tabiques sin largo). Las plantillas de rubro escriben ese campo desde F0;
  * lo que faltaba es que el estudio pueda decidir, para cada familia, si la
  * chequea y si frena la aprobación.
  *
@@ -47,7 +47,7 @@ import { RUBROS, type RubroId } from '@/types/domain';
 // ---------------------------------------------------------------------------
 
 export interface ItemChecklistDefault {
-  /** `checklistItem` del hallazgo: "seco.altura_tabiques". */
+  /** `checklistItem` del hallazgo: "seco.largo_tabiques". */
   itemId: string;
   /** Qué se chequea, en es-AR, para la pantalla de configuración. */
   descripcion: string;
@@ -91,11 +91,6 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
       bloqueante: true,
     },
     {
-      itemId: 'seco.altura_tabiques',
-      descripcion: 'Cada tabique tiene altura (acotada en corte o declarada).',
-      bloqueante: true,
-    },
-    {
       itemId: 'seco.largo_tabiques',
       descripcion: 'Cada tabique tiene largo acotado en planta.',
       bloqueante: true,
@@ -107,11 +102,6 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
     },
   ],
   pintura: [
-    {
-      itemId: 'pintura.altura_ambiente',
-      descripcion: 'Cada ambiente a pintar tiene altura.',
-      bloqueante: true,
-    },
     {
       itemId: 'pintura.perimetro_ambiente',
       descripcion: 'Cada ambiente a pintar tiene perímetro.',
@@ -140,11 +130,6 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
       bloqueante: true,
     },
     {
-      itemId: 'gruesa.altura_muros',
-      descripcion: 'Cada muro tiene altura (acotada en corte o declarada).',
-      bloqueante: true,
-    },
-    {
       itemId: 'gruesa.largo_muros',
       descripcion: 'Cada muro tiene largo acotado en planta.',
       bloqueante: true,
@@ -152,6 +137,98 @@ export const CHECKLIST_DEFAULT: Record<RubroId, readonly ItemChecklistDefault[]>
     {
       itemId: 'gruesa.baja_confianza',
       descripcion: 'Ningún ítem de obra gruesa se apoya en datos por debajo del umbral de confianza.',
+      bloqueante: true,
+    },
+  ],
+  terminaciones: [
+    {
+      itemId: 'terminaciones.superficie',
+      descripcion: 'Cada ambiente o terminación con material declarado tiene superficie.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'terminaciones.perimetro',
+      descripcion: 'Cada ambiente con zócalo o revestimiento tiene perímetro.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'terminaciones.baja_confianza',
+      descripcion: 'Ningún ítem de terminaciones se apoya en datos por debajo del umbral de confianza.',
+      bloqueante: true,
+    },
+  ],
+  // Sanitaria y eléctrica traen todavía **solo** el degradado por confianza, que
+  // no lo emite la plantilla sino `taxonomia.ts` para todo rubro: sus plantillas
+  // son stubs y declarar chequeos antes del cómputo sería prometer un control
+  // que hoy nadie hace.
+  sanitaria: [
+    {
+      itemId: 'sanitaria.sistema_tramos',
+      descripcion:
+        'Cada tramo de cañería declara su sistema (agua fría, agua caliente, cloacal o pluvial).',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.diametro_tramos',
+      descripcion: 'Cada tramo de cañería tiene diámetro.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.longitud_tramos',
+      descripcion: 'Cada tramo de cañería tiene longitud acotada.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.tipo_accesorios',
+      descripcion: 'Cada accesorio declara qué pieza es (codo 90°, codo 45°, te o válvula).',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.diametro_accesorios',
+      descripcion: 'Cada accesorio tiene diámetro.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'sanitaria.correspondencia',
+      descripcion: 'Cada artefacto tiene un tramo de desagüe cloacal en el mismo ambiente.',
+      // Nace en `false`: el desagüe puede estar dibujado en otra lámina, y
+      // frenar el rubro entero por un aviso de coherencia sería un cepo.
+      bloqueante: false,
+    },
+    {
+      itemId: 'sanitaria.baja_confianza',
+      descripcion:
+        'Ningún ítem de instalación sanitaria se apoya en datos por debajo del umbral de confianza.',
+      bloqueante: true,
+    },
+  ],
+  electrica: [
+    {
+      itemId: 'electrica.tipo_bocas',
+      descripcion: 'Cada boca declara de qué tipo es (toma, luz, caja, tablero o datos).',
+      bloqueante: true,
+    },
+    {
+      itemId: 'electrica.baja_confianza',
+      descripcion:
+        'Ningún ítem de instalación eléctrica se apoya en datos por debajo del umbral de confianza.',
+      bloqueante: true,
+    },
+  ],
+  demolicion: [
+    {
+      itemId: 'demolicion.largo',
+      descripcion: 'Cada muro o tabique a demoler tiene largo acotado en planta.',
+      bloqueante: true,
+    },
+    {
+      itemId: 'demolicion.superficie',
+      descripcion: 'Cada ambiente a demoler tiene superficie (para el solado a levantar).',
+      bloqueante: true,
+    },
+    {
+      itemId: 'demolicion.baja_confianza',
+      descripcion: 'Ningún ítem de demolición se apoya en datos por debajo del umbral de confianza.',
       bloqueante: true,
     },
   ],
@@ -243,7 +320,7 @@ export async function checklistEfectivo(
  *
  * Es lo que necesita cualquier pantalla que cuente bloqueantes de la obra
  * entera (el tablero, la bandeja) y no de un rubro: los `itemId` están
- * namespaceados por rubro (`seco.altura_tabiques`), así que no chocan entre sí.
+ * namespaceados por rubro (`seco.largo_tabiques`), así que no chocan entre sí.
  */
 export async function checklistEfectivoDeTodos(
   db: Db,
@@ -385,7 +462,7 @@ export function esBloqueanteEfectivo(
  * Es el número que muestran el tablero ("N bloquean la aprobación") y la bandeja
  * ("N bloqueantes"), y tiene que ser el mismo que decide el gate: contar el
  * `bloqueante` crudo de la fila haría que un estudio que desactivó
- * `seco.altura_tabiques` viera "1 bloquea la aprobación" con el rubro
+ * `seco.largo_tabiques` viera "1 bloquea la aprobación" con el rubro
  * perfectamente aprobable.
  */
 export function contarBloqueantes(

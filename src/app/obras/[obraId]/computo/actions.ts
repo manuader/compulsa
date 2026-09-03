@@ -30,6 +30,7 @@ import { registrarAuditoria } from '@/lib/audit';
 import { requireObra, requireObraCore, requireUser } from '@/lib/auth/guards';
 import { redondear2 } from '@/lib/computo/unidades';
 import { puedeAprobarRubro } from '@/lib/hallazgos/gate';
+import { igualJson } from '@/lib/pipeline/json';
 import { ajustarHallazgosAlChecklist, checklistEfectivo } from '@/lib/plataforma/checklists';
 import {
   requireAccion,
@@ -37,6 +38,8 @@ import {
   UsuarioInactivoError,
   type AccionConRol,
 } from '@/lib/plataforma/roles';
+import { fechaHoyIso } from '@/lib/precios/gestion';
+import { parsearPrecio } from '@/lib/precios/import-csv';
 import { PLANTILLAS } from '@/lib/rubros/index';
 import {
   numeroEsAr,
@@ -44,7 +47,13 @@ import {
   type CompraCalculada,
   type EntradaCompra,
 } from '@/lib/rubros/overrides';
-import { RUBROS, UNIDADES, type RolUsuario, type RubroId } from '@/types/domain';
+import {
+  RUBROS,
+  UNIDADES,
+  type PrecioEstimado,
+  type RolUsuario,
+  type RubroId,
+} from '@/types/domain';
 
 // ---------------------------------------------------------------------------
 // Resultado que ven las pantallas
@@ -140,6 +149,16 @@ const zEdicion = z.object({
   descripcion: z.string().trim().min(1, 'La descripción no puede quedar vacía.').max(200).optional(),
   cantNeta: z.string().optional(),
   desperdicioPct: z.string().optional(),
+  /**
+   * El precio unitario que carga el arquitecto, en es-AR (`12.500,50`).
+   *
+   * Ausente ⇒ no se toca. Vacío ⇒ se borra el precio manual y se recompone la
+   * cascada en el acto (lista del estudio → índice). Es la **única**
+   * puerta por la que entra un `precio_json` con `fuente: 'manual'`: el resto
+   * de los precios los pone `sincronizarPrecios` desde tablas que cargó una
+   * persona, y la IA no participa en ninguno de los dos caminos (§5.6).
+   */
+  precioUnitario: z.string().optional(),
 });
 
 const zAnulacion = z.object({ obraId: zUuid, itemId: zUuid });
@@ -204,7 +223,7 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
   if (!parseo.success) {
     return { ok: false, error: primerError(parseo.error, 'No pude leer los datos del ítem.') };
   }
-  const { obraId, itemId, descripcion, cantNeta, desperdicioPct } = parseo.data;
+  const { obraId, itemId, descripcion, cantNeta, desperdicioPct, precioUnitario } = parseo.data;
 
   const { usuario } = await requireUser();
   const permiso = chequearRol(usuario, 'editar_computo');
@@ -263,12 +282,43 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
     presentacion: compra.presentacion,
   };
 
+  // El precio va aparte de las cantidades a propósito. Editar una cantidad es
+  // el arquitecto afirmando algo sobre la obra, y por eso marca `editado_por` y
+  // congela la fila para el recompute; poner un precio no dice nada de la obra,
+  // así que no la congela — lo que sí hace es ganarle a la cascada para siempre
+  // (`resolverPrecio`, primer escalón).
+  let precioNuevo: PrecioEstimado | null | undefined;
+  if (precioUnitario !== undefined) {
+    const limpio = precioUnitario.trim();
+    if (limpio === '') {
+      precioNuevo = null; // volver a la lista: el próximo recompute lo repone
+    } else {
+      const valor = parsearPrecio(limpio);
+      if (valor === null || valor <= 0) {
+        return { ok: false, error: 'El precio unitario tiene que ser un número mayor que cero (ej.: 12.500,50).' };
+      }
+      precioNuevo = {
+        unitario: redondear2(valor),
+        moneda: obra.moneda,
+        fuente: 'manual',
+        fechaPrecio: fechaHoyIso(),
+      };
+    }
+  }
+  const cambiaPrecio = precioNuevo !== undefined && !igualJson(item.precioJson, precioNuevo);
+
   const diff = await diffDeItem(antes, despues);
-  if (Object.keys(diff).length === 0) return { ok: true };
+  const cambiaItem = Object.keys(diff).length > 0;
+  if (!cambiaItem && !cambiaPrecio) return { ok: true };
 
   await db
     .update(computoItems)
-    .set({ ...despues, editadoPor: usuario.id, updatedAt: new Date() })
+    .set({
+      ...despues,
+      ...(cambiaItem ? { editadoPor: usuario.id } : {}),
+      ...(cambiaPrecio ? { precioJson: precioNuevo ?? null } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(computoItems.id, item.id));
 
   await registrarAuditoria({
@@ -277,8 +327,20 @@ export async function editarItemAction(entrada: unknown): Promise<ResultadoAccio
     actorNombre: usuario.email,
     accion: 'computo_item_editado',
     targetRef: `computo_items:${item.claveItem}`,
-    diff,
+    diff: cambiaPrecio
+      ? { ...diff, precio: { antes: item.precioJson, despues: precioNuevo ?? null } }
+      : diff,
   });
+
+  // Borrar el precio manual es pedir explícitamente «volvé a la lista»: sin
+  // esto el ítem se quedaba sin precio hasta que algo más disparara un
+  // recompute, y el arquitecto veía un guion donde esperaba el precio de la
+  // lista. Solo en ese caso: recomputar en cada edición de precio sería pagar
+  // una corrida entera para escribir un número que ya tenemos.
+  if (precioNuevo === null && cambiaPrecio) {
+    const { recomputarObra } = await import('@/lib/pipeline/recomputar');
+    await recomputarObra(obra.id, { db });
+  }
 
   await revalidarPlanilla(obra.id);
   return { ok: true };
@@ -518,6 +580,22 @@ export async function aprobarRubroCore(
     };
   }
 
+  // Un rubro sin ítems no es un rubro aprobado: es un rubro vacío, y aprobado
+  // es la llave de `lanzarCompulsa` — la compulsa saldría sin una sola línea.
+  // El caso que importa no es la obra que no tiene el rubro sino la que **sí**
+  // lo tiene y no se pudo computar: faltó un dato, la planilla quedó en cero y
+  // el botón aprobaba igual.
+  const activos = await contarItemsActivos(db, obraId, rubro);
+  if (activos === 0) {
+    return {
+      ok: false,
+      error:
+        `No puedo aprobar ${PLANTILLAS[rubro].nombre.toLowerCase()}: no hay ningún ítem computado en el rubro. ` +
+        'Si el expediente tiene esos elementos, mirá la bandeja: falta un dato para poder computarlos. ' +
+        'Si la obra no incluye el rubro, no hace falta aprobarlo para lanzar la compulsa de los demás.',
+    };
+  }
+
   const [previo] = await db
     .select({ estado: computoRubros.estado })
     .from(computoRubros)
@@ -538,14 +616,60 @@ export async function aprobarRubroCore(
       set: { estado: 'aprobado', aprobadoPor: actor.usuarioId, aprobadoAt: new Date() },
     });
 
+  // Con qué se está aprobando, y no como decoración: desde §5.4 lo deducido y
+  // lo inferido entran solos al cómputo, así que un rubro puede aprobarse con
+  // cero bloqueantes y aun así apoyarse en datos que no están escritos en
+  // ninguna lámina. Cuántos eran queda registrado en la aprobación —es lo que
+  // convierte «aprobé el rubro» en «aprobé el rubro con 3 medidas deducidas y
+  // 1 medida sacada del dibujo»— y no cambia el gate: la solapa «Para revisar»
+  // informa, no bloquea (§5.8).
+  const porOrigen = await contarPorOrigen(db, obraId, rubro);
+
   await registrarAuditoria({
     obraId,
     actorTipo: 'usuario',
     actorNombre: actor.email,
     accion: 'rubro_aprobado',
     targetRef: `computo_rubros:${rubro}`,
-    diff: { estado: { antes: previo?.estado ?? 'borrador', despues: 'aprobado' } },
+    diff: { estado: { antes: previo?.estado ?? 'borrador', despues: 'aprobado' }, ...porOrigen },
   });
 
   return { ok: true };
+}
+
+/** Cuántos ítems del rubro quedaron en la planilla (los anulados no cuentan). */
+async function contarItemsActivos(db: Db, obraId: string, rubro: RubroId): Promise<number> {
+  const filas = await db
+    .select({ id: computoItems.id })
+    .from(computoItems)
+    .where(
+      and(
+        eq(computoItems.obraId, obraId),
+        eq(computoItems.rubro, rubro),
+        eq(computoItems.estado, 'activo'),
+      ),
+    );
+  return filas.length;
+}
+
+/** Cuántos ítems activos del rubro salieron `deducido` y cuántos `inferido`. */
+async function contarPorOrigen(
+  db: Db,
+  obraId: string,
+  rubro: RubroId,
+): Promise<{ deducidos: number; inferidos: number }> {
+  const filas = await db
+    .select({ origen: computoItems.origen })
+    .from(computoItems)
+    .where(
+      and(
+        eq(computoItems.obraId, obraId),
+        eq(computoItems.rubro, rubro),
+        eq(computoItems.estado, 'activo'),
+      ),
+    );
+  return {
+    deducidos: filas.filter((fila) => fila.origen === 'deducido').length,
+    inferidos: filas.filter((fila) => fila.origen === 'inferido').length,
+  };
 }
