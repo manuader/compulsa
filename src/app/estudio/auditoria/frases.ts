@@ -48,6 +48,7 @@ export const FRASE_ACCION: Record<string, string> = {
   cruce_aplicado: 'Cruzó el expediente y aplicó lo que encontró',
   cruce_fallido: 'No pudo cruzar el expediente',
   cruce_llm: 'Cruzó el expediente con el modelo',
+  cruce_reintentado: 'Volvió a cruzar el expediente a pedido',
   dato_obra_actualizado: 'Corrigió un dato que vale para toda la obra',
   dato_obra_definido: 'Cargó un dato de toda la obra',
   dato_obra_escrito: 'Escribió un dato que vale para toda la obra',

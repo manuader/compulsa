@@ -443,7 +443,7 @@ const LAMINAS_BUSQUEDA: Lamina[] = [
 //     y las dos láminas declaran escala 1:50: sus medidas salen de medir el
 //     dibujo, con origen `inferido`;
 //   · **la relectura de un dato de obra**: T2 se queda sin altura después del
-//     cruce, así que la consulta agrupada `dato_obra.altura_local.PB` sigue
+//     cruce, así que la consulta agrupada `dato_obra.altura_local.general` sigue
 //     abierta y la búsqueda dirigida vuelve al corte a buscarla
 //     (`analysis/busqueda/obra-fases-p2.json`).
 //
@@ -543,7 +543,7 @@ const LAMINAS_FASES: Lamina[] = [
  *   · una relectura del corte — la fase 4 lo lee primero.
  *
  * T2 queda deliberadamente afuera: sin su altura, la consulta agrupada
- * `dato_obra.altura_local.PB` sigue abierta y hay algo que la búsqueda dirigida
+ * `dato_obra.altura_local.general` sigue abierta y hay algo que la búsqueda dirigida
  * tenga que ir a buscar.
  */
 const CRUCE_OBRA_FASES = {
@@ -578,14 +578,19 @@ const CRUCE_OBRA_FASES = {
   identidades: [],
   conflictos: [],
   relecturas: [
-    { laminaCodigo: 'A-02', queBuscar: 'la altura de local de PB, acotada en el corte' },
+    { laminaCodigo: 'A-02', queBuscar: 'la altura de local, acotada en el corte' },
   ],
 };
 
 /** Lo que la búsqueda dirigida encuentra en el corte cuando le piden la altura. */
 const BUSQUEDA_OBRA_FASES_P2 = [
   {
-    clave: 'dato_obra.altura_local.PB',
+    // `general` y no `PB`: el tabique no declara `nivel` —el prompt de
+    // extracción no se lo pide— así que la consulta agrupada que la búsqueda
+    // tiene que responder es la de la familia sin nivel. Si acá dijera `PB`,
+    // `sanearBusqueda` lo descartaría por pedir una clave que la corrida no
+    // abrió, y la propuesta no llegaría nunca a la bandeja.
+    clave: 'dato_obra.altura_local.general',
     campo: 'valor',
     valor: '2,60',
     bbox: [0.15, 0.3, 0.3, 0.25],
