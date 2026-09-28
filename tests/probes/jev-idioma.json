@@ -1,0 +1,258 @@
+{
+  "_": "Prueba de idioma de Jev sobre castellano rioplatense de obra. Las etiquetas (`esperado`) están escritas A MANO y son revisables: si alguna te parece mal, cambiala y volvé a correr. `dificil: true` marca los casos donde la respuesta correcta es discutible incluso entre dos arquitectos; el reporte los cuenta aparte.",
+  "categorias": {
+    "material": {
+      "tipo": "choice",
+      "intervencion": "I5 — material y tipología definen el rubro",
+      "pregunta_es": "¿De qué material es el tabique que describe `referencia`?",
+      "pregunta_en": "What material is the partition wall described in `referencia` built from?",
+      "criteria_es": {
+        "durlock": "Construcción en seco: placa de roca de yeso sobre estructura metálica. En Argentina se le dice durlock, placa de yeso, roca de yeso, panel de yeso o por la marca (Durlock, Knauf).",
+        "mamposteria_ladrillo": "Mampostería: ladrillo común, ladrillo hueco, ladrillo cerámico portante, bloque.",
+        "hormigon": "Hormigón armado, en Argentina escrito también H°A° o HºAº.",
+        "no_dice": "El texto no dice de qué material es."
+      },
+      "criteria_en": {
+        "durlock": "Drywall: gypsum board on a metal stud frame. Argentine texts call it durlock, placa de yeso, roca de yeso, panel de yeso, or name a brand (Durlock, Knauf).",
+        "mamposteria_ladrillo": "Masonry: common brick, hollow brick, structural ceramic brick, block. Spanish: ladrillo, mamposteria, bloque.",
+        "hormigon": "Reinforced concrete. Spanish: hormigon armado, sometimes written H°A°.",
+        "no_dice": "The text does not state the material."
+      }
+    },
+    "tipo_lamina": {
+      "tipo": "choice",
+      "intervencion": "I1 — rótulo por selección de span",
+      "pregunta_es": "¿Qué tipo de lámina es la que tiene este rótulo?",
+      "pregunta_en": "What kind of drawing sheet has this title block?",
+      "criteria_es": {
+        "planta": "Vista en planta: un corte horizontal del edificio visto desde arriba.",
+        "corte": "Corte o sección vertical del edificio.",
+        "vista": "Vista o fachada: el edificio visto de frente, sin cortar.",
+        "detalle": "Detalle constructivo a escala grande.",
+        "planilla": "Una tabla de datos: planilla de carpinterías, de locales, de terminaciones.",
+        "otra": "Carátula, índice, memoria, o cualquier cosa que no sea dibujo técnico."
+      },
+      "criteria_en": {
+        "planta": "Floor plan: a horizontal cut through the building seen from above. Spanish: planta.",
+        "corte": "Section: a vertical cut through the building. Spanish: corte, seccion.",
+        "vista": "Elevation: the building seen from the front, not cut. Spanish: vista, fachada.",
+        "detalle": "Construction detail at large scale. Spanish: detalle.",
+        "planilla": "A data table: door and window schedule, room schedule, finishes schedule. Spanish: planilla.",
+        "otra": "Cover sheet, index, written report, or anything that is not a technical drawing."
+      }
+    },
+    "tipologia": {
+      "tipo": "choice",
+      "intervencion": "I2 — planilla de carpinterías fila por fila",
+      "pregunta_es": "¿Qué tipo de carpintería describe `fila`?",
+      "pregunta_en": "What kind of opening does `fila` describe?",
+      "criteria_es": {
+        "ventana": "Una ventana: no se atraviesa caminando. Incluye banderolas y ventanas de abrir, corredizas o fijas con antepecho.",
+        "puerta": "Una puerta: se atraviesa caminando. Incluye puertas placa, de acceso, portones y puertas ventana.",
+        "pano_fijo": "Un paño fijo: vidrio que no abre y no se atraviesa.",
+        "no_dice": "El texto no alcanza para saber qué tipo es."
+      },
+      "criteria_en": {
+        "ventana": "A window: you do not walk through it. Includes transoms (banderola) and casement, sliding or fixed windows with a sill.",
+        "puerta": "A door: you walk through it. Includes flush doors, entrance doors, gates (porton) and french/sliding doors (puerta ventana).",
+        "pano_fijo": "A fixed glazed panel that neither opens nor is walked through. Spanish: pano fijo.",
+        "no_dice": "The text is not enough to tell."
+      }
+    },
+    "span_pick": {
+      "tipo": "choice_dinamico",
+      "intervencion": "I2 — find + pick: el código encuentra las celdas, Jev elige cuál es",
+      "pregunta_es": "¿Cuál de las celdas de `fila.celdas` es el ANCHO de la carpintería? El ancho es la medida horizontal.",
+      "pregunta_en": "Which cell of `fila.celdas` holds the WIDTH of the opening? Width is the horizontal dimension. Spanish decimals use a comma: `0,90` means zero point nine.",
+      "opcion_ninguno": "ninguno",
+      "criteria_ninguno_es": "Ninguna celda de la fila trae el ancho.",
+      "criteria_ninguno_en": "No cell in the row holds the width."
+    },
+    "verificacion": {
+      "tipo": "noul",
+      "intervencion": "I4 — verificación campo por campo (cascada)",
+      "pregunta_es": "El valor `valor_extraido`, que se leyó como `campo`, NO aparece escrito en `texto_de_la_lamina`.",
+      "pregunta_en": "The value `valor_extraido`, read as `campo`, does NOT appear written in `texto_de_la_lamina`. Spanish decimals use a comma, so `0,90` in the text is the same number as 0.90.",
+      "criteria_es": {
+        "true": "El valor no está en el texto: ni igual, ni con coma en vez de punto, ni con la unidad al lado.",
+        "false": "El valor está escrito en el texto, aunque sea con otro formato."
+      },
+      "criteria_en": {
+        "true": "The value is absent from the text: not verbatim, not with a comma instead of a dot, not with a unit next to it.",
+        "false": "The value is written in the text, even if formatted differently."
+      }
+    },
+    "conciliacion": {
+      "tipo": "choice_dinamico",
+      "intervencion": "§5.2 de la evaluación — segunda opinión en la conciliación",
+      "pregunta_es": "¿A cuál de los ítems de `pedido` corresponde `linea_del_proveedor`?",
+      "pregunta_en": "Which item of `pedido` does `linea_del_proveedor` correspond to? The lines are Argentine construction Spanish.",
+      "opcion_ninguno": "ninguno",
+      "criteria_ninguno_es": "La línea no corresponde a ningún ítem del pedido: es un adicional, un flete, un alquiler o algo que no se pidió.",
+      "criteria_ninguno_en": "The line matches no requested item: it is an extra, freight, a rental, or something not asked for."
+    },
+    "sustitucion": {
+      "tipo": "noul",
+      "intervencion": "RF-1002 — una sustitución escala al arquitecto",
+      "pregunta_es": "`linea_del_proveedor` CONTRADICE la especificación de `item_pedido`: ofrece algo distinto de lo que se pidió.",
+      "pregunta_en": "`linea_del_proveedor` CONTRADICTS the specification in `item_pedido`: it offers something different from what was asked for.",
+      "criteria_es": {
+        "true": "Ofrece otro material, otro sistema constructivo, otro tipo de vidrio o otro espesor que el pedido.",
+        "false": "Es lo mismo que se pidió, aunque esté escrito con otras palabras o con un sinónimo del gremio."
+      },
+      "criteria_en": {
+        "true": "It offers a different material, a different building system, a different glass type or a different thickness than requested.",
+        "false": "It is the same thing requested, even if written with different words or a trade synonym."
+      }
+    },
+    "mensaje": {
+      "tipo": "choice",
+      "intervencion": "§5.1 de la evaluación — lector del canal manual",
+      "pregunta_es": "El estudio le pidió un presupuesto a un proveedor. ¿Qué está haciendo el proveedor en `mensaje`?",
+      "pregunta_en": "An architecture studio asked a supplier for a quote. What is the supplier doing in `mensaje`? The message is informal Argentine Spanish, often from WhatsApp.",
+      "criteria_es": {
+        "cotiza": "Manda precios en el mensaje.",
+        "rechaza": "Dice que no va a cotizar: no tiene lugar, no llega a la zona, no le interesa.",
+        "pide_informacion": "Necesita algo más para poder cotizar: un plano, una medida, saber de qué obra se trata.",
+        "promete_enviar": "Dice que va a cotizar pero todavía no manda precios.",
+        "fuera_de_rubro": "Dice que no trabaja en ese rubro.",
+        "no_es_respuesta": "Un acuse de recibo o algo que no dice nada de lo anterior."
+      },
+      "criteria_en": {
+        "cotiza": "Sends prices in the message.",
+        "rechaza": "Declines to quote: no capacity, does not serve that area, not interested.",
+        "pide_informacion": "Needs something else before quoting: a drawing, a dimension, which project it is.",
+        "promete_enviar": "Says they will quote but sends no prices yet.",
+        "fuera_de_rubro": "Says they do not work in that trade.",
+        "no_es_respuesta": "An acknowledgement or anything that says none of the above."
+      }
+    }
+  },
+  "items": [
+    {"id": "mat-01", "categoria": "material", "state": {"referencia": "TABIQUE DE PLACA DE ROCA DE YESO 12,5mm, DOBLE PLACA S/ESTRUCTURA DE MONTANTES 70mm"}, "esperado": "durlock"},
+    {"id": "mat-02", "categoria": "material", "state": {"referencia": "TABIQUE DURLOCK 12,5 SIMPLE PLACA"}, "esperado": "durlock"},
+    {"id": "mat-03", "categoria": "material", "state": {"referencia": "TABIQUE DE LADRILLO HUECO 12x18x33"}, "esperado": "mamposteria_ladrillo"},
+    {"id": "mat-04", "categoria": "material", "state": {"referencia": "MAMPOSTERÍA DE LADRILLO COMÚN A LA VISTA e=0,15"}, "esperado": "mamposteria_ladrillo"},
+    {"id": "mat-05", "categoria": "material", "state": {"referencia": "PLACA KNAUF STANDARD 12,5 SOBRE PERFILERÍA GALVANIZADA"}, "esperado": "durlock"},
+    {"id": "mat-06", "categoria": "material", "state": {"referencia": "TABIQUE DE H°A° e=15cm S/CÁLCULO"}, "esperado": "hormigon"},
+    {"id": "mat-07", "categoria": "material", "state": {"referencia": "MURO DE HORMIGÓN ARMADO VISTO"}, "esperado": "hormigon"},
+    {"id": "mat-08", "categoria": "material", "state": {"referencia": "TABIQUE T1"}, "esperado": "no_dice"},
+    {"id": "mat-09", "categoria": "material", "state": {"referencia": "PANEL DE YESO CON ESTRUCTURA METÁLICA Y LANA DE VIDRIO"}, "esperado": "durlock"},
+    {"id": "mat-10", "categoria": "material", "state": {"referencia": "LADRILLO CERÁMICO PORTANTE 18cm CON JUNTA TOMADA"}, "esperado": "mamposteria_ladrillo"},
+    {"id": "mat-11", "categoria": "material", "state": {"referencia": "TABIQUE DIVISORIO S/PLANILLA DE LOCALES"}, "esperado": "no_dice"},
+    {"id": "mat-12", "categoria": "material", "state": {"referencia": "TABIQUE EN SECO, PLACA RESISTENTE A LA HUMEDAD (VERDE) EN BAÑOS"}, "esperado": "durlock"},
+
+    {"id": "lam-01", "categoria": "tipo_lamina", "state": {"rotulo": "PLANTA BAJA — ESC 1:100 — A-01"}, "esperado": "planta"},
+    {"id": "lam-02", "categoria": "tipo_lamina", "state": {"rotulo": "CORTE A-A / CORTE B-B — ESC 1:50 — A-05"}, "esperado": "corte"},
+    {"id": "lam-03", "categoria": "tipo_lamina", "state": {"rotulo": "VISTA FRENTE Y CONTRAFRENTE — ESC 1:100"}, "esperado": "vista"},
+    {"id": "lam-04", "categoria": "tipo_lamina", "state": {"rotulo": "PLANILLA DE CARPINTERÍAS — S/ESC — A-08"}, "esperado": "planilla"},
+    {"id": "lam-05", "categoria": "tipo_lamina", "state": {"rotulo": "DETALLE DE ENCUENTRO TABIQUE-LOSA — ESC 1:5"}, "esperado": "detalle"},
+    {"id": "lam-06", "categoria": "tipo_lamina", "state": {"rotulo": "CARÁTULA — MEMORIA DESCRIPTIVA"}, "esperado": "otra"},
+    {"id": "lam-07", "categoria": "tipo_lamina", "state": {"rotulo": "PLANTA DE TECHOS — ESC 1:100 — A-04"}, "esperado": "planta"},
+    {"id": "lam-08", "categoria": "tipo_lamina", "state": {"rotulo": "PLANILLA DE LOCALES Y TERMINACIONES"}, "esperado": "planilla"},
+    {"id": "lam-09", "categoria": "tipo_lamina", "state": {"rotulo": "FACHADA SOBRE CALLE — ESC 1:50"}, "esperado": "vista"},
+    {"id": "lam-10", "categoria": "tipo_lamina", "state": {"rotulo": "PLANTA 1º PISO — DEMOLICIÓN Y OBRA NUEVA — ESC 1:50"}, "esperado": "planta"},
+
+    {"id": "tip-01", "categoria": "tipologia", "state": {"fila": "V2 — VENTANA CORREDIZA 2 HOJAS DE ALUMINIO 1,50 x 1,20"}, "esperado": "ventana"},
+    {"id": "tip-02", "categoria": "tipologia", "state": {"fila": "P3 — PUERTA PLACA 0,80 x 2,05 MARCO CHAPA"}, "esperado": "puerta"},
+    {"id": "tip-03", "categoria": "tipologia", "state": {"fila": "PF01 — PAÑO FIJO 1,20 x 2,40 DVH"}, "esperado": "pano_fijo"},
+    {"id": "tip-04", "categoria": "tipologia", "state": {"fila": "PV1 — PUERTA VENTANA CORREDIZA 1,80 x 2,05"}, "esperado": "puerta", "dificil": true},
+    {"id": "tip-05", "categoria": "tipologia", "state": {"fila": "V5 — VENTANA DE ABRIR 1 HOJA C/DVH 0,60 x 0,60"}, "esperado": "ventana"},
+    {"id": "tip-06", "categoria": "tipologia", "state": {"fila": "PUERTA DE ACCESO DOBLE HOJA 1,60 x 2,40"}, "esperado": "puerta"},
+    {"id": "tip-07", "categoria": "tipologia", "state": {"fila": "BANDEROLA 0,60 x 0,40 S/BAÑO"}, "esperado": "ventana"},
+    {"id": "tip-08", "categoria": "tipologia", "state": {"fila": "V8"}, "esperado": "no_dice"},
+    {"id": "tip-09", "categoria": "tipologia", "state": {"fila": "PORTÓN CORREDIZO DE CHAPA 3,00 x 2,20 GARAGE"}, "esperado": "puerta"},
+    {"id": "tip-10", "categoria": "tipologia", "state": {"fila": "PAÑO FIJO SOBRE PUERTA P2, 0,80 x 0,40"}, "esperado": "pano_fijo"},
+
+    {"id": "span-01", "categoria": "span_pick",
+     "state": {"fila": {"encabezados": ["TIPO", "ANCHO", "ALTO", "MATERIAL", "CANT"], "celdas": [{"id": "c1", "texto": "FP01"}, {"id": "c2", "texto": "0,90"}, {"id": "c3", "texto": "2,05"}, {"id": "c4", "texto": "ALUMINIO"}, {"id": "c5", "texto": "2"}]}},
+     "opciones": ["c1", "c2", "c3", "c4", "c5"], "esperado": "c2"},
+    {"id": "span-02", "categoria": "span_pick",
+     "state": {"fila": {"encabezados": null, "celdas": [{"id": "c1", "texto": "V2"}, {"id": "c2", "texto": "1,50"}, {"id": "c3", "texto": "1,20"}, {"id": "c4", "texto": "CORREDIZA"}]}},
+     "opciones": ["c1", "c2", "c3", "c4"], "esperado": "c2"},
+    {"id": "span-03", "categoria": "span_pick",
+     "state": {"fila": {"encabezados": ["CÓDIGO", "ALTO", "ANCHO", "OBSERVACIONES"], "celdas": [{"id": "c1", "texto": "P1"}, {"id": "c2", "texto": "2,05"}, {"id": "c3", "texto": "0,80"}, {"id": "c4", "texto": "PUERTA PLACA"}]}},
+     "opciones": ["c1", "c2", "c3", "c4"], "esperado": "c3"},
+    {"id": "span-04", "categoria": "span_pick",
+     "state": {"fila": {"encabezados": ["TIPO", "MEDIDAS", "CANT"], "celdas": [{"id": "c1", "texto": "V4"}, {"id": "c2", "texto": "1,20 x 2,40"}, {"id": "c3", "texto": "3"}]}},
+     "opciones": ["c1", "c2", "c3"], "esperado": "c2", "dificil": true},
+    {"id": "span-05", "categoria": "span_pick",
+     "state": {"fila": {"encabezados": ["TIPO", "MATERIAL", "CANT"], "celdas": [{"id": "c1", "texto": "V7"}, {"id": "c2", "texto": "PVC"}, {"id": "c3", "texto": "1"}]}},
+     "opciones": ["c1", "c2", "c3"], "esperado": "ninguno"},
+    {"id": "span-06", "categoria": "span_pick",
+     "state": {"fila": {"encabezados": ["TIPO", "L (m)", "H (m)", "VIDRIO"], "celdas": [{"id": "c1", "texto": "PF2"}, {"id": "c2", "texto": "2,40"}, {"id": "c3", "texto": "2,60"}, {"id": "c4", "texto": "DVH 4/9/4"}]}},
+     "opciones": ["c1", "c2", "c3", "c4"], "esperado": "c2"},
+    {"id": "span-07", "categoria": "span_pick",
+     "state": {"fila": {"encabezados": null, "celdas": [{"id": "c1", "texto": "P4"}, {"id": "c2", "texto": "PUERTA PLACA"}, {"id": "c3", "texto": "0,70"}, {"id": "c4", "texto": "2,05"}, {"id": "c5", "texto": "MARCO CHAPA Nº18"}]}},
+     "opciones": ["c1", "c2", "c3", "c4", "c5"], "esperado": "c3"},
+    {"id": "span-08", "categoria": "span_pick",
+     "state": {"fila": {"encabezados": ["TIPO", "ANCHO", "ALTO", "ANTEPECHO"], "celdas": [{"id": "c1", "texto": "V9"}, {"id": "c2", "texto": "2,00"}, {"id": "c3", "texto": "1,10"}, {"id": "c4", "texto": "0,90"}]}},
+     "opciones": ["c1", "c2", "c3", "c4"], "esperado": "c2"},
+
+    {"id": "ver-01", "categoria": "verificacion", "state": {"texto_de_la_lamina": "PLANTA BAJA ESC 1:50 — V2 CORREDIZA 1,50 x 1,20 — P1 PUERTA PLACA 0,80 x 2,05 — ESTAR 18,40 m2", "campo": "ancho de V2", "valor_extraido": "1,50"}, "esperado": false},
+    {"id": "ver-02", "categoria": "verificacion", "state": {"texto_de_la_lamina": "PLANTA BAJA ESC 1:50 — V2 CORREDIZA 1,50 x 1,20 — P1 PUERTA PLACA 0,80 x 2,05 — ESTAR 18,40 m2", "campo": "ancho de V2", "valor_extraido": "1,05"}, "esperado": true},
+    {"id": "ver-03", "categoria": "verificacion", "state": {"texto_de_la_lamina": "PLANTA BAJA ESC 1:50 — V2 CORREDIZA 1,50 x 1,20 — P1 PUERTA PLACA 0,80 x 2,05 — ESTAR 18,40 m2", "campo": "alto de P1", "valor_extraido": "2,05"}, "esperado": false},
+    {"id": "ver-04", "categoria": "verificacion", "state": {"texto_de_la_lamina": "PLANTA BAJA ESC 1:50 — V2 CORREDIZA 1,50 x 1,20 — P1 PUERTA PLACA 0,80 x 2,05 — ESTAR 18,40 m2", "campo": "superficie del estar", "valor_extraido": "18,40"}, "esperado": false},
+    {"id": "ver-05", "categoria": "verificacion", "state": {"texto_de_la_lamina": "PLANTA BAJA ESC 1:50 — V2 CORREDIZA 1,50 x 1,20 — P1 PUERTA PLACA 0,80 x 2,05 — ESTAR 18,40 m2", "campo": "superficie del dormitorio", "valor_extraido": "12,60"}, "esperado": true},
+    {"id": "ver-06", "categoria": "verificacion", "state": {"texto_de_la_lamina": "CORTE A-A — NIVEL +0,00 — ALTURA DE LOCAL 2,60 — LOSA e=0,12", "campo": "altura de local", "valor_extraido": "2.60"}, "esperado": false},
+    {"id": "ver-07", "categoria": "verificacion", "state": {"texto_de_la_lamina": "CORTE A-A — NIVEL +0,00 — ALTURA DE LOCAL 2,60 — LOSA e=0,12", "campo": "altura de local", "valor_extraido": "2,80"}, "esperado": true},
+    {"id": "ver-08", "categoria": "verificacion", "state": {"texto_de_la_lamina": "TABIQUE T1 L=5,00 — TABIQUE T2 L=3,20 — TABIQUE T3 L=2,10", "campo": "largo de T2", "valor_extraido": "3,20"}, "esperado": false},
+    {"id": "ver-09", "categoria": "verificacion", "state": {"texto_de_la_lamina": "TABIQUE T1 L=5,00 — TABIQUE T2 L=3,20 — TABIQUE T3 L=2,10", "campo": "largo de T4", "valor_extraido": "4,00"}, "esperado": true},
+    {"id": "ver-10", "categoria": "verificacion", "state": {"texto_de_la_lamina": "PLANILLA — FP01 0,90 2,05 ALUMINIO — FP02 1,20 2,05 ALUMINIO", "campo": "ancho de FP02", "valor_extraido": "1,20"}, "esperado": false},
+
+    {"id": "conc-01", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "23,04 m2 Placa de roca de yeso 12,5 mm (1,20 x 2,40) $ 8.900"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "i1"},
+    {"id": "conc-02", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "10,4 ml Solera para tabique de ladrillo $ 6.800"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "i2"},
+    {"id": "conc-03", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "11 u Montante 70 mm para tabique de durlock, cada 0,40 m $ 4.500"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "i3"},
+    {"id": "conc-04", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "500 u Tornillos autoperforantes para placa de roca de yeso $ 65"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "i4"},
+    {"id": "conc-05", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "30 kg Masilla lista para juntas $ 4.200"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "i5"},
+    {"id": "conc-06", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "90 ml Cinta de papel para juntas $ 560"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "i6"},
+    {"id": "conc-07", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "1 u Flete a obra (Villa Urquiza) $ 45.000"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "ninguno"},
+    {"id": "conc-08", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "2 u Andamio tubular, alquiler x mes $ 38.000"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "ninguno"},
+    {"id": "conc-09", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "24 m2 Durlock 12,5 (placa estándar) $ 9.100"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "i1"},
+    {"id": "conc-10", "categoria": "conciliacion",
+     "state": {"pedido": [{"id": "i1", "texto": "Placa de roca de yeso 12,5 mm"}, {"id": "i2", "texto": "Perfil solera 70 mm"}, {"id": "i3", "texto": "Perfil montante 70 mm"}, {"id": "i4", "texto": "Tornillos autoperforantes T2"}, {"id": "i5", "texto": "Masilla para juntas"}, {"id": "i6", "texto": "Cinta de papel para juntas"}], "linea_del_proveedor": "11 u Perfil PGU 70 $ 4.500"},
+     "opciones": ["i1", "i2", "i3", "i4", "i5", "i6"], "esperado": "i2", "dificil": true},
+
+    {"id": "sust-01", "categoria": "sustitucion", "state": {"item_pedido": "Ventana V2 de aluminio con vidrio DVH", "linea_del_proveedor": "V2 aluminio c/vidrio float 4mm"}, "esperado": true},
+    {"id": "sust-02", "categoria": "sustitucion", "state": {"item_pedido": "Ventana V2 de aluminio con vidrio DVH", "linea_del_proveedor": "V2 en aluminio, DVH 4/9/4"}, "esperado": false},
+    {"id": "sust-03", "categoria": "sustitucion", "state": {"item_pedido": "Carpintería de aluminio línea Módena", "linea_del_proveedor": "Carpintería de PVC alta prestación"}, "esperado": true},
+    {"id": "sust-04", "categoria": "sustitucion", "state": {"item_pedido": "Placa de roca de yeso 12,5 mm", "linea_del_proveedor": "Placa de yeso 9,5 mm"}, "esperado": true},
+    {"id": "sust-05", "categoria": "sustitucion", "state": {"item_pedido": "Placa de roca de yeso 12,5 mm", "linea_del_proveedor": "Durlock 12,5"}, "esperado": false},
+    {"id": "sust-06", "categoria": "sustitucion", "state": {"item_pedido": "Tabique de durlock con montantes de 70", "linea_del_proveedor": "Tabique de ladrillo hueco 12"}, "esperado": true},
+    {"id": "sust-07", "categoria": "sustitucion", "state": {"item_pedido": "Perfil solera 70 mm para tabique de durlock", "linea_del_proveedor": "Solera para tabique de ladrillo"}, "esperado": true, "dificil": true},
+    {"id": "sust-08", "categoria": "sustitucion", "state": {"item_pedido": "Puerta placa de 0,80 con marco de chapa", "linea_del_proveedor": "Puerta placa 0,80, marco de madera"}, "esperado": true},
+    {"id": "sust-09", "categoria": "sustitucion", "state": {"item_pedido": "Masilla lista para juntas", "linea_del_proveedor": "Masilla en polvo para juntas (se prepara en obra)"}, "esperado": true, "dificil": true},
+    {"id": "sust-10", "categoria": "sustitucion", "state": {"item_pedido": "Carpintería de aluminio línea Módena", "linea_del_proveedor": "Carpintería de aluminio línea Módena, color blanco"}, "esperado": false},
+
+    {"id": "msg-01", "categoria": "mensaje", "state": {"mensaje": "Buenas! Te paso: placa $9.400 el m2, solera $7.100 el ml, montante $4.800 c/u. Total 563.616 + IVA"}, "esperado": "cotiza"},
+    {"id": "msg-02", "categoria": "mensaje", "state": {"mensaje": "Hola, gracias por escribir, pero en este momento no estamos tomando obra nueva hasta marzo"}, "esperado": "rechaza"},
+    {"id": "msg-03", "categoria": "mensaje", "state": {"mensaje": "Dale, me fijo y te paso durante la semana"}, "esperado": "promete_enviar"},
+    {"id": "msg-04", "categoria": "mensaje", "state": {"mensaje": "Me podés pasar el plano de la planta? Sin los metros no te puedo cotizar nada"}, "esperado": "pide_informacion"},
+    {"id": "msg-05", "categoria": "mensaje", "state": {"mensaje": "Nosotros no hacemos durlock, trabajamos solo aberturas de aluminio"}, "esperado": "fuera_de_rubro"},
+    {"id": "msg-06", "categoria": "mensaje", "state": {"mensaje": "ok"}, "esperado": "no_es_respuesta"},
+    {"id": "msg-07", "categoria": "mensaje", "state": {"mensaje": "Che, pero eso está en Pilar? No cubrimos esa zona, disculpá"}, "esperado": "rechaza"},
+    {"id": "msg-08", "categoria": "mensaje", "state": {"mensaje": "Te mando: 23,04 m2 x $8.900 = 205.056. Validez 10 días, 50% anticipo"}, "esperado": "cotiza"},
+    {"id": "msg-09", "categoria": "mensaje", "state": {"mensaje": "Perdón, con quién hablo? De qué obra me hablás?"}, "esperado": "pide_informacion"},
+    {"id": "msg-10", "categoria": "mensaje", "state": {"mensaje": "Buen día, recibido. Cualquier cosa te aviso"}, "esperado": "no_es_respuesta", "dificil": true},
+    {"id": "msg-11", "categoria": "mensaje", "state": {"mensaje": "Lo estoy armando, mañana a más tardar te lo paso con los precios"}, "esperado": "promete_enviar"},
+    {"id": "msg-12", "categoria": "mensaje", "state": {"mensaje": "Mirá, de durlock sí pero la pintura no la hacemos nosotros"}, "esperado": "fuera_de_rubro", "dificil": true}
+  ]
+}

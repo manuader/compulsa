@@ -196,6 +196,8 @@ Orden: test → golden → build. Con agentes/procesos pesados activos en la má
 | `docs/superpowers/specs/2026-08-28-expediente-como-conjunto-design.md` | la spec de la ola del expediente: memoria global, cruce, niveles de evidencia, precios, 4 rubros nuevos |
 | `.superpowers/sdd/2026-08-28-expediente-como-conjunto/` | los 12 briefs de tarea con las fórmulas y los números pinneados (ejecutados) |
 | [SESSION-2026-08-29-expediente-como-conjunto.md](SESSION-2026-08-29-expediente-como-conjunto.md) | por qué el sistema preguntaba lámina por lámina: las siete piezas de la ola, el golden 3 y el 500 que encontró el e2e |
+| [EVAL-2026-09-21-jev.md](EVAL-2026-09-21-jev.md) | evaluación de Jev (TypeSafe AI) para este repo: qué puede y qué no, inventario de puntos de decisión, 6 features candidatas y el plan de validación. **No se adoptó nada todavía** |
+| `docs/superpowers/specs/2026-09-21-jev-analisis-y-computo-design.md` | el diseño de Jev en el análisis y el cómputo: la capa de spans con posición, las seis intervenciones y los umbrales. **Diseño, sin implementar**; su §11 tiene la prueba de idioma ya corrida (82 ítems es-AR, 100 %) |
 | [SESSION-2026-08-27-proponer-en-vez-de-bloquear.md](SESSION-2026-08-27-proponer-en-vez-de-bloquear.md) | por qué el sistema preguntaba lo que sabía leer: las 4 causas raíz, los hallazgos de revisión y las decisiones del rediseño |
 | [SESSION-2026-08-26-f1-f4.md](SESSION-2026-08-26-f1-f4.md) | cómo se construyó el resto del PRD, los 3 bugs de rama entera y la deuda aceptada |
 | [SESSION-2026-08-26-gestion-y-provider-real.md](SESSION-2026-08-26-gestion-y-provider-real.md) | gestión de obras/documentos y el estreno del provider real |
